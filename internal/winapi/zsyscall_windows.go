@@ -73,6 +73,7 @@ var (
 	procCreatePseudoConsole                    = modkernel32.NewProc("CreatePseudoConsole")
 	procCreateRemoteThread                     = modkernel32.NewProc("CreateRemoteThread")
 	procGetActiveProcessorCount                = modkernel32.NewProc("GetActiveProcessorCount")
+	procIsDebuggerPresent                      = modkernel32.NewProc("IsDebuggerPresent")
 	procIsProcessInJob                         = modkernel32.NewProc("IsProcessInJob")
 	procLocalAlloc                             = modkernel32.NewProc("LocalAlloc")
 	procLocalFree                              = modkernel32.NewProc("LocalFree")
@@ -457,6 +458,12 @@ func CreateRemoteThread(process windows.Handle, sa *windows.SecurityAttributes, 
 func GetActiveProcessorCount(groupNumber uint16) (amount uint32) {
 	r0, _, _ := syscall.Syscall(procGetActiveProcessorCount.Addr(), 1, uintptr(groupNumber), 0, 0)
 	amount = uint32(r0)
+	return
+}
+
+func IsDebuggerPresent() (result bool) {
+	r0, _, _ := syscall.Syscall(procIsDebuggerPresent.Addr(), 0, 0, 0, 0)
+	result = r0 != 0
 	return
 }
 

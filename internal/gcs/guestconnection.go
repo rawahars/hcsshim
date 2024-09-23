@@ -13,14 +13,13 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/Microsoft/go-winio"
-	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/oc"
+	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
@@ -29,41 +28,48 @@ import (
 const (
 	protocolVersion = 4
 
-	firstIoChannelVsockPort = LinuxGcsVsockPort + 1
+	FirstIoChannelVsockPort = LinuxGcsVsockPort + 1
 	nullContainerID         = "00000000-0000-0000-0000-000000000000"
 )
 
 // IoListenFunc is a type for a function that creates a listener for a VM for
 // the vsock port `port`.
-type IoListenFunc func(port uint32) (net.Listener, error)
+type IoListenFunc func(uint32) (net.Listener, error)
 
 // HvsockIoListen returns an implementation of IoListenFunc that listens
 // on the specified vsock port for the VM specified by `vmID`.
-func HvsockIoListen(vmID guid.GUID) IoListenFunc {
-	return func(port uint32) (net.Listener, error) {
-		return winio.ListenHvsock(&winio.HvsockAddr{
-			VMID:      vmID,
-			ServiceID: winio.VsockServiceID(port),
-		})
-	}
-}
+// func HvsockIoListen(vmID guid.GUID) IoListenFunc {
+// 	return func(port uint32) (net.Listener, error) {
+// 		return winio.ListenHvsock(&winio.HvsockAddr{
+// 			VMID:      vmID,
+// 			ServiceID: winio.VsockServiceID(port),
+// 		})
+// 	}
+// }
 
 type InitialGuestState struct {
 	// Timezone is only honored for Windows guests.
 	Timezone *hcsschema.TimeZoneInformation
 }
 
+type Conn interface {
+	io.ReadWriteCloser
+	CloseWrite() error
+}
+
 // GuestConnectionConfig contains options for creating a guest connection.
 type GuestConnectionConfig struct {
 	// Conn specifies the connection to use for the bridge. It will be closed
 	// when there is an error or Close is called.
-	Conn io.ReadWriteCloser
+	Conn Conn
 	// Log specifies the logrus entry to use for async log messages.
 	Log *logrus.Entry
 	// IoListen is the function to use to create listeners for the stdio connections.
 	IoListen IoListenFunc
 	// InitGuestState specifies settings to apply to the guest on creation/start. This includes things such as the timezone for the VM.
 	InitGuestState *InitialGuestState
+	Processes      []*statepkg.Process
+	NextPort       uint32
 }
 
 // Connect establishes a GCS connection. `gcc.Conn` will be closed by this function.
@@ -73,9 +79,35 @@ func (gcc *GuestConnectionConfig) Connect(ctx context.Context, isColdStart bool)
 	defer func() { oc.SetSpanStatus(span, err) }()
 
 	gc := &GuestConnection{
-		nextPort:   firstIoChannelVsockPort,
 		notifyChs:  make(map[string]chan struct{}),
 		ioListenFn: gcc.IoListen,
+		procs:      make(map[procIdent]*Process),
+		nextPort:   gcc.NextPort,
+	}
+	for _, p := range gcc.Processes {
+		stdin, err := gc.ioListenFn(p.StdinPort)
+		if err != nil {
+			return nil, err
+		}
+		stdout, err := gc.ioListenFn(p.StdoutPort)
+		if err != nil {
+			return nil, err
+		}
+		stderr, err := gc.ioListenFn(p.StderrPort)
+		if err != nil {
+			return nil, err
+		}
+		gc.procs[procIdent{p.ContainerId, p.ProcessId}] = &Process{
+			gc:         gc,
+			cid:        p.ContainerId,
+			id:         p.ProcessId,
+			stdin:      newIoChannel(stdin),
+			stdout:     newIoChannel(stdout),
+			stderr:     newIoChannel(stderr),
+			stdinPort:  p.StdinPort,
+			stdoutPort: p.StdoutPort,
+			stderrPort: p.StderrPort,
+		}
 	}
 	gc.brdg = newBridge(gcc.Conn, gc.notify, gcc.Log)
 	gc.brdg.Start()
@@ -88,6 +120,11 @@ func (gcc *GuestConnectionConfig) Connect(ctx context.Context, isColdStart bool)
 		gc.Close()
 		return nil, err
 	}
+	for id := range gc.procs {
+		if _, err := gc.OpenProcess(ctx, id.cid, id.pid); err != nil {
+			return nil, err
+		}
+	}
 	return gc, nil
 }
 
@@ -96,10 +133,34 @@ type GuestConnection struct {
 	brdg       *bridge
 	ioListenFn IoListenFunc
 	mu         sync.Mutex
-	nextPort   uint32
 	notifyChs  map[string]chan struct{}
 	caps       schema1.GuestDefinedCapabilities
 	os         string
+	procs      map[procIdent]*Process
+	stateLock  sync.RWMutex
+	nextPort   uint32
+}
+
+func (gc *GuestConnection) State() *statepkg.GCState {
+	var processes []*statepkg.Process
+	for id, p := range gc.procs {
+		processes = append(processes, &statepkg.Process{
+			ContainerId: id.cid,
+			ProcessId:   id.pid,
+			StdinPort:   p.stdinPort,
+			StdoutPort:  p.stdoutPort,
+			StderrPort:  p.stderrPort,
+		})
+	}
+	return &statepkg.GCState{
+		Processes: processes,
+		NextPort:  gc.nextPort,
+	}
+}
+
+type procIdent struct {
+	cid string
+	pid uint32
 }
 
 var _ cow.ProcessHost = &GuestConnection{}
@@ -235,9 +296,9 @@ func (gc *GuestConnection) IsOCI() bool {
 
 func (gc *GuestConnection) newIoChannel() (*ioChannel, uint32, error) {
 	gc.mu.Lock()
+	defer gc.mu.Unlock()
 	port := gc.nextPort
 	gc.nextPort++
-	gc.mu.Unlock()
 	l, err := gc.ioListenFn(port)
 	if err != nil {
 		return nil, 0, err
@@ -306,4 +367,11 @@ func makeRequest(ctx context.Context, cid string) requestBase {
 		}
 	}
 	return r
+}
+
+func (gc *GuestConnection) Disconnect(ctx context.Context) error {
+	if err := gc.brdg.Disconnect(ctx); err != nil {
+		return err
+	}
+	return nil
 }

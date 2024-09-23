@@ -60,7 +60,7 @@ type bridge struct {
 	mu      sync.Mutex
 	nextID  int64
 	rpcs    map[int64]*rpc
-	conn    io.ReadWriteCloser
+	conn    Conn
 	rpcCh   chan *rpc
 	notify  notifyFunc
 	closed  bool
@@ -81,7 +81,7 @@ type notifyFunc func(*containerNotification) error
 // newBridge returns a bridge on `conn`. It calls `notify` when a
 // notification message arrives from the guest. It logs transport errors and
 // traces using `log`.
-func newBridge(conn io.ReadWriteCloser, notify notifyFunc, log *logrus.Entry) *bridge {
+func newBridge(conn Conn, notify notifyFunc, log *logrus.Entry) *bridge {
 	return &bridge{
 		conn:    conn,
 		rpcs:    make(map[int64]*rpc),
@@ -246,7 +246,9 @@ func (brdg *bridge) RPC(ctx context.Context, proc rpcProc, req requestMessage, r
 }
 
 func (brdg *bridge) recvLoopRoutine() {
-	brdg.kill(brdg.recvLoop())
+	err := brdg.recvLoop()
+	logrus.WithError(err).Warn("bridge recvLoop exited")
+	brdg.kill(err)
 	// Fail any remaining RPCs.
 	brdg.mu.Lock()
 	rpcs := brdg.rpcs
@@ -290,6 +292,7 @@ func (brdg *bridge) recvLoop() error {
 	for {
 		id, typ, b, err := readMessage(br)
 		if err != nil {
+			logrus.WithError(err).Warn("bridge read disconnect")
 			if err == io.EOF || isLocalDisconnectError(err) {
 				return nil
 			}
@@ -441,4 +444,16 @@ func (brdg *bridge) sendRPC(buf *bytes.Buffer, enc *json.Encoder, call *rpc) err
 		return err
 	}
 	return nil
+}
+
+func (brdg *bridge) Disconnect(ctx context.Context) error {
+	if err := brdg.conn.CloseWrite(); err != nil {
+		return err
+	}
+	select {
+	case <-brdg.waitCh:
+		return brdg.brdgErr
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }

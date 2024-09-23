@@ -4,9 +4,12 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 
+	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/Microsoft/hcsshim/internal/wclayer"
 )
 
@@ -25,8 +28,8 @@ var (
 // It tracks the state of what devices have been attached to the VM, and
 // mounted inside the guest OS.
 type Manager struct {
-	attachManager *attachManager
-	mountManager  *mountManager
+	attachManager *AttachManager
+	mountManager  *MountManager
 }
 
 // Slot represents a single SCSI slot, consisting of a controller and LUN.
@@ -54,14 +57,14 @@ func NewManager(
 	if hb == nil || gb == nil {
 		return nil, errors.New("host and guest backend must not be nil")
 	}
-	am := newAttachManager(hb, gb, numControllers, numLUNsPerController, reservedSlots)
-	mm := newMountManager(gb, guestMountFmt)
+	am := NewAttachManager(hb, gb, numControllers, numLUNsPerController, reservedSlots)
+	mm := NewMountManager(gb, guestMountFmt)
 	return &Manager{am, mm}, nil
 }
 
-// MountConfig specifies the options to apply for mounting a SCSI device in
+// DeviceConfig specifies the options to apply for mounting a SCSI device in
 // the guest OS.
-type MountConfig struct {
+type DeviceConfig struct {
 	// Partition is the target partition index on a partitioned device to
 	// mount. Partitions are 1-based indexed.
 	// This is only supported for LCOW.
@@ -83,9 +86,9 @@ type MountConfig struct {
 	Filesystem string
 }
 
-// Mount represents a SCSI device that has been attached to a VM, and potentially
+// Device represents a SCSI device that has been attached to a VM, and potentially
 // also mounted into the guest OS.
-type Mount struct {
+type Device struct {
 	mgr         *Manager
 	controller  uint
 	lun         uint
@@ -94,18 +97,18 @@ type Mount struct {
 }
 
 // Controller returns the controller number that the SCSI device is attached to.
-func (m *Mount) Controller() uint {
+func (m *Device) Controller() uint {
 	return m.controller
 }
 
 // LUN returns the LUN number that the SCSI device is attached to.
-func (m *Mount) LUN() uint {
+func (m *Device) LUN() uint {
 	return m.lun
 }
 
 // GuestPath returns the path inside the guest OS where the SCSI device was mounted.
 // Will return an empty string if no guest mount was performed.
-func (m *Mount) GuestPath() string {
+func (m *Device) GuestPath() string {
 	return m.guestPath
 }
 
@@ -113,7 +116,7 @@ func (m *Mount) GuestPath() string {
 // of the same attachment or mount are used. If the refcount for the guest OS mount
 // reaches 0, the guest OS mount is removed. If the refcount for the SCSI attachment
 // reaches 0, the SCSI attachment is removed.
-func (m *Mount) Release(ctx context.Context) (err error) {
+func (m *Device) Release(ctx context.Context) (err error) {
 	err = ErrAlreadyReleased
 	m.releaseOnce.Do(func() {
 		err = m.mgr.remove(ctx, m.controller, m.lun, m.guestPath)
@@ -136,8 +139,8 @@ func (m *Manager) AddVirtualDisk(
 	hostPath string,
 	readOnly bool,
 	vmID string,
-	mc *MountConfig,
-) (*Mount, error) {
+	mc *DeviceConfig,
+) (*Device, error) {
 	if m == nil {
 		return nil, ErrNotInitialized
 	}
@@ -146,22 +149,22 @@ func (m *Manager) AddVirtualDisk(
 			return nil, err
 		}
 	}
-	var mcInternal *mountConfig
+	var mcInternal *MountConfig
 	if mc != nil {
-		mcInternal = &mountConfig{
-			partition:        mc.Partition,
-			readOnly:         readOnly,
-			encrypted:        mc.Encrypted,
-			options:          mc.Options,
-			ensureFilesystem: mc.EnsureFilesystem,
-			filesystem:       mc.Filesystem,
+		mcInternal = &MountConfig{
+			Partition:       mc.Partition,
+			ReadOnly:        readOnly,
+			Encrypted:       mc.Encrypted,
+			Options:         mc.Options,
+			EnsureFileystem: mc.EnsureFilesystem,
+			Filesystem:      mc.Filesystem,
 		}
 	}
 	return m.add(ctx,
-		&attachConfig{
-			path:     hostPath,
-			readOnly: readOnly,
-			typ:      "VirtualDisk",
+		&AttachConfig{
+			Path:     hostPath,
+			ReadOnly: readOnly,
+			Type:     "VirtualDisk",
 		},
 		mcInternal)
 }
@@ -181,8 +184,8 @@ func (m *Manager) AddPhysicalDisk(
 	hostPath string,
 	readOnly bool,
 	vmID string,
-	mc *MountConfig,
-) (*Mount, error) {
+	mc *DeviceConfig,
+) (*Device, error) {
 	if m == nil {
 		return nil, ErrNotInitialized
 	}
@@ -191,22 +194,22 @@ func (m *Manager) AddPhysicalDisk(
 			return nil, err
 		}
 	}
-	var mcInternal *mountConfig
+	var mcInternal *MountConfig
 	if mc != nil {
-		mcInternal = &mountConfig{
-			partition:        mc.Partition,
-			readOnly:         readOnly,
-			encrypted:        mc.Encrypted,
-			options:          mc.Options,
-			ensureFilesystem: mc.EnsureFilesystem,
-			filesystem:       mc.Filesystem,
+		mcInternal = &MountConfig{
+			Partition:       mc.Partition,
+			ReadOnly:        readOnly,
+			Encrypted:       mc.Encrypted,
+			Options:         mc.Options,
+			EnsureFileystem: mc.EnsureFilesystem,
+			Filesystem:      mc.Filesystem,
 		}
 	}
 	return m.add(ctx,
-		&attachConfig{
-			path:     hostPath,
-			readOnly: readOnly,
-			typ:      "PassThru",
+		&AttachConfig{
+			Path:     hostPath,
+			ReadOnly: readOnly,
+			Type:     "PassThru",
 		},
 		mcInternal)
 }
@@ -226,8 +229,8 @@ func (m *Manager) AddExtensibleVirtualDisk(
 	ctx context.Context,
 	hostPath string,
 	readOnly bool,
-	mc *MountConfig,
-) (*Mount, error) {
+	mc *DeviceConfig,
+) (*Device, error) {
 	if m == nil {
 		return nil, ErrNotInitialized
 	}
@@ -235,52 +238,52 @@ func (m *Manager) AddExtensibleVirtualDisk(
 	if err != nil {
 		return nil, err
 	}
-	var mcInternal *mountConfig
+	var mcInternal *MountConfig
 	if mc != nil {
-		mcInternal = &mountConfig{
-			partition:        mc.Partition,
-			readOnly:         readOnly,
-			encrypted:        mc.Encrypted,
-			options:          mc.Options,
-			ensureFilesystem: mc.EnsureFilesystem,
-			filesystem:       mc.Filesystem,
+		mcInternal = &MountConfig{
+			Partition:       mc.Partition,
+			ReadOnly:        readOnly,
+			Encrypted:       mc.Encrypted,
+			Options:         mc.Options,
+			EnsureFileystem: mc.EnsureFilesystem,
+			Filesystem:      mc.Filesystem,
 		}
 	}
 	return m.add(ctx,
-		&attachConfig{
-			path:     mountPath,
-			readOnly: readOnly,
-			typ:      "ExtensibleVirtualDisk",
-			evdType:  evdType,
+		&AttachConfig{
+			Path:     mountPath,
+			ReadOnly: readOnly,
+			Type:     "ExtensibleVirtualDisk",
+			EVDType:  evdType,
 		},
 		mcInternal)
 }
 
-func (m *Manager) add(ctx context.Context, attachConfig *attachConfig, mountConfig *mountConfig) (_ *Mount, err error) {
-	controller, lun, err := m.attachManager.attach(ctx, attachConfig)
+func (m *Manager) add(ctx context.Context, attachConfig *AttachConfig, mountConfig *MountConfig) (_ *Device, err error) {
+	controller, lun, err := m.attachManager.Attach(ctx, attachConfig)
 	if err != nil {
 		return nil, err
 	}
 	defer func() {
 		if err != nil {
-			_, _ = m.attachManager.detach(ctx, controller, lun)
+			_, _ = m.attachManager.Detach(ctx, controller, lun)
 		}
 	}()
 
 	var guestPath string
 	if mountConfig != nil {
-		guestPath, err = m.mountManager.mount(ctx, controller, lun, mountConfig)
+		guestPath, err = m.mountManager.Mount(ctx, controller, lun, mountConfig)
 		if err != nil {
 			return nil, err
 		}
 	}
 
-	return &Mount{mgr: m, controller: controller, lun: lun, guestPath: guestPath}, nil
+	return &Device{mgr: m, controller: controller, lun: lun, guestPath: guestPath}, nil
 }
 
 func (m *Manager) remove(ctx context.Context, controller, lun uint, guestPath string) error {
 	if guestPath != "" {
-		removed, err := m.mountManager.unmount(ctx, guestPath)
+		removed, err := m.mountManager.Unmount(ctx, guestPath)
 		if err != nil {
 			return err
 		}
@@ -290,7 +293,7 @@ func (m *Manager) remove(ctx context.Context, controller, lun uint, guestPath st
 		}
 	}
 
-	if _, err := m.attachManager.detach(ctx, controller, lun); err != nil {
+	if _, err := m.attachManager.Detach(ctx, controller, lun); err != nil {
 		return err
 	}
 
@@ -307,4 +310,224 @@ func parseExtensibleVirtualDiskPath(hostPath string) (evdType, mountPath string,
 		return "", "", fmt.Errorf("invalid extensible vhd path: %s", hostPath)
 	}
 	return trimmedPath[:separatorIndex], trimmedPath[separatorIndex+1:], nil
+}
+
+type scsiStateAttachmentConfig struct {
+	Path     string
+	ReadOnly bool
+	Type     string
+}
+
+type scsiStateAttachment struct {
+	Controller uint
+	LUN        uint
+	Config     *scsiStateAttachmentConfig
+	RefCount   uint
+}
+
+type scsiStateMountConfig struct {
+	ReadOnly bool
+	Options  []string
+}
+
+type scsiStateMount struct {
+	Controller uint
+	LUN        uint
+	Path       string
+	Config     scsiStateMountConfig
+	RefCount   uint
+}
+
+type scsiState struct {
+	Attachments []scsiStateAttachment
+	Mounts      []scsiStateMount
+	MountFmt    string
+}
+
+type SlotState struct {
+	RefCount uint
+	Path     string
+	ReadOnly bool
+	Type     string
+	EVDType  string
+}
+
+type AttachManagerState struct {
+	NumControllers       int
+	NumLUNSPerController int
+	Slots                map[uint]map[uint]*SlotState
+}
+
+type MountState struct {
+	Index            int
+	Controller       uint
+	LUN              uint
+	Partition        uint64
+	ReadOnly         bool
+	Encrypted        bool
+	Options          []string
+	EnsureFilesystem bool
+	Filesystem       string
+}
+
+type MountManagerState struct {
+	MountFmt string
+	Mount    []MountState
+}
+
+type ManagerState struct {
+	AttachManager *AttachManagerState
+	MountManager  *MountManagerState
+}
+
+func (am *AttachManager) State() *AttachManagerState {
+	ams := &AttachManagerState{
+		NumControllers:       am.numControllers,
+		NumLUNSPerController: am.numLUNsPerController,
+		Slots:                make(map[uint]map[uint]*SlotState),
+	}
+	for controller, luns := range am.slots {
+		for lun, att := range luns {
+			ams.Slots[uint(controller)] = make(map[uint]*SlotState)
+			slot := SlotState{
+				RefCount: att.refCount,
+				Path:     att.config.Path,
+				ReadOnly: att.config.ReadOnly,
+				Type:     att.config.Type,
+				EVDType:  att.config.EVDType,
+			}
+			ams.Slots[uint(controller)][uint(lun)] = &slot
+		}
+	}
+	return ams
+}
+
+func (mm *MountManager) State() *MountManagerState {
+	mms := &MountManagerState{
+		MountFmt: mm.mountFmt,
+	}
+	for _, m := range mm.mounts {
+		mms.Mount = append(mms.Mount, MountState{
+			Index:            m.index,
+			Controller:       m.controller,
+			LUN:              m.lun,
+			Partition:        m.config.Partition,
+			ReadOnly:         m.config.ReadOnly,
+			Encrypted:        m.config.Encrypted,
+			Options:          m.config.Options,
+			EnsureFilesystem: m.config.EnsureFileystem,
+			Filesystem:       m.config.Filesystem,
+		})
+	}
+	return mms
+}
+
+func (m *Manager) Save(ctx context.Context, path string) error {
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return err
+	}
+	state := scsiState{}
+	for i := range m.attachManager.slots {
+		for j := range m.attachManager.slots[i] {
+			s := m.attachManager.slots[i][j]
+			if s != nil && s.refCount > 0 {
+				a := scsiStateAttachment{
+					Controller: s.controller,
+					LUN:        s.lun,
+					RefCount:   s.refCount,
+				}
+				if s.config != nil {
+					a.Config = &scsiStateAttachmentConfig{
+						Path:     s.config.Path,
+						ReadOnly: s.config.ReadOnly,
+						Type:     s.config.Type,
+					}
+				}
+				state.Attachments = append(state.Attachments, a)
+			}
+		}
+	}
+	for _, m := range m.mountManager.mounts {
+		state.Mounts = append(state.Mounts, scsiStateMount{
+			Controller: m.controller,
+			LUN:        m.lun,
+			Path:       m.path,
+			Config: scsiStateMountConfig{
+				ReadOnly: m.config.ReadOnly,
+				Options:  m.config.Options,
+			},
+			RefCount: m.refCount,
+		})
+	}
+	state.MountFmt = m.mountManager.mountFmt
+	if err := statepkg.Write(filepath.Join(path, "state.json"), &state); err != nil {
+		return err
+	}
+	return nil
+}
+
+type ManagerRestorer struct {
+	state *scsiState
+}
+
+func RestoreManager(ctx context.Context, path string) (*ManagerRestorer, error) {
+	state, err := statepkg.Read[scsiState](filepath.Join(path, "state.json"))
+	if err != nil {
+		return nil, err
+	}
+	return &ManagerRestorer{state}, nil
+}
+
+func (mr *ManagerRestorer) Restore(
+	ctx context.Context,
+	hb HostBackend,
+	gb GuestBackend,
+	numControllers int,
+	numLUNsPerController int,
+) *Manager {
+	am := &AttachManager{
+		attacher:             hb,
+		unplugger:            gb,
+		numControllers:       numControllers,
+		numLUNsPerController: numLUNsPerController,
+		slots:                make([][]*attachment, numControllers),
+	}
+	for i := range am.slots {
+		am.slots[i] = make([]*attachment, numLUNsPerController)
+	}
+	for _, a := range mr.state.Attachments {
+		am.slots[a.Controller][a.LUN] = &attachment{
+			controller: a.Controller,
+			lun:        a.LUN,
+			config: &AttachConfig{
+				Path:     a.Config.Path,
+				ReadOnly: a.Config.ReadOnly,
+				Type:     a.Config.Type,
+			},
+			waitCh:   make(chan struct{}),
+			refCount: a.RefCount,
+		}
+		close(am.slots[a.Controller][a.LUN].waitCh)
+	}
+	mm := &MountManager{
+		mounter:  gb,
+		mounts:   make([]*mount, 0, len(mr.state.Mounts)),
+		mountFmt: mr.state.MountFmt,
+	}
+	for i, m := range mr.state.Mounts {
+		mm.mounts = append(mm.mounts, &mount{
+			path:       m.Path,
+			index:      i,
+			controller: m.Controller,
+			lun:        m.LUN,
+			config: &MountConfig{
+				ReadOnly: m.Config.ReadOnly,
+				Options:  m.Config.Options,
+			},
+			waitCh:   make(chan struct{}),
+			refCount: m.RefCount,
+		})
+		close(mm.mounts[i].waitCh)
+	}
+	return &Manager{am, mm}
 }

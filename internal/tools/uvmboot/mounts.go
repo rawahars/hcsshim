@@ -23,7 +23,7 @@ func mountSCSI(ctx context.Context, c *cli.Context, vm *uvm.UtilityVM) error {
 			m.host,
 			!m.writable,
 			vm.ID(),
-			&scsi.MountConfig{},
+			&scsi.DeviceConfig{},
 		)
 		if err != nil {
 			return fmt.Errorf("could not mount disk %s: %w", m.host, err)

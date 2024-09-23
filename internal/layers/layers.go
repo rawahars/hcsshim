@@ -42,6 +42,29 @@ type LCOWLayers struct {
 	ScratchVHDPath string
 }
 
+type LCOWLayers2 struct {
+	Scratch LCOWLayer2
+	Layers  []LCOWLayer2
+}
+
+type LCOWLayer2 interface {
+	isLCOWLayer2()
+}
+
+type LCOWLayerVHD struct {
+	VHDPath   string
+	Partition uint64
+}
+
+func (*LCOWLayerVHD) isLCOWLayer2() {}
+
+type LCOWLayerSCSI struct {
+	Controller uint
+	LUN        uint
+}
+
+func (*LCOWLayerSCSI) isLCOWLayer2() {}
+
 type lcowLayersCloser struct {
 	uvm                     *uvm.UtilityVM
 	guestCombinedLayersPath string
@@ -124,7 +147,7 @@ func MountLCOWLayers(ctx context.Context, containerID string, layers *LCOWLayers
 	}
 	log.G(ctx).WithField("hostPath", hostPath).Debug("mounting scratch VHD")
 
-	mConfig := &scsi.MountConfig{
+	mConfig := &scsi.DeviceConfig{
 		Encrypted: vm.ScratchEncryptionEnabled(),
 		// For scratch disks, we support formatting the disk if it is not already
 		// formatted.
@@ -366,7 +389,7 @@ func mountWCOWIsolatedLayers(ctx context.Context, containerID string, layerFolde
 	}
 	log.G(ctx).WithField("hostPath", hostPath).Debug("mounting scratch VHD")
 
-	scsiMount, err := vm.SCSIManager.AddVirtualDisk(ctx, hostPath, false, vm.ID(), &scsi.MountConfig{})
+	scsiMount, err := vm.SCSIManager.AddVirtualDisk(ctx, hostPath, false, vm.ID(), &scsi.DeviceConfig{})
 	if err != nil {
 		return "", nil, fmt.Errorf("failed to add SCSI scratch VHD: %s", err)
 	}
@@ -425,7 +448,7 @@ func addLCOWLayer(ctx context.Context, vm *uvm.UtilityVM, layer *LCOWLayer) (uvm
 		layer.VHDPath,
 		true,
 		"",
-		&scsi.MountConfig{
+		&scsi.DeviceConfig{
 			Partition: layer.Partition,
 			Options:   []string{"ro"},
 		},

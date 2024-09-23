@@ -24,13 +24,15 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
-	"github.com/Microsoft/hcsshim/internal/extendedtask"
+	"github.com/Microsoft/hcsshim/internal/ctrdpub"
 	hcslog "github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/shimdiag"
+	"github.com/Microsoft/hcsshim/internal/taskserver"
+	"github.com/Microsoft/hcsshim/internal/winapi"
 	"github.com/Microsoft/hcsshim/pkg/octtrpc"
 )
 
-var svc *service
+var svc task.TaskService
 
 var serveCommand = cli.Command{
 	Name:           "serve",
@@ -47,6 +49,17 @@ var serveCommand = cli.Command{
 		},
 	},
 	Action: func(ctx *cli.Context) error {
+
+		_, err := os.Stat(`c:\debugwait`)
+		if err == nil {
+			for {
+				if winapi.IsDebuggerPresent() {
+					break
+				}
+				time.Sleep(1 * time.Second)
+			}
+		}
+
 		// On Windows the serve command is internally used to actually create
 		// the process that hosts the containerd/ttrpc entrypoint to the Runtime
 		// V2 API's. The model requires this 2nd invocation of the shim process
@@ -175,20 +188,27 @@ var serveCommand = cli.Command{
 		}
 
 		ttrpcAddress := os.Getenv(ttrpcAddressEnv)
-		ttrpcEventPublisher, err := newEventPublisher(ttrpcAddress, namespaceFlag)
+		// ttrpcEventPublisher, err := newEventPublisher(ttrpcAddress, namespaceFlag)
+		// if err != nil {
+		// 	return err
+		// }
+		// defer func() {
+		// 	if err != nil {
+		// 		ttrpcEventPublisher.close()
+		// 	}
+		// }()
+		publisher, err := ctrdpub.NewPublisher(ttrpcAddress, namespaceFlag)
 		if err != nil {
 			return err
 		}
-		defer func() {
-			if err != nil {
-				ttrpcEventPublisher.close()
-			}
-		}()
 
 		// Setup the ttrpc server
-		svc, err = NewService(WithEventPublisher(ttrpcEventPublisher),
-			WithTID(idFlag),
-			WithIsSandbox(ctx.Bool("is-sandbox")))
+		closeCh := make(chan struct{})
+		coreSvc := taskserver.NewService(closeCh, publisher)
+		taskSvc := taskserver.NewInstrumentedService(coreSvc)
+		// svc, err = NewService(WithEventPublisher(ttrpcEventPublisher),
+		// 	WithTID(idFlag),
+		// 	WithIsSandbox(ctx.Bool("is-sandbox")))
 		if err != nil {
 			return fmt.Errorf("failed to create new service: %w", err)
 		}
@@ -198,9 +218,10 @@ var serveCommand = cli.Command{
 			return err
 		}
 		defer s.Close()
-		task.RegisterTaskService(s, svc)
-		shimdiag.RegisterShimDiagService(s, svc)
-		extendedtask.RegisterExtendedTaskService(s, svc)
+		task.RegisterTaskService(s, taskSvc)
+		shimdiag.RegisterShimDiagService(s, coreSvc)
+		// extendedtask.RegisterExtendedTaskService(s, svc)
+		// save.RegisterSaveService(s, svc)
 
 		sl, err := winio.ListenPipe(socket, nil)
 		if err != nil {
@@ -246,12 +267,12 @@ var serveCommand = cli.Command{
 		select {
 		case err = <-serrs:
 			// the ttrpc server shutdown without processing a shutdown request
-		case <-svc.Done():
-			if !svc.gracefulShutdown {
-				// Return immediately, but still close ttrpc server, pipes, and spans
-				// Shouldn't need to os.Exit without clean up (ie, deferred `.Close()`s)
-				return nil
-			}
+		case <-closeCh:
+			// if !svc.gracefulShutdown {
+			// 	// Return immediately, but still close ttrpc server, pipes, and spans
+			// 	// Shouldn't need to os.Exit without clean up (ie, deferred `.Close()`s)
+			// 	return nil
+			// }
 			// currently the ttrpc shutdown is the only clean up to wait on
 			sctx, cancel := context.WithTimeout(context.Background(), gracefulShutdownTimeout)
 			defer cancel()

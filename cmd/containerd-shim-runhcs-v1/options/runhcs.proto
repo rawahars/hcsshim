@@ -107,6 +107,15 @@ message Options {
 
 	// scrub_logs enables removing environment variables and other potentially sensitive information from logs
 	bool scrub_logs = 20;
+
+	BundleType bundle_type = 22;
+}
+
+enum BundleType {
+	BUNDLE_OCI = 0;
+	BUNDLE_POD_RESTORE = 1;
+	BUNDLE_CONTAINER_RESTORE = 2;
+	BUNDLE_POD_LM = 3;
 }
 
 // ProcessDetails contains additional information about a process. This is the additional

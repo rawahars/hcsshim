@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/Microsoft/go-winio"
@@ -15,6 +17,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/oc"
+	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
 )
@@ -25,14 +28,15 @@ const (
 
 // Process represents a process in a container or container host.
 type Process struct {
-	gc                    *GuestConnection
-	cid                   string
-	id                    uint32
-	waitCall              *rpc
-	waitResp              containerWaitForProcessResponse
-	stdin, stdout, stderr *ioChannel
-	stdinCloseWriteOnce   sync.Once
-	stdinCloseWriteErr    error
+	gc                                *GuestConnection
+	cid                               string
+	id                                uint32
+	waitCall                          *rpc
+	waitResp                          containerWaitForProcessResponse
+	stdin, stdout, stderr             *ioChannel
+	stdinCloseWriteOnce               sync.Once
+	stdinCloseWriteErr                error
+	stdinPort, stdoutPort, stderrPort uint32
 }
 
 var _ cow.Process = &Process{}
@@ -42,14 +46,26 @@ type baseProcessParams struct {
 }
 
 func (gc *GuestConnection) exec(ctx context.Context, cid string, params interface{}) (_ cow.Process, err error) {
-	b, err := json.Marshal(params)
+	pid, err := gc.execInner(ctx, cid, params)
 	if err != nil {
 		return nil, err
+	}
+	p, err := gc.OpenProcess(ctx, cid, pid)
+	if err != nil {
+		return nil, err
+	}
+	return p, nil
+}
+
+func (gc *GuestConnection) execInner(ctx context.Context, cid string, params interface{}) (pid uint32, err error) {
+	b, err := json.Marshal(params)
+	if err != nil {
+		return 0, err
 	}
 	var bp baseProcessParams
 	err = json.Unmarshal(b, &bp)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 
 	req := containerExecuteProcess{
@@ -78,7 +94,7 @@ func (gc *GuestConnection) exec(ctx context.Context, cid string, params interfac
 	if bp.CreateStdInPipe {
 		p.stdin, vsockSettings.StdIn, err = gc.newIoChannel()
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		g := winio.VsockServiceID(vsockSettings.StdIn)
 		hvsockSettings.StdIn = &g
@@ -86,7 +102,7 @@ func (gc *GuestConnection) exec(ctx context.Context, cid string, params interfac
 	if bp.CreateStdOutPipe {
 		p.stdout, vsockSettings.StdOut, err = gc.newIoChannel()
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		g := winio.VsockServiceID(vsockSettings.StdOut)
 		hvsockSettings.StdOut = &g
@@ -94,19 +110,30 @@ func (gc *GuestConnection) exec(ctx context.Context, cid string, params interfac
 	if bp.CreateStdErrPipe {
 		p.stderr, vsockSettings.StdErr, err = gc.newIoChannel()
 		if err != nil {
-			return nil, err
+			return 0, err
 		}
 		g := winio.VsockServiceID(vsockSettings.StdErr)
 		hvsockSettings.StdErr = &g
 	}
+	p.stdinPort, p.stdoutPort, p.stderrPort = vsockSettings.StdIn, vsockSettings.StdOut, vsockSettings.StdErr
 
 	var resp containerExecuteProcessResponse
 	err = gc.brdg.RPC(ctx, rpcExecuteProcess, &req, &resp, false)
 	if err != nil {
-		return nil, err
+		return 0, err
 	}
 	p.id = resp.ProcessID
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	gc.procs[procIdent{cid, p.id}] = p
 	log.G(ctx).WithField("pid", p.id).Debug("created process pid")
+	return p.id, nil
+}
+
+func (gc *GuestConnection) OpenProcess(ctx context.Context, cid string, pid uint32) (_ cow.Process, err error) {
+	gc.mu.Lock()
+	defer gc.mu.Unlock()
+	p := gc.procs[procIdent{cid, pid}]
 	// Start a wait message.
 	waitReq := containerWaitForProcess{
 		requestBase: makeRequest(ctx, cid),
@@ -119,6 +146,29 @@ func (gc *GuestConnection) exec(ctx context.Context, cid string, params interfac
 	}
 	go p.waitBackground()
 	return p, nil
+}
+
+type processState struct {
+	CID                               string
+	PID                               uint32
+	StdinPort, StdoutPort, StderrPort uint32
+}
+
+func (p *Process) Save(ctx context.Context, path string) error {
+	if err := os.MkdirAll(path, 0755); err != nil {
+		return err
+	}
+	s := processState{
+		CID:        p.cid,
+		PID:        p.id,
+		StdinPort:  p.stdinPort,
+		StdoutPort: p.stdoutPort,
+		StderrPort: p.stderrPort,
+	}
+	if err := statepkg.Write(filepath.Join(path, "state.json"), &s); err != nil {
+		return err
+	}
+	return nil
 }
 
 // Close releases resources associated with the process and closes the
@@ -139,6 +189,9 @@ func (p *Process) Close() error {
 	if err := p.stderr.Close(); err != nil {
 		log.G(ctx).WithError(err).Warn("close stderr failed")
 	}
+	p.gc.mu.Lock()
+	defer p.gc.mu.Unlock()
+	delete(p.gc.procs, procIdent{p.cid, p.id})
 	return nil
 }
 

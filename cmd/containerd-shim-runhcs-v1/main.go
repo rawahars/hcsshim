@@ -3,7 +3,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -20,7 +19,6 @@ import (
 
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oc"
-	"github.com/Microsoft/hcsshim/internal/shimdiag"
 	hcsversion "github.com/Microsoft/hcsshim/internal/version"
 
 	// register common types spec with typeurl
@@ -55,17 +53,17 @@ var (
 )
 
 func etwCallback(sourceID guid.GUID, state etw.ProviderState, level etw.Level, matchAnyKeyword uint64, matchAllKeyword uint64, filterData uintptr) {
-	if state == etw.ProviderStateCaptureState {
-		resp, err := svc.DiagStacks(context.Background(), &shimdiag.StacksRequest{})
-		if err != nil {
-			return
-		}
-		log := logrus.WithField("tid", svc.tid)
-		log.WithField("stack", resp.Stacks).Info("goroutine stack dump")
-		if resp.GuestStacks != "" {
-			log.WithField("stack", resp.GuestStacks).Info("guest stack dump")
-		}
-	}
+	// if state == etw.ProviderStateCaptureState {
+	// 	resp, err := svc.DiagStacks(context.Background(), &shimdiag.StacksRequest{})
+	// 	if err != nil {
+	// 		return
+	// 	}
+	// 	log := logrus.WithField("tid", svc.tid)
+	// 	log.WithField("stack", resp.Stacks).Info("goroutine stack dump")
+	// 	if resp.GuestStacks != "" {
+	// 		log.WithField("stack", resp.GuestStacks).Info("guest stack dump")
+	// 	}
+	// }
 }
 
 func main() {

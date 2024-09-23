@@ -6,11 +6,13 @@ import (
 	"fmt"
 
 	"github.com/Microsoft/hcsshim/internal/gcs"
+	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	"github.com/Microsoft/hcsshim/internal/hcs/resourcepaths"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
+	vm "github.com/Microsoft/hcsshim/internal/vm2"
 )
 
 // The concrete types here (not the HostBackend/GuestBackend interfaces) would be a good option
@@ -31,14 +33,14 @@ type GuestBackend interface {
 
 // attacher provides the low-level operations for attaching a SCSI device to a VM.
 type attacher interface {
-	attach(ctx context.Context, controller, lun uint, config *attachConfig) error
+	attach(ctx context.Context, controller, lun uint, config *AttachConfig) error
 	detach(ctx context.Context, controller, lun uint) error
 }
 
 // mounter provides the low-level operations for mounting a SCSI device inside the guest OS.
 type mounter interface {
-	mount(ctx context.Context, controller, lun uint, path string, config *mountConfig) error
-	unmount(ctx context.Context, controller, lun uint, path string, config *mountConfig) error
+	mount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error
+	unmount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error
 }
 
 // unplugger provides the low-level operations for cleanly removing a SCSI device inside the guest OS.
@@ -57,14 +59,14 @@ func NewHCSHostBackend(system *hcs.System) HostBackend {
 	return &hcsHostBackend{system}
 }
 
-func (hhb *hcsHostBackend) attach(ctx context.Context, controller, lun uint, config *attachConfig) error {
+func (hhb *hcsHostBackend) attach(ctx context.Context, controller, lun uint, config *AttachConfig) error {
 	req := &hcsschema.ModifySettingRequest{
 		RequestType: guestrequest.RequestTypeAdd,
 		Settings: hcsschema.Attachment{
-			Path:                      config.path,
-			Type_:                     config.typ,
-			ReadOnly:                  config.readOnly,
-			ExtensibleVirtualDiskType: config.evdType,
+			Path:                      config.Path,
+			Type_:                     config.Type,
+			ReadOnly:                  config.ReadOnly,
+			ExtensibleVirtualDiskType: config.EVDType,
 		},
 		ResourcePath: fmt.Sprintf(resourcepaths.SCSIResourceFormat, guestrequest.ScsiControllerGuids[controller], lun),
 	}
@@ -94,7 +96,7 @@ func NewBridgeGuestBackend(gc *gcs.GuestConnection, osType string) GuestBackend 
 	return &bridgeGuestBackend{gc, osType}
 }
 
-func (bgb *bridgeGuestBackend) mount(ctx context.Context, controller, lun uint, path string, config *mountConfig) error {
+func (bgb *bridgeGuestBackend) mount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error {
 	req, err := mountRequest(controller, lun, path, config, bgb.osType)
 	if err != nil {
 		return err
@@ -102,7 +104,7 @@ func (bgb *bridgeGuestBackend) mount(ctx context.Context, controller, lun uint, 
 	return bgb.gc.Modify(ctx, req)
 }
 
-func (bgb *bridgeGuestBackend) unmount(ctx context.Context, controller, lun uint, path string, config *mountConfig) error {
+func (bgb *bridgeGuestBackend) unmount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error {
 	req, err := unmountRequest(controller, lun, path, config, bgb.osType)
 	if err != nil {
 		return err
@@ -121,6 +123,70 @@ func (bgb *bridgeGuestBackend) unplug(ctx context.Context, controller, lun uint)
 	return bgb.gc.Modify(ctx, req)
 }
 
+var _ attacher = &vmHostBackend{}
+
+type vmHostBackend struct {
+	vm *vm.VM
+}
+
+func NewVMHostBackend(vm *vm.VM) HostBackend {
+	return &vmHostBackend{vm}
+}
+
+func (b *vmHostBackend) attach(ctx context.Context, controller, lun uint, config *AttachConfig) error {
+	var typ vm.SCSIAttachmentType
+	switch config.Type {
+	case "VirtualDisk":
+		typ = vm.SCSIAttachmentTypeVHD
+	case "PassThru":
+		typ = vm.SCSIAttachmentTypePassThru
+	case "ExtensibleVirtualDisk":
+		typ = vm.SCSIAttachmentTypeEVD
+	default:
+		return fmt.Errorf("invalid SCSI type: %s", config.Type)
+	}
+	return b.vm.AttachSCSI(ctx, controller, lun, &vm.SCSIAttachment{
+		Type:     typ,
+		Path:     config.Path,
+		ReadOnly: config.ReadOnly,
+		EVDType:  config.EVDType,
+	})
+}
+
+func (b *vmHostBackend) detach(ctx context.Context, controller, lun uint) error {
+	return b.vm.DetachSCSI(ctx, controller, lun)
+}
+
+var _ mounter = &linuxGuestManagerBackend{}
+var _ unplugger = &linuxGuestManagerBackend{}
+
+type linuxGuestManagerBackend struct {
+	gm *guestmanager.LinuxManager
+}
+
+func NewLinuxGuestManagerBackend(gm *guestmanager.LinuxManager) GuestBackend {
+	return &linuxGuestManagerBackend{gm}
+}
+
+func (b *linuxGuestManagerBackend) mount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error {
+	return b.gm.MountSCSI(ctx, uint8(controller), uint8(lun), path, &guestmanager.SCSIMountOptions{
+		Partition:        config.Partition,
+		ReadOnly:         config.ReadOnly,
+		Encrypted:        config.Encrypted,
+		Options:          config.Options,
+		EnsureFilesystem: config.EnsureFileystem,
+		Filesystem:       config.Filesystem,
+	})
+}
+
+func (b *linuxGuestManagerBackend) unmount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error {
+	return b.gm.UnmountSCSI(ctx, uint8(controller), uint8(lun), path, config.Partition)
+}
+
+func (b *linuxGuestManagerBackend) unplug(ctx context.Context, controller, lun uint) error {
+	return b.gm.UnplugSCSI(ctx, uint8(controller), uint8(lun))
+}
+
 var _ mounter = &hcsGuestBackend{}
 var _ unplugger = &hcsGuestBackend{}
 
@@ -136,7 +202,7 @@ func NewHCSGuestBackend(system *hcs.System, osType string) GuestBackend {
 	return &hcsGuestBackend{system, osType}
 }
 
-func (hgb *hcsGuestBackend) mount(ctx context.Context, controller, lun uint, path string, config *mountConfig) error {
+func (hgb *hcsGuestBackend) mount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error {
 	req, err := mountRequest(controller, lun, path, config, hgb.osType)
 	if err != nil {
 		return err
@@ -144,7 +210,7 @@ func (hgb *hcsGuestBackend) mount(ctx context.Context, controller, lun uint, pat
 	return hgb.system.Modify(ctx, &hcsschema.ModifySettingRequest{GuestRequest: req})
 }
 
-func (hgb *hcsGuestBackend) unmount(ctx context.Context, controller, lun uint, path string, config *mountConfig) error {
+func (hgb *hcsGuestBackend) unmount(ctx context.Context, controller, lun uint, path string, config *MountConfig) error {
 	req, err := unmountRequest(controller, lun, path, config, hgb.osType)
 	if err != nil {
 		return err
@@ -163,7 +229,7 @@ func (hgb *hcsGuestBackend) unplug(ctx context.Context, controller, lun uint) er
 	return hgb.system.Modify(ctx, &hcsschema.ModifySettingRequest{GuestRequest: req})
 }
 
-func mountRequest(controller, lun uint, path string, config *mountConfig, osType string) (guestrequest.ModificationRequest, error) {
+func mountRequest(controller, lun uint, path string, config *MountConfig, osType string) (guestrequest.ModificationRequest, error) {
 	req := guestrequest.ModificationRequest{
 		ResourceType: guestresource.ResourceTypeMappedVirtualDisk,
 		RequestType:  guestrequest.RequestTypeAdd,
@@ -174,8 +240,8 @@ func mountRequest(controller, lun uint, path string, config *mountConfig, osType
 		if controller != 0 {
 			return guestrequest.ModificationRequest{}, errors.New("WCOW only supports SCSI controller 0")
 		}
-		if config.encrypted || len(config.options) != 0 ||
-			config.ensureFilesystem || config.filesystem != "" || config.partition != 0 {
+		if config.Encrypted || len(config.Options) != 0 ||
+			config.EnsureFileystem || config.Filesystem != "" || config.Partition != 0 {
 			return guestrequest.ModificationRequest{},
 				errors.New("WCOW does not support encrypted, verity, guest options, partitions, specifying mount filesystem, or ensuring filesystem on mounts")
 		}
@@ -188,12 +254,12 @@ func mountRequest(controller, lun uint, path string, config *mountConfig, osType
 			MountPath:        path,
 			Controller:       uint8(controller),
 			Lun:              uint8(lun),
-			Partition:        config.partition,
-			ReadOnly:         config.readOnly,
-			Encrypted:        config.encrypted,
-			Options:          config.options,
-			EnsureFilesystem: config.ensureFilesystem,
-			Filesystem:       config.filesystem,
+			Partition:        config.Partition,
+			ReadOnly:         config.ReadOnly,
+			Encrypted:        config.Encrypted,
+			Options:          config.Options,
+			EnsureFilesystem: config.EnsureFileystem,
+			Filesystem:       config.Filesystem,
 		}
 	default:
 		return guestrequest.ModificationRequest{}, fmt.Errorf("unsupported os type: %s", osType)
@@ -201,7 +267,7 @@ func mountRequest(controller, lun uint, path string, config *mountConfig, osType
 	return req, nil
 }
 
-func unmountRequest(controller, lun uint, path string, config *mountConfig, osType string) (guestrequest.ModificationRequest, error) {
+func unmountRequest(controller, lun uint, path string, config *MountConfig, osType string) (guestrequest.ModificationRequest, error) {
 	req := guestrequest.ModificationRequest{
 		ResourceType: guestresource.ResourceTypeMappedVirtualDisk,
 		RequestType:  guestrequest.RequestTypeRemove,
@@ -216,7 +282,7 @@ func unmountRequest(controller, lun uint, path string, config *mountConfig, osTy
 		req.Settings = guestresource.LCOWMappedVirtualDisk{
 			MountPath:  path,
 			Lun:        uint8(lun),
-			Partition:  config.partition,
+			Partition:  config.Partition,
 			Controller: uint8(controller),
 		}
 	default:

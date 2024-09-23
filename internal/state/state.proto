@@ -1,0 +1,112 @@
+syntax = "proto3";
+
+package containerd.runhcs.v1.state;
+
+option go_package = "github.com/Microsoft/hcsshim/internal/state;state";
+
+message TaskServerState {
+    SandboxState sandbox = 1;
+    map<string, TaskState> tasks = 2;
+}
+
+message SandboxState {
+    VMState vm = 1;
+    GCState agent = 2;
+}
+
+message VMState {
+    VMConfig config = 1;
+    bytes compat_info = 2;
+    repeated Resource resources = 3;
+}
+
+message VMConfig {
+    int32 vp_count = 1;
+    uint64 mem_count_mb = 2;
+    bool va_backed = 3;
+    map<uint32, SCSIController> scsi = 4;
+    map<string, NIC> nics = 5;
+}
+
+message NIC {
+    string endpoint_id = 2;
+    string mac_address = 3;
+}
+
+message SCSIController {
+    map<uint32, SCSIAttachment> attachments = 1;
+}
+
+message SCSIAttachment {
+    enum AttachmentType {
+        VirtualDisk = 0;
+        PassThru = 1;
+        ExtensibleVirtualDisk = 2;
+    }
+
+    AttachmentType type = 1;
+    string path = 2;
+    bool read_only = 3;
+    string evd_type = 4;
+}
+
+message Resource {
+    message Layers {
+        message SCSI {
+            uint32 controller = 1;
+            uint32 lun = 2;
+        }
+
+        string task_id = 1;
+        SCSI Scratch = 2;
+        repeated SCSI ReadOnlyLayers = 3;
+    }
+
+    oneof type {
+        Layers layers = 1;
+    }
+}
+
+message GuestState {
+
+}
+
+message GuestStateDisconnected {
+    GuestState common = 1;
+}
+
+message GuestStateConnected {
+    GuestState common = 1;
+}
+
+message GCState {
+    repeated Process processes = 1;
+    uint32 next_port = 2;
+}
+
+message Process {
+    string container_id = 1;
+    uint32 process_id = 2;
+    uint32 stdin_port = 3;
+    uint32 stdout_port = 4;
+    uint32 stderr_port = 5;
+}
+
+//	TaskID     string
+//	ExecID     string
+//	Bundle     string
+//	Stdin      string
+//	Stdout     string
+//	Stderr     string
+//	Terminal   bool
+//	Pid        uint32
+//	Status     taskapi.Status
+//	ExitStatus uint32
+//	ExitedAt   time.Time
+
+message TaskState {
+    string task_id = 1;
+    string exec_id = 2;
+    bool terminal = 3;
+    uint32 pid = 4;
+}
