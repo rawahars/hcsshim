@@ -208,6 +208,14 @@ func validate(config *Config, oc *optConfig) error {
 		return fmt.Errorf("only one of restore/LM/open is allowed")
 	}
 
+	// Setup empty maps.
+	if config.SCSI == nil {
+		config.SCSI = make(map[uint]SCSIController)
+	}
+	if config.NICs == nil {
+		config.NICs = make(map[string]NIC)
+	}
+
 	return nil
 }
 
@@ -375,11 +383,14 @@ func (vm *VM) LMPrepare(ctx context.Context) ([]byte, error) {
 	if err := vm.hcsSystem.HcsInitializeLiveMigrationOnSource(ctx); err != nil {
 		return nil, err
 	}
-	props, err := vm.hcsSystem.PropertiesV2(ctx, hcsschema.PTCompatibilityInfo)
+	props, err := vm.hcsSystem.PropertiesV3(ctx, &hcsschema.PropertyQuery{
+		Queries: map[string]interface{}{
+			"CompatibilityInfo": nil,
+		}})
 	if err != nil {
 		return nil, err
 	}
-	return props.PropertyResponses.CompatibilityInfo.Response.Data, nil
+	return []byte(props.Responses.CompatibilityInfo.Response.Data), nil
 }
 
 func (vm *VM) LMTransfer(ctx context.Context, socket uintptr, isSource bool) error {

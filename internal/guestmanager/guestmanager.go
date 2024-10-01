@@ -118,21 +118,21 @@ func (gm *LinuxManager) Start(ctx context.Context) error {
 		}
 		return nil
 	})
-	g.Go(func() error {
-		if err := func() error {
-			_, err := gm.logListener.Accept()
-			if err != nil {
-				return err
-			}
-			if err := gm.logListener.Close(); err != nil {
-				return err
-			}
-			return nil
-		}(); err != nil {
-			return fmt.Errorf("log init: %w", err)
-		}
-		return nil
-	})
+	// g.Go(func() error {
+	// 	if err := func() error {
+	// 		_, err := gm.logListener.Accept()
+	// 		if err != nil {
+	// 			return err
+	// 		}
+	// 		if err := gm.logListener.Close(); err != nil {
+	// 			return err
+	// 		}
+	// 		return nil
+	// 	}(); err != nil {
+	// 		return fmt.Errorf("log init: %w", err)
+	// 	}
+	// 	return nil
+	// })
 	g.Go(func() error {
 		if err := func() (err error) {
 			gm.gc, gm.guestCaps, gm.protocol, err = connectGCS(ctx, gm.gcsListener, gm.listenCreator, gm.nextPort, gm.procs)

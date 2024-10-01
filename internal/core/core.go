@@ -41,7 +41,6 @@ type Ctr interface {
 }
 
 type Migratable interface {
-	Save(ctx context.Context, path string) error
 	LMPrepare(ctx context.Context) (*statepkg.SandboxState, *Resources, error)
 	LMTransfer(ctx context.Context, socket uintptr) error
 	LMFinalize(ctx context.Context) error

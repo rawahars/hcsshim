@@ -142,11 +142,12 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 			gm.Close()
 		}
 	}()
-	if err := gm.Start(ctx); err != nil {
-		return nil, fmt.Errorf("guest manager start: %w", err)
-	}
+	// TODO: Do we need to start gm listening before we start the vm?
 	if err := vm.Start(ctx); err != nil {
 		return nil, fmt.Errorf("vm start: %w", err)
+	}
+	if err := gm.Start(ctx); err != nil {
+		return nil, fmt.Errorf("guest manager start: %w", err)
 	}
 	defer func() {
 		if err != nil {
@@ -215,6 +216,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 	return &Sandbox{
 		vm:             vm,
 		gm:             gm,
+		gt:             gt,
 		translator:     translator,
 		pauseCtr:       pauseCtr,
 		ctrs:           make(map[string]*ctr),

@@ -70,10 +70,12 @@ func SCSIAttachmentTypeToInternal(in SCSIAttachment_AttachmentType) vm.SCSIAttac
 	}
 }
 
-func VMConfigFromInternal(in *vm.Config) (out *VMConfig) {
-	out.VpCount = in.ProcessorCount
-	out.MemCountMb = in.MemoryMB
-	out.VaBacked = in.VABacked
+func VMConfigFromInternal(in *vm.Config) *VMConfig {
+	out := &VMConfig{
+		VpCount:    in.ProcessorCount,
+		MemCountMb: in.MemoryMB,
+		VaBacked:   in.VABacked,
+	}
 	out.Scsi = make(map[uint32]*SCSIController)
 	for i, c := range in.SCSI {
 		controller := &SCSIController{Attachments: make(map[uint32]*SCSIAttachment)}

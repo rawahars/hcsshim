@@ -25,6 +25,7 @@ import (
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/internal/ctrdpub"
+	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	hcslog "github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/shimdiag"
 	"github.com/Microsoft/hcsshim/internal/taskserver"
@@ -96,10 +97,6 @@ var serveCommand = cli.Command{
 		} else if newShimOpts != nil {
 			// We received a valid shim options struct.
 			shimOpts = newShimOpts
-		}
-
-		if shimOpts.Debug && shimOpts.LogLevel != "" {
-			logrus.Warning("Both Debug and LogLevel specified, Debug will be overridden")
 		}
 
 		// For now keep supporting the debug option, this used to be the only way to specify a different logging
@@ -220,6 +217,7 @@ var serveCommand = cli.Command{
 		defer s.Close()
 		task.RegisterTaskService(s, taskSvc)
 		shimdiag.RegisterShimDiagService(s, coreSvc)
+		lmproto.RegisterMigrationService(s, coreSvc)
 		// extendedtask.RegisterExtendedTaskService(s, svc)
 		// save.RegisterSaveService(s, svc)
 

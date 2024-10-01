@@ -562,6 +562,38 @@ func (computeSystem *System) hcsPropertiesV2Query(ctx context.Context, types []h
 	return props, nil
 }
 
+func (computeSystem *System) PropertiesV3(ctx context.Context, query *hcsschema.PropertyQuery) (*hcsschema.PropertyResults, error) {
+	computeSystem.handleLock.RLock()
+	defer computeSystem.handleLock.RUnlock()
+
+	operation := "hcs::System::PropertiesV3"
+
+	if computeSystem.handle == 0 {
+		return nil, makeSystemError(computeSystem, operation, ErrAlreadyClosed, nil)
+	}
+
+	queryBytes, err := json.Marshal(query)
+	if err != nil {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+
+	propertiesJSON, resultJSON, err := vmcompute.HcsGetComputeSystemProperties(ctx, computeSystem.handle, string(queryBytes))
+	events := processHcsResult(ctx, resultJSON)
+	if err != nil {
+		return nil, makeSystemError(computeSystem, operation, err, events)
+	}
+
+	if propertiesJSON == "" {
+		return nil, ErrUnexpectedValue
+	}
+	props := &hcsschema.PropertyResults{}
+	if err := json.Unmarshal([]byte(propertiesJSON), props); err != nil {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+
+	return props, nil
+}
+
 // PropertiesV2 returns the requested compute systems properties targeting a V2 schema compute system.
 func (computeSystem *System) PropertiesV2(ctx context.Context, types ...hcsschema.PropertyType) (_ *hcsschema.Properties, err error) {
 	computeSystem.handleLock.RLock()

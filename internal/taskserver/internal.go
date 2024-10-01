@@ -99,21 +99,6 @@ func (s *Sandbox) get(taskID, execID string) (core.GenericCompute, *State, error
 	return exec.Process, exec.State, nil
 }
 
-func (s *Sandbox) startSave(ctx context.Context, path string) (any, error) {
-	mig, ok := s.Sandbox.(core.Migratable)
-	if !ok {
-		return nil, fmt.Errorf("sandbox does not support migration")
-	}
-	if err := mig.Save(ctx, filepath.Join(path, "sandbox")); err != nil {
-		return nil, err
-	}
-	return nil, fmt.Errorf("not implemented")
-}
-
-func (s *Sandbox) completeSave(ctx context.Context) error {
-	return fmt.Errorf("not implemented")
-}
-
 func (s *Sandbox) newOCIContainer(ctx context.Context, shimOpts *runhcsopts.Options, req *task.CreateTaskRequest) (err error) {
 	spec, err := getOCISpec(ctx, req.Bundle, shimOpts)
 	if err != nil {

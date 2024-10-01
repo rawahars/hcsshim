@@ -57,7 +57,8 @@ func (gt *guestThing) DoTheThing(ctx context.Context, id string, gc *guestConfig
 		switch layer := layer.(type) {
 		case *layers.LCOWLayerSCSI:
 			config := &scsi.MountConfig{
-				Options: []string{"ro"},
+				ReadOnly: true,
+				Options:  []string{"ro"},
 			}
 			layerMount, err := gt.scsiMounter.Mount(ctx, layer.Controller, layer.LUN, config)
 			if err != nil {

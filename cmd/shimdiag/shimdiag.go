@@ -21,6 +21,7 @@ func main() {
 		stacksCommand,
 		tasksCommand,
 		shareCommand,
+		lmPrepareCommand,
 	}
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
