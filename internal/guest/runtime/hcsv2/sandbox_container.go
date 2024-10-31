@@ -71,26 +71,29 @@ func setupSandboxContainerSpec(ctx context.Context, id string, spec *oci.Spec) (
 	}
 
 	// Write resolv.conf
-	ns, err := getNetworkNamespace(getNetworkNamespaceID(spec))
-	if err != nil {
-		return err
-	}
-	var searches, servers []string
-	for _, n := range ns.Adapters() {
-		if len(n.DNSSuffix) > 0 {
-			searches = network.MergeValues(searches, strings.Split(n.DNSSuffix, ","))
+	nsid := getNetworkNamespaceID(spec)
+	if nsid != "" {
+		ns, err := getNetworkNamespace(nsid)
+		if err != nil {
+			return err
 		}
-		if len(n.DNSServerList) > 0 {
-			servers = network.MergeValues(servers, strings.Split(n.DNSServerList, ","))
+		var searches, servers []string
+		for _, n := range ns.Adapters() {
+			if len(n.DNSSuffix) > 0 {
+				searches = network.MergeValues(searches, strings.Split(n.DNSSuffix, ","))
+			}
+			if len(n.DNSServerList) > 0 {
+				servers = network.MergeValues(servers, strings.Split(n.DNSServerList, ","))
+			}
 		}
-	}
-	resolvContent, err := network.GenerateResolvConfContent(ctx, searches, servers, nil)
-	if err != nil {
-		return errors.Wrap(err, "failed to generate sandbox resolv.conf content")
-	}
-	sandboxResolvPath := getSandboxResolvPath(id)
-	if err := os.WriteFile(sandboxResolvPath, []byte(resolvContent), 0644); err != nil {
-		return errors.Wrap(err, "failed to write sandbox resolv.conf")
+		resolvContent, err := network.GenerateResolvConfContent(ctx, searches, servers, nil)
+		if err != nil {
+			return errors.Wrap(err, "failed to generate sandbox resolv.conf content")
+		}
+		sandboxResolvPath := getSandboxResolvPath(id)
+		if err := os.WriteFile(sandboxResolvPath, []byte(resolvContent), 0644); err != nil {
+			return errors.Wrap(err, "failed to write sandbox resolv.conf")
+		}
 	}
 
 	// User.Username is generally only used on Windows, but as there's no (easy/fast at least) way to grab

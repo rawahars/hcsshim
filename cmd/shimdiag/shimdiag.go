@@ -22,6 +22,17 @@ func main() {
 		tasksCommand,
 		shareCommand,
 		lmPrepareCommand,
+		lmListenCommand,
+		lmAcceptCommand,
+		lmDialCommand,
+		lmTransferCommand,
+		lmFinalizeCommand,
+		createCommand,
+		pipeCommand,
+		startCommand,
+		eventsCommand,
+		json2pbCommand,
+		pb2jsonCommand,
 	}
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)

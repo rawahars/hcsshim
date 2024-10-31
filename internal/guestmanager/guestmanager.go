@@ -96,28 +96,30 @@ func (gm *LinuxManager) Close() (retErr error) {
 	return
 }
 
-func (gm *LinuxManager) Start(ctx context.Context) error {
+func (gm *LinuxManager) Start(ctx context.Context, freshStart bool) error {
 	var g errgroup.Group
 
-	g.Go(func() error {
-		if err := func() error {
-			c, err := gm.entropyListener.Accept()
-			if err != nil {
-				return err
-			}
-			defer c.Close()
-			if err := gm.entropyListener.Close(); err != nil {
-				return err
-			}
-			if _, err := io.CopyN(c, rand.Reader, 512); err != nil {
-				return err
+	if freshStart {
+		g.Go(func() error {
+			if err := func() error {
+				c, err := gm.entropyListener.Accept()
+				if err != nil {
+					return err
+				}
+				defer c.Close()
+				if err := gm.entropyListener.Close(); err != nil {
+					return err
+				}
+				if _, err := io.CopyN(c, rand.Reader, 512); err != nil {
+					return err
+				}
+				return nil
+			}(); err != nil {
+				return fmt.Errorf("entropy init: %w", err)
 			}
 			return nil
-		}(); err != nil {
-			return fmt.Errorf("entropy init: %w", err)
-		}
-		return nil
-	})
+		})
+	}
 	// g.Go(func() error {
 	// 	if err := func() error {
 	// 		_, err := gm.logListener.Accept()
@@ -242,6 +244,14 @@ func (gm *LinuxManager) CreateContainer(ctx context.Context, id string, config a
 	return gm.gc.CreateContainer(ctx, id, config)
 }
 
+func (gm *LinuxManager) OpenContainer(ctx context.Context, id string) (cow.Container, error) {
+	return gm.gc.OpenContainer(ctx, id)
+}
+
+func (gm *LinuxManager) OpenProcess2(ctx context.Context, pid uint32) (cow.Process, error) {
+	panic("not implemented")
+}
+
 type SCSIMountOptions struct {
 	Partition        uint64
 	ReadOnly         bool
@@ -328,6 +338,10 @@ func (gm *LinuxManager) MountOverlayFS(ctx context.Context, cid string, path, sc
 
 func (gm *LinuxManager) CreateProcess(ctx context.Context, config interface{}) (cow.Process, error) {
 	return gm.gc.CreateProcess(ctx, config)
+}
+
+func (gm *LinuxManager) OpenProcess(ctx context.Context, cid string, pid uint32) (cow.Process, error) {
+	return gm.gc.OpenProcess(ctx, cid, pid)
 }
 
 func (gm *LinuxManager) OS() string {

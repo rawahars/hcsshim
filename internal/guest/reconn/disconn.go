@@ -77,4 +77,5 @@ func (d *Disconn) Reconnect() error {
 	d.c = c
 	d.disconnecting.Store(false)
 	close(d.discCh)
+	return nil
 }

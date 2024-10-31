@@ -42,7 +42,9 @@ func (p *process) Wait(ctx context.Context) error {
 
 func (p *process) waitBackground() {
 	p.waitErr = p.cmd.Wait()
-	p.io.Close(context.Background())
+	if p.io != nil {
+		p.io.Close(context.Background())
+	}
 	close(p.waitCh)
 }
 

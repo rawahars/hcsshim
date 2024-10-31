@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"sync"
-	"time"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/internal/cmd"
@@ -21,6 +20,7 @@ import (
 	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -55,6 +55,9 @@ func (s *service) CloseIO(ctx context.Context, req *task.CloseIORequest) (*empty
 
 func (s *service) Connect(ctx context.Context, req *task.ConnectRequest) (*task.ConnectResponse, error) {
 	resp := &task.ConnectResponse{ShimPid: uint32(os.Getpid())}
+	if s.sandbox == nil {
+		return resp, nil
+	}
 	if req.ID == s.sandbox.TaskID {
 		resp.TaskPid = s.sandbox.Pid
 		return resp, nil
@@ -82,11 +85,15 @@ func (s *service) Create(ctx context.Context, req *task.CreateTaskRequest) (*tas
 	if s.sandbox == nil {
 		switch shimOpts.BundleType {
 		case runhcsopts.BundleType_BUNDLE_OCI:
+			logrus.Info("creating oci sandbox")
 			sandbox, err := s.newOCISandbox(ctx, shimOpts, req)
 			if err != nil {
-				return nil, err
+				return nil, fmt.Errorf("OCI sandbox creation failed: %w", err)
 			}
 			s.sandbox = sandbox
+		case runhcsopts.BundleType_BUNDLE_POD_LM:
+			logrus.Info("creating lm sandbox")
+			s.newSandboxLM(ctx, shimOpts, req)
 		default:
 			return nil, fmt.Errorf("unsupported bundle type: %s", shimOpts.BundleType)
 		}
@@ -94,6 +101,10 @@ func (s *service) Create(ctx context.Context, req *task.CreateTaskRequest) (*tas
 		switch shimOpts.BundleType {
 		case runhcsopts.BundleType_BUNDLE_OCI:
 			if err := s.sandbox.newOCIContainer(ctx, shimOpts, req); err != nil {
+				return nil, err
+			}
+		case runhcsopts.BundleType_BUNDLE_CONTAINER_RESTORE:
+			if err := s.newRestoreContainer(ctx, shimOpts, req); err != nil {
 				return nil, err
 			}
 		default:
@@ -153,7 +164,7 @@ func (s *service) Exec(ctx context.Context, req *task.ExecProcessRequest) (*empt
 	if err := json.Unmarshal(req.Spec.Value, &spec); err != nil {
 		return nil, err
 	}
-	io, err := cmd.NewUpstreamIO(ctx, req.ID, req.Stdout, req.Stderr, req.Stdin, req.Terminal, 5*time.Second)
+	io, err := cmd.NewUpstreamIO(ctx, req.ID, req.Stdout, req.Stderr, req.Stdin, req.Terminal, 0)
 	if err != nil {
 		return nil, err
 	}

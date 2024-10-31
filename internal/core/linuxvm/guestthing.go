@@ -39,7 +39,15 @@ func (gt *guestThing) ctrBundle() string {
 	return fmt.Sprintf(gt.bundleFmt, index)
 }
 
-func (gt *guestThing) DoTheThing(ctx context.Context, id string, gc *guestConfig) (_ cow.Container, err error) {
+func (gt *guestThing) OpenContainer(ctx context.Context, id string) (_ cow.Container, err error) {
+	ctr, err := gt.gm.OpenContainer(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	return ctr, nil
+}
+
+func (gt *guestThing) CreateContainer(ctx context.Context, id string, gc *guestConfig) (_ cow.Container, err error) {
 	var scratchMount string
 	switch scratch := gc.layers.Scratch.(type) {
 	case *layers.LCOWLayerSCSI:

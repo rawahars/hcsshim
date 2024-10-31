@@ -68,7 +68,7 @@ func (gc *GuestConnection) CreateContainer(ctx context.Context, cid string, conf
 
 // CloneContainer just creates the wrappers and sets up notification requests for a
 // container that is already running inside the UVM (after cloning).
-func (gc *GuestConnection) CloneContainer(ctx context.Context, cid string) (_ *Container, err error) {
+func (gc *GuestConnection) OpenContainer(ctx context.Context, cid string) (_ *Container, err error) {
 	c := &Container{
 		gc:        gc,
 		id:        cid,
@@ -115,6 +115,10 @@ func (c *Container) CreateProcess(ctx context.Context, config interface{}) (_ co
 	span.AddAttributes(trace.StringAttribute("cid", c.id))
 
 	return c.gc.exec(ctx, c.id, config)
+}
+
+func (c *Container) OpenProcess2(ctx context.Context, pid uint32) (_ cow.Process, err error) {
+	return c.gc.OpenProcess(ctx, c.id, pid)
 }
 
 // ID returns the container's ID.

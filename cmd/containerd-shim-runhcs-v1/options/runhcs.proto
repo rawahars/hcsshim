@@ -16,6 +16,7 @@ message Options {
 		NPIPE = 0;
 		FILE = 1;
 		ETW = 2;
+		STDIO = 3;
 	}
 
 	// debug tracing output type

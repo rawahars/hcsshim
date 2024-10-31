@@ -527,7 +527,7 @@ func (h *Host) CreateContainer(ctx context.Context, id string, settings *prot.VM
 	c.initProcess = newProcess(c, settings.OCISpecification.Process, init, uint32(c.container.Pid()), true)
 
 	// Sandbox or standalone, move the networks to the container namespace
-	if criType == "sandbox" || !isCRI {
+	if (criType == "sandbox" || !isCRI) && namespaceID != "" {
 		ns, err := getNetworkNamespace(namespaceID)
 		if isCRI && err != nil {
 			return nil, err

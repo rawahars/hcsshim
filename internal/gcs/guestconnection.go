@@ -85,28 +85,45 @@ func (gcc *GuestConnectionConfig) Connect(ctx context.Context, isColdStart bool)
 		nextPort:   gcc.NextPort,
 	}
 	for _, p := range gcc.Processes {
-		stdin, err := gc.ioListenFn(p.StdinPort)
-		if err != nil {
-			return nil, err
-		}
-		stdout, err := gc.ioListenFn(p.StdoutPort)
-		if err != nil {
-			return nil, err
-		}
-		stderr, err := gc.ioListenFn(p.StderrPort)
-		if err != nil {
-			return nil, err
-		}
-		gc.procs[procIdent{p.ContainerId, p.ProcessId}] = &Process{
-			gc:         gc,
-			cid:        p.ContainerId,
-			id:         p.ProcessId,
-			stdin:      newIoChannel(stdin),
-			stdout:     newIoChannel(stdout),
-			stderr:     newIoChannel(stderr),
-			stdinPort:  p.StdinPort,
-			stdoutPort: p.StdoutPort,
-			stderrPort: p.StderrPort,
+		if err := func(p *statepkg.Process) error {
+			var stdin Conn
+			if p.StdinPort != 0 {
+				stdinL, err := gc.ioListenFn(p.StdinPort)
+				if err != nil {
+					return fmt.Errorf("listen port %d for stdin: %w", p.StdinPort, err)
+				}
+				stdin = newIoChannel(stdinL)
+			}
+			var stdout Conn
+			if p.StdoutPort != 0 {
+				stdoutL, err := gc.ioListenFn(p.StdoutPort)
+				if err != nil {
+					return fmt.Errorf("listen port %d for stdout: %w", p.StdoutPort, err)
+				}
+				stdout = newIoChannel(stdoutL)
+			}
+			var stderr Conn
+			if p.StderrPort != 0 {
+				stderrL, err := gc.ioListenFn(p.StderrPort)
+				if err != nil {
+					return fmt.Errorf("listen port %d for stderr: %w", p.StderrPort, err)
+				}
+				stderr = newIoChannel(stderrL)
+			}
+			gc.procs[procIdent{p.ContainerId, p.ProcessId}] = &Process{
+				gc:         gc,
+				cid:        p.ContainerId,
+				id:         p.ProcessId,
+				stdin:      stdin,
+				stdout:     stdout,
+				stderr:     stderr,
+				stdinPort:  p.StdinPort,
+				stdoutPort: p.StdoutPort,
+				stderrPort: p.StderrPort,
+			}
+			return nil
+		}(p); err != nil {
+			return nil, fmt.Errorf("restore pid %d in container %s: %w", p.ProcessId, p.ContainerId, err)
 		}
 	}
 	gc.brdg = newBridge(gcc.Conn, gc.notify, gcc.Log)
@@ -173,6 +190,10 @@ func (gc *GuestConnection) Capabilities() *schema1.GuestDefinedCapabilities {
 // Protocol returns the protocol version that is in use.
 func (gc *GuestConnection) Protocol() uint32 {
 	return protocolVersion
+}
+
+func (gc *GuestConnection) OpenProcess2(ctx context.Context, pid uint32) (cow.Process, error) {
+	panic("not implemented")
 }
 
 // connect establishes a GCS connection. It must not be called more than once.

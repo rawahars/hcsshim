@@ -33,7 +33,7 @@ type Process struct {
 	id                                uint32
 	waitCall                          *rpc
 	waitResp                          containerWaitForProcessResponse
-	stdin, stdout, stderr             *ioChannel
+	stdin, stdout, stderr             Conn
 	stdinCloseWriteOnce               sync.Once
 	stdinCloseWriteErr                error
 	stdinPort, stdoutPort, stderrPort uint32

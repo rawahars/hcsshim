@@ -211,7 +211,7 @@ func newHcsTask(
 	// Default to an infinite timeout (zero value)
 	var ioRetryTimeout time.Duration
 	if shimOpts != nil {
-		ioRetryTimeout = time.Duration(shimOpts.IoRetryTimeoutInSec) * time.Second
+		ioRetryTimeout = time.Duration(shimOpts.IORetryTimeoutInSec) * time.Second
 	}
 	io, err := cmd.NewUpstreamIO(ctx, req.ID, req.Stdout, req.Stderr, req.Stdin, req.Terminal, ioRetryTimeout)
 	if err != nil {

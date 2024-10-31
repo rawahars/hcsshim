@@ -22,6 +22,7 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/schemaversion"
+	"github.com/sirupsen/logrus"
 )
 
 type VM struct {
@@ -158,8 +159,10 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 			}
 		}
 		if oc.compatData != nil {
-			doc.VirtualMachine.MigrationOptions.CompatibilityData = &hcsschema.CompatibilityInfo{
-				Data: oc.compatData,
+			doc.VirtualMachine.MigrationOptions = &hcsschema.MigrationInitializeOptions{
+				CompatibilityData: &hcsschema.CompatibilityInfo{
+					Data: oc.compatData,
+				},
 			}
 		}
 
@@ -267,11 +270,6 @@ func convertConfig(config *Config) (*hcsschema.ComputeSystem, error) {
 						},
 					},
 				},
-				ComPorts: map[string]hcsschema.ComPort{
-					"0": {
-						NamedPipe: `\\.\pipe\vmpipe`,
-					},
-				},
 			},
 		},
 	}
@@ -299,6 +297,14 @@ func convertConfig(config *Config) (*hcsschema.ComputeSystem, error) {
 				EndpointId: nicConfig.EndpointID,
 				MacAddress: nicConfig.MACAddress,
 			}
+		}
+	}
+
+	if config.Serial != "" {
+		doc.VirtualMachine.Devices.ComPorts = map[string]hcsschema.ComPort{
+			"0": {
+				NamedPipe: config.Serial,
+			},
 		}
 	}
 
@@ -338,6 +344,7 @@ type Config struct {
 	SCSI           map[uint]SCSIController
 	NICs           map[string]NIC
 	CompatData     []byte
+	Serial         string
 }
 
 type SCSIController map[uint]SCSIAttachment
@@ -394,6 +401,7 @@ func (vm *VM) LMPrepare(ctx context.Context) ([]byte, error) {
 }
 
 func (vm *VM) LMTransfer(ctx context.Context, socket uintptr, isSource bool) error {
+	logrus.Info("starting VM for transfer")
 	if isSource {
 		if err := vm.hcsSystem.HcsStartLiveMigrationOnSource(ctx, socket, 1); err != nil {
 			return err
@@ -403,6 +411,7 @@ func (vm *VM) LMTransfer(ctx context.Context, socket uintptr, isSource bool) err
 			return err
 		}
 	}
+	logrus.Info("starting VM memory transfer")
 	if err := vm.hcsSystem.HcsStartLiveMigrationTransfer(ctx); err != nil {
 		return err
 	}

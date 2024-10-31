@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"slices"
 	"strconv"
@@ -13,6 +14,7 @@ import (
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
+	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/hns"
@@ -21,10 +23,12 @@ import (
 	"github.com/Microsoft/hcsshim/internal/resources"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
+	vm "github.com/Microsoft/hcsshim/internal/vm2"
 	vmpkg "github.com/Microsoft/hcsshim/internal/vm2"
 	"github.com/Microsoft/hcsshim/internal/wclayer"
 	"github.com/Microsoft/hcsshim/pkg/annotations"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sirupsen/logrus"
 )
 
 type Sandbox struct {
@@ -39,6 +43,7 @@ type Sandbox struct {
 	allowMigration bool
 	netns          string
 	endpoints      map[string]string // VM NIC ID -> guest interface ID
+	isLMSrc        bool
 }
 
 type translator struct {
@@ -121,11 +126,12 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		MemoryMB:       parseAnnotationsMemory(ctx, spec, "io.microsoft.virtualmachine.computetopology.memory.sizeinmb", 1024),
 		VABacked:       parseAnnotationsBool(ctx, spec.Annotations, "io.microsoft.virtualmachine.computetopology.memory.allowovercommit", false),
 		SCSI: map[uint]vmpkg.SCSIController{
-			0: vmpkg.SCSIController{},
-			1: vmpkg.SCSIController{},
-			2: vmpkg.SCSIController{},
-			3: vmpkg.SCSIController{},
+			0: {},
+			1: {},
+			2: {},
+			3: {},
 		},
+		Serial: spec.Annotations["io.microsoft.virtualmachine.console.pipe"],
 	}
 	vm, err := vmpkg.NewVM(ctx, vmID, vmConfig)
 	if err != nil {
@@ -137,16 +143,16 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 	if err != nil {
 		return nil, err
 	}
-	defer func() {
-		if err != nil {
-			gm.Close()
-		}
-	}()
+	// defer func() {
+	// 	if err != nil {
+	// 		gm.Close()
+	// 	}
+	// }()
 	// TODO: Do we need to start gm listening before we start the vm?
 	if err := vm.Start(ctx); err != nil {
 		return nil, fmt.Errorf("vm start: %w", err)
 	}
-	if err := gm.Start(ctx); err != nil {
+	if err := gm.Start(ctx, true); err != nil {
 		return nil, fmt.Errorf("guest manager start: %w", err)
 	}
 	defer func() {
@@ -156,36 +162,36 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 	}()
 
 	netns := oci.GetNetNS(spec)
-	savedEndpoints := make(map[string]string)
-	endpoints, err := hns.GetNamespaceEndpoints(netns)
-	if err != nil {
-		return nil, err
-	}
-	for _, endpointID := range endpoints {
-		endpoint, err := hns.GetHNSEndpointByID(endpointID)
+	if netns != "" {
+		endpoints, err := hns.GetNamespaceEndpoints(netns)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("find netns endpoints: %w", err)
 		}
-		g, err := guid.NewV4()
-		if err != nil {
-			return nil, err
+		for _, endpointID := range endpoints {
+			endpoint, err := hns.GetHNSEndpointByID(endpointID)
+			if err != nil {
+				return nil, err
+			}
+			g, err := guid.NewV4()
+			if err != nil {
+				return nil, err
+			}
+			if err := vm.AddNIC(ctx, g.String(), vmpkg.NIC{EndpointID: endpoint.Id, MACAddress: endpoint.MacAddress}); err != nil {
+				return nil, err
+			}
+			if err := gm.AddNetworkInterface(ctx, guestNamespaceID.String(), g.String(), &guestmanager.InterfaceConfig{
+				MACAddress:      endpoint.MacAddress,
+				IPAddress:       endpoint.IPAddress.String(),
+				PrefixLength:    endpoint.PrefixLength,
+				GatewayAddress:  endpoint.GatewayAddress,
+				DNSSuffix:       endpoint.DNSSuffix,
+				DNSServerList:   endpoint.DNSServerList,
+				EnableLowMetric: endpoint.EnableLowMetric,
+				EncapOverhead:   endpoint.EncapOverhead,
+			}); err != nil {
+				return nil, err
+			}
 		}
-		if err := vm.AddNIC(ctx, g.String(), vmpkg.NIC{EndpointID: endpoint.Id, MACAddress: endpoint.MacAddress}); err != nil {
-			return nil, err
-		}
-		if err := gm.AddNetworkInterface(ctx, guestNamespaceID.String(), g.String(), &guestmanager.InterfaceConfig{
-			MACAddress:      endpoint.MacAddress,
-			IPAddress:       endpoint.IPAddress.String(),
-			PrefixLength:    endpoint.PrefixLength,
-			GatewayAddress:  endpoint.GatewayAddress,
-			DNSSuffix:       endpoint.DNSSuffix,
-			DNSServerList:   endpoint.DNSServerList,
-			EnableLowMetric: endpoint.EnableLowMetric,
-			EncapOverhead:   endpoint.EncapOverhead,
-		}); err != nil {
-			return nil, err
-		}
-		savedEndpoints[endpointID] = g.String()
 	}
 
 	sa := scsi.NewAttachManager(scsi.NewVMHostBackend(vm), nil, len(vmConfig.SCSI), 64, nil)
@@ -271,6 +277,54 @@ func (s *Sandbox) CreateLinuxContainer(ctx context.Context, c *core.LinuxCtrConf
 	return createCtr(ctx, c, s.translator, s.gt)
 }
 
+func (s *Sandbox) RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (core.Ctr, error) {
+	innerCtr, err := s.gt.OpenContainer(ctx, cid)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		stdin          io.Reader
+		stdout, stderr io.Writer
+	)
+	if myIO != nil {
+		stdin = myIO.Stdin()
+		stdout = myIO.Stdout()
+		stderr = myIO.Stderr()
+	}
+	cmd, err := cmd.Open(ctx, innerCtr, pid, stdin, stdout, stderr)
+	if err != nil {
+		return nil, err
+	}
+	p := newProcess(cmd, myIO)
+	c := &ctr{
+		innerCtr: innerCtr,
+		init:     p,
+		io:       myIO,
+		waitCh:   make(chan struct{}),
+	}
+	go p.waitBackground()
+	go c.waitBackground()
+	return c, nil
+}
+
+func restoreCtr(innerCtr cow.Container, processSpec *specs.Process, io cmd.UpstreamIO) *ctr {
+	cmd := &cmd.Cmd{
+		Host: innerCtr,
+		Spec: processSpec,
+	}
+	if io != nil {
+		cmd.Stdin = io.Stdin()
+		cmd.Stdout = io.Stdout()
+		cmd.Stderr = io.Stderr()
+	}
+	ctr := &ctr{
+		innerCtr: innerCtr,
+		init:     newProcess(cmd, io),
+		waitCh:   make(chan struct{}),
+	}
+	return ctr
+}
+
 type cleanupSet []resources.ResourceCloser
 
 func (cs cleanupSet) Release(ctx context.Context) (retErr error) {
@@ -287,9 +341,7 @@ func createCtr(ctx context.Context, c *core.LinuxCtrConfig, t *translator, gt *g
 	if err != nil {
 		return nil, err
 	}
-
-	ctr, err := gt.DoTheThing(ctx, c.ID, gc)
-	// ctr, err := gm.CreateContainer(ctx, c.ID, gcsConfig)
+	ctr, err := gt.CreateContainer(ctx, c.ID, gc)
 	if err != nil {
 		return nil, err
 	}
@@ -344,7 +396,9 @@ func (t *translator) translate(ctx context.Context, c *core.LinuxCtrConfig) (_ *
 		}
 	}
 
-	c.Spec.Windows.Network.NetworkNamespace = guestNamespaceID.String()
+	if c.Spec.Windows != nil && c.Spec.Windows.Network != nil && c.Spec.Windows.Network.NetworkNamespace != "" {
+		c.Spec.Windows.Network.NetworkNamespace = guestNamespaceID.String()
+	}
 
 	for _, mount := range c.Spec.Mounts {
 		if t.allowMigration && !strings.HasPrefix(mount.Source, "sandbox://") {
@@ -510,6 +564,7 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 		}
 		intResources = append(intResources, intR)
 	}
+	s.isLMSrc = true
 	return &statepkg.SandboxState{
 		Vm: &statepkg.VMState{
 			Config:     statepkg.VMConfigFromInternal(s.vm.Config()),
@@ -520,15 +575,51 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 	}, resources, nil
 }
 
-func NewLMSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *specs.Spec) (_ core.Sandbox, err error) {
-	return nil, nil
+func NewLMSandbox(ctx context.Context, id string, config *statepkg.SandboxState, annos map[string]string) (_ core.Migratable, err error) {
+	logrus.WithField("config", config).Info("creating lm sandbox with config")
+	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
+	vmConfig.Serial = annos["io.microsoft.virtualmachine.console.pipe"]
+	vm, err := vm.NewVM(ctx, fmt.Sprintf("%s@vm", id), vmConfig, vm.WithLM(config.Vm.CompatInfo))
+	if err != nil {
+		return nil, err
+	}
+	gm, err := guestmanager.NewLinuxManagerFromState(
+		func(port uint32) (net.Listener, error) { return vm.ListenHVSocket(winio.VsockServiceID(port)) },
+		config.Agent)
+	if err != nil {
+		return nil, err
+	}
+	return &Sandbox{
+		vm: vm,
+		gm: gm,
+		gt: newGuestThing(gm),
+		translator: &translator{
+			vm:             vm,
+			scsiAttacher:   nil,
+			allowMigration: true,
+			resources:      make(map[string]resourceUseLayers),
+		},
+		waitCh: make(chan struct{}),
+	}, nil
 }
 
 func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) error {
+	// TODO: Disconnect GCS
+
+	if err := s.vm.LMTransfer(ctx, socket, s.isLMSrc); err != nil {
+		return err
+	}
 	return nil
 }
 
 func (s *Sandbox) LMFinalize(ctx context.Context) error {
+	if err := s.vm.LMFinalize(ctx); err != nil {
+		return err
+	}
+	if err := s.gm.Start(ctx, false); err != nil {
+		return err
+	}
+	// TODO: Reconnect GCS, etc.
 	return nil
 }
 

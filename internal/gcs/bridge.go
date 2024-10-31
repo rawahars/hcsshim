@@ -384,6 +384,8 @@ func (brdg *bridge) writeMessage(buf *bytes.Buffer, enc *json.Encoder, typ msgTy
 	if err != nil {
 		return fmt.Errorf("bridge encode: %s", err)
 	}
+	j, _ := json.Marshal(req)
+	logrus.WithField("req", string(j)).Info("BRIDGE SEND")
 	// Update the message header with the size.
 	binary.LittleEndian.PutUint32(buf.Bytes()[hdrOffSize:], uint32(buf.Len()))
 

@@ -124,6 +124,31 @@ func Command(host cow.ProcessHost, name string, arg ...string) *Cmd {
 	return cmd
 }
 
+func Open(ctx context.Context, host cow.ProcessHost, pid uint32, stdin io.Reader, stdout, stderr io.Writer) (*Cmd, error) {
+	p, err := host.OpenProcess2(ctx, pid)
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		if err != nil {
+			p.Close()
+		}
+	}()
+	cmd := &Cmd{
+		Host:      host,
+		Process:   p,
+		allDoneCh: make(chan struct{}),
+		Log:       log.L.Dup(),
+		Stdin:     stdin,
+		Stdout:    stdout,
+		Stderr:    stderr,
+	}
+	if err := cmd.startRelay(); err != nil {
+		return nil, err
+	}
+	return cmd, nil
+}
+
 // CommandContext makes a Cmd for a given command and arguments. After
 // it is launched, the process is killed when the context becomes done.
 func CommandContext(ctx context.Context, host cow.ProcessHost, name string, arg ...string) *Cmd {
@@ -195,7 +220,14 @@ func (c *Cmd) Start() error {
 	if c.Log != nil {
 		c.Log = c.Log.WithField("pid", p.Pid())
 	}
+	if err := c.startRelay(); err != nil {
+		return err
+	}
+	return nil
+}
 
+func (c *Cmd) startRelay() error {
+	p := c.Process
 	// Start relaying process IO.
 	stdin, stdout, stderr := p.Stdio()
 	if c.Stdin != nil {

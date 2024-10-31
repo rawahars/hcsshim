@@ -10,10 +10,11 @@ import (
 )
 
 type LinuxCtrConfig struct {
-	ID     string
-	Layers *layers.LCOWLayers2
-	Spec   *specs.Spec
-	IO     cmd.UpstreamIO
+	ID         string
+	OriginalID string
+	Layers     *layers.LCOWLayers2
+	Spec       *specs.Spec
+	IO         cmd.UpstreamIO
 }
 
 type ProcessConfig struct {
@@ -44,6 +45,7 @@ type Migratable interface {
 	LMPrepare(ctx context.Context) (*statepkg.SandboxState, *Resources, error)
 	LMTransfer(ctx context.Context, socket uintptr) error
 	LMFinalize(ctx context.Context) error
+	RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (Ctr, error)
 }
 
 type Sandbox interface {

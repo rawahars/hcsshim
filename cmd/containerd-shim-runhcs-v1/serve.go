@@ -91,6 +91,7 @@ var serveCommand = cli.Command{
 		}
 
 		// containerd passes the shim options protobuf via stdin.
+		logrus.Info("reading options")
 		newShimOpts, err := readOptions(os.Stdin)
 		if err != nil {
 			return errors.Wrap(err, "failed to read shim options from stdin")
@@ -98,6 +99,7 @@ var serveCommand = cli.Command{
 			// We received a valid shim options struct.
 			shimOpts = newShimOpts
 		}
+		logrus.Info("done reading options")
 
 		// For now keep supporting the debug option, this used to be the only way to specify a different logging
 		// level for the shim.
@@ -166,6 +168,8 @@ var serveCommand = cli.Command{
 		case runhcsopts.Options_ETW:
 			logrus.SetFormatter(hcslog.NopFormatter{})
 			logrus.SetOutput(io.Discard)
+		case runhcsopts.Options_STDIO:
+			logrus.Info("sending logs to stdio")
 		}
 
 		os.Stdin.Close()
@@ -227,6 +231,7 @@ var serveCommand = cli.Command{
 		}
 		defer sl.Close()
 
+		logrus.Info("serving")
 		serrs := make(chan error, 1)
 		defer close(serrs)
 		go func() {

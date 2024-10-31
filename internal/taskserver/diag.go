@@ -3,7 +3,6 @@ package taskserver
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
@@ -14,7 +13,7 @@ import (
 var _ (shimdiag.ShimDiagService) = (*service)(nil)
 
 func (s *service) DiagExecInHost(ctx context.Context, req *shimdiag.ExecProcessRequest) (*shimdiag.ExecProcessResponse, error) {
-	io, err := cmd.NewUpstreamIO(ctx, "shimdiag", req.Stdout, req.Stderr, req.Stdin, req.Terminal, 5*time.Second)
+	io, err := cmd.NewUpstreamIO(ctx, "shimdiag", req.Stdout, req.Stderr, req.Stdin, req.Terminal, 0)
 	if err != nil {
 		return nil, err
 	}

@@ -796,6 +796,10 @@ func (computeSystem *System) CreateProcess(ctx context.Context, c interface{}) (
 	return process, nil
 }
 
+func (computeSystem *System) OpenProcess2(ctx context.Context, pid uint32) (cow.Process, error) {
+	panic("not implemented")
+}
+
 // OpenProcess gets an interface to an existing process within the computeSystem.
 func (computeSystem *System) OpenProcess(ctx context.Context, pid int) (*Process, error) {
 	computeSystem.handleLock.RLock()

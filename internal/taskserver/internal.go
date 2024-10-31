@@ -19,7 +19,6 @@ import (
 	containerd_v1_types "github.com/containerd/containerd/api/types/task"
 	taskapi "github.com/containerd/containerd/api/types/task"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/pkg/errors"
 )
 
 type State struct {
@@ -118,7 +117,7 @@ func (s *Sandbox) newOCIContainer(ctx context.Context, shimOpts *runhcsopts.Opti
 	}
 	l2 := layers.GetLCOWLayers2(l)
 
-	io, err := cmd.NewUpstreamIO(ctx, req.ID, req.Stdout, req.Stderr, req.Stdin, req.Terminal, 5*time.Second)
+	io, err := cmd.NewUpstreamIO(ctx, req.ID, req.Stdout, req.Stderr, req.Stdin, req.Terminal, 0)
 	if err != nil {
 		return err
 	}
@@ -200,7 +199,7 @@ func getOCISpec(ctx context.Context, bundle string, shimOpts *runhcsopts.Options
 	// since annotation expansion is used to toggle security features
 	// raise it rather than suppress and move on
 	if err := oci.ProcessAnnotations(ctx, &spec); err != nil {
-		return nil, errors.Wrap(err, "unable to process OCI Spec annotations")
+		return nil, fmt.Errorf("unable to process OCI Spec annotations: %w", err)
 	}
 	// If sandbox isolation is set to hypervisor, make sure the HyperV option
 	// is filled in. This lessens the burden on Containerd to parse our shims

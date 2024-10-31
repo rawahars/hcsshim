@@ -12,6 +12,11 @@ message TaskServerState {
 message SandboxState {
     VMState vm = 1;
     GCState agent = 2;
+    map<string, Container> containers = 3;
+}
+
+message Container {
+    uint32 init_pid = 1;
 }
 
 message VMState {

@@ -30,7 +30,8 @@ func Read[T any](path string) (*T, error) {
 	return v, nil
 }
 
-func VMConfigToInternal(in *VMConfig) (out *vm.Config) {
+func VMConfigToInternal(in *VMConfig) *vm.Config {
+	var out vm.Config
 	out.ProcessorCount = in.VpCount
 	out.MemoryMB = in.MemCountMb
 	out.VABacked = in.VaBacked
@@ -54,7 +55,7 @@ func VMConfigToInternal(in *VMConfig) (out *vm.Config) {
 			MACAddress: nic.MacAddress,
 		}
 	}
-	return out
+	return &out
 }
 
 func SCSIAttachmentTypeToInternal(in SCSIAttachment_AttachmentType) vm.SCSIAttachmentType {

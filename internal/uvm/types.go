@@ -3,6 +3,7 @@
 package uvm
 
 import (
+	"context"
 	"io"
 	"net"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"golang.org/x/sys/windows"
 
+	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/gcs"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
@@ -22,6 +24,10 @@ import (
 // Scratch space      | ---- | SCSI   // For file system utilities. /tmp/scratch
 // Read-Only Layer    | VSMB | VPMEM
 // Mapped Directory   | VSMB | PLAN9
+
+func (uvm *UtilityVM) OpenProcess2(ctx context.Context, pid uint32) (cow.Process, error) {
+	panic("not implemented")
+}
 
 type nicInfo struct {
 	ID       string
