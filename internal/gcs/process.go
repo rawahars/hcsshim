@@ -180,14 +180,20 @@ func (p *Process) Close() error {
 		trace.StringAttribute("cid", p.cid),
 		trace.Int64Attribute("pid", int64(p.id)))
 
-	if err := p.stdin.Close(); err != nil {
-		log.G(ctx).WithError(err).Warn("close stdin failed")
+	if p.stdin != nil {
+		if err := p.stdin.Close(); err != nil {
+			log.G(ctx).WithError(err).Warn("close stdin failed")
+		}
 	}
-	if err := p.stdout.Close(); err != nil {
-		log.G(ctx).WithError(err).Warn("close stdout failed")
+	if p.stdout != nil {
+		if err := p.stdout.Close(); err != nil {
+			log.G(ctx).WithError(err).Warn("close stdout failed")
+		}
 	}
-	if err := p.stderr.Close(); err != nil {
-		log.G(ctx).WithError(err).Warn("close stderr failed")
+	if p.stderr != nil {
+		if err := p.stderr.Close(); err != nil {
+			log.G(ctx).WithError(err).Warn("close stderr failed")
+		}
 	}
 	p.gc.mu.Lock()
 	defer p.gc.mu.Unlock()

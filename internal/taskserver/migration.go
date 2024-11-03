@@ -79,7 +79,7 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 	if !ok {
 		return fmt.Errorf("expected TaskServerState, got %T instead", configRaw)
 	}
-	sandbox, err := linuxvm.NewLMSandbox(ctx, req.ID, config.Sandbox, spec.Annotations)
+	sandbox, err := linuxvm.NewLMSandbox(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations)
 	if err != nil {
 		return err
 	}
@@ -149,12 +149,7 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	if s.migState.c == 0 {
 		return fmt.Errorf("must set up channel before transferring")
 	}
-	logrus.WithFields(logrus.Fields{
-		"hasMigState": s.migState != nil,
-		"hasSandbox":  s.migState != nil && s.migState.sandbox != nil,
-	}).Info("starting LM transfer")
 	if err := s.migState.sandbox.LMTransfer(ctx, uintptr(s.migState.c)); err != nil {
-		logrus.WithError(err).Error("LM transfer failed")
 		if err := stream.Send(&lmproto.TransferSandboxResponse{
 			MessageId:    1,
 			Status:       lmproto.TransferSandboxResponse_STATUS_FAILED,

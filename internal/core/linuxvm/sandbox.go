@@ -44,6 +44,7 @@ type Sandbox struct {
 	netns          string
 	endpoints      map[string]string // VM NIC ID -> guest interface ID
 	isLMSrc        bool
+	ifaces         []*statepkg.GuestInterface
 }
 
 type translator struct {
@@ -162,6 +163,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 	}()
 
 	netns := oci.GetNetNS(spec)
+	var ifaces []*statepkg.GuestInterface
 	if netns != "" {
 		endpoints, err := hns.GetNamespaceEndpoints(netns)
 		if err != nil {
@@ -191,6 +193,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 			}); err != nil {
 				return nil, err
 			}
+			ifaces = append(ifaces, &statepkg.GuestInterface{Nsid: guestNamespaceID.String(), Id: g.String()})
 		}
 	}
 
@@ -229,6 +232,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		allowMigration: allowMigration,
 		netns:          netns,
 		waitCh:         make(chan struct{}),
+		ifaces:         ifaces,
 	}, nil
 }
 
@@ -345,7 +349,7 @@ func createCtr(ctx context.Context, c *core.LinuxCtrConfig, t *translator, gt *g
 	if err != nil {
 		return nil, err
 	}
-	return newCtr(ctr, c.Spec.Process, c.IO), nil
+	return newCtr(ctr, c.IO), nil
 }
 
 func (t *translator) translate(ctx context.Context, c *core.LinuxCtrConfig) (_ *guestConfig, _ []resources.ResourceCloser, err error) {
@@ -565,17 +569,20 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 		intResources = append(intResources, intR)
 	}
 	s.isLMSrc = true
+	vmConfig := s.vm.Config()
+	vmConfig.NICs = nil
 	return &statepkg.SandboxState{
 		Vm: &statepkg.VMState{
-			Config:     statepkg.VMConfigFromInternal(s.vm.Config()),
+			Config:     statepkg.VMConfigFromInternal(vmConfig),
 			CompatInfo: compatInfo,
 			Resources:  intResources,
 		},
-		Agent: s.gm.State(),
+		Agent:  s.gm.State(),
+		Ifaces: s.ifaces,
 	}, resources, nil
 }
 
-func NewLMSandbox(ctx context.Context, id string, config *statepkg.SandboxState, annos map[string]string) (_ core.Migratable, err error) {
+func NewLMSandbox(ctx context.Context, id string, config *statepkg.SandboxState, netns string, annos map[string]string) (_ core.Migratable, err error) {
 	logrus.WithField("config", config).Info("creating lm sandbox with config")
 	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
 	vmConfig.Serial = annos["io.microsoft.virtualmachine.console.pipe"]
@@ -600,6 +607,8 @@ func NewLMSandbox(ctx context.Context, id string, config *statepkg.SandboxState,
 			resources:      make(map[string]resourceUseLayers),
 		},
 		waitCh: make(chan struct{}),
+		netns:  netns,
+		ifaces: config.Ifaces,
 	}, nil
 }
 
@@ -619,7 +628,42 @@ func (s *Sandbox) LMFinalize(ctx context.Context) error {
 	if err := s.gm.Start(ctx, false); err != nil {
 		return err
 	}
-	// TODO: Reconnect GCS, etc.
+	for _, iface := range s.ifaces {
+		if err := s.gm.RemoveNetworkInterface(ctx, iface.Nsid, iface.Id); err != nil {
+			return fmt.Errorf("remove iface %s from ns %s: %w", iface.Id, iface.Nsid)
+		}
+	}
+	if s.netns != "" {
+		endpoints, err := hns.GetNamespaceEndpoints(s.netns)
+		if err != nil {
+			return fmt.Errorf("find netns endpoints: %w", err)
+		}
+		for _, endpointID := range endpoints {
+			endpoint, err := hns.GetHNSEndpointByID(endpointID)
+			if err != nil {
+				return err
+			}
+			g, err := guid.NewV4()
+			if err != nil {
+				return err
+			}
+			if err := s.vm.AddNIC(ctx, g.String(), vmpkg.NIC{EndpointID: endpoint.Id, MACAddress: endpoint.MacAddress}); err != nil {
+				return err
+			}
+			if err := s.gm.AddNetworkInterface(ctx, guestNamespaceID.String(), g.String(), &guestmanager.InterfaceConfig{
+				MACAddress:      endpoint.MacAddress,
+				IPAddress:       endpoint.IPAddress.String(),
+				PrefixLength:    endpoint.PrefixLength,
+				GatewayAddress:  endpoint.GatewayAddress,
+				DNSSuffix:       endpoint.DNSSuffix,
+				DNSServerList:   endpoint.DNSServerList,
+				EnableLowMetric: endpoint.EnableLowMetric,
+				EncapOverhead:   endpoint.EncapOverhead,
+			}); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
 }
 

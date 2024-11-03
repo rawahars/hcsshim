@@ -12,7 +12,13 @@ message TaskServerState {
 message SandboxState {
     VMState vm = 1;
     GCState agent = 2;
+    repeated GuestInterface ifaces = 4;
     map<string, Container> containers = 3;
+}
+
+message GuestInterface {
+    string nsid = 1;
+    string id = 2;
 }
 
 message Container {

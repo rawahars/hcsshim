@@ -7,7 +7,6 @@ import (
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
-	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 type ctr struct {
@@ -20,10 +19,9 @@ type ctr struct {
 
 var _ core.Ctr = (*ctr)(nil)
 
-func newCtr(innerCtr cow.Container, processSpec *specs.Process, io cmd.UpstreamIO) *ctr {
+func newCtr(innerCtr cow.Container, io cmd.UpstreamIO) *ctr {
 	cmd := &cmd.Cmd{
 		Host: innerCtr,
-		Spec: processSpec,
 	}
 	if io != nil {
 		cmd.Stdin = io.Stdin()
