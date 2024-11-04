@@ -170,12 +170,21 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 }
 
 func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSandboxRequest) (*lmproto.FinalizeSandboxResponse, error) {
-	if err := s.migState.sandbox.LMFinalize(ctx); err != nil {
-		return nil, err
-	}
-	s.sandbox = &Sandbox{
-		Sandbox: s.migState.sandbox.(core.Sandbox),
-		Tasks:   make(map[string]*Task),
+	switch req.Action {
+	case lmproto.FinalizeSandboxRequest_ACTION_RESUME:
+		if err := s.migState.sandbox.LMFinalize(ctx, true); err != nil {
+			return nil, err
+		}
+		s.sandbox = &Sandbox{
+			Sandbox: s.migState.sandbox.(core.Sandbox),
+			Tasks:   make(map[string]*Task),
+		}
+	case lmproto.FinalizeSandboxRequest_ACTION_STOP:
+		if err := s.migState.sandbox.LMFinalize(ctx, false); err != nil {
+			return nil, err
+		}
+	default:
+		return nil, fmt.Errorf("unsupported action: %v", req.Action)
 	}
 	return &lmproto.FinalizeSandboxResponse{}, nil
 }

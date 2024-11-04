@@ -1019,13 +1019,16 @@ func (computeSystem *System) HcsStartLiveMigrationTransfer(ctx context.Context) 
 	return nil
 }
 
-func (computeSystem *System) HcsFinalizeLiveMigation(ctx context.Context) error {
+func (computeSystem *System) HcsFinalizeLiveMigation(ctx context.Context, resume bool) error {
 	computeSystem.handleLock.RLock()
 	defer computeSystem.handleLock.RUnlock()
 
 	op := computecore.NewOperation(0)
 	defer op.Close()
-	options := hcsschema.MigrationFinalizedOptions{}
+	options := hcsschema.MigrationFinalizedOptions{FinalizedOperation: hcsschema.MigrationFinalOperationStop}
+	if resume {
+		options.FinalizedOperation = hcsschema.MigrationFinalOperationResume
+	}
 	optionsRaw, err := json.Marshal(options)
 	if err != nil {
 		return err

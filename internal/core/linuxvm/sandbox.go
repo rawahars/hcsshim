@@ -621,16 +621,19 @@ func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) error {
 	return nil
 }
 
-func (s *Sandbox) LMFinalize(ctx context.Context) error {
-	if err := s.vm.LMFinalize(ctx); err != nil {
+func (s *Sandbox) LMFinalize(ctx context.Context, resume bool) error {
+	if err := s.vm.LMFinalize(ctx, resume); err != nil {
 		return err
+	}
+	if !resume {
+		return nil
 	}
 	if err := s.gm.Start(ctx, false); err != nil {
 		return err
 	}
 	for _, iface := range s.ifaces {
 		if err := s.gm.RemoveNetworkInterface(ctx, iface.Nsid, iface.Id); err != nil {
-			return fmt.Errorf("remove iface %s from ns %s: %w", iface.Id, iface.Nsid)
+			return fmt.Errorf("remove iface %s from ns %s: %w", iface.Id, iface.Nsid, err)
 		}
 	}
 	if s.netns != "" {

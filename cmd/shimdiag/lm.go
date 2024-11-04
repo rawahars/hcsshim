@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -170,27 +171,47 @@ var startCommand = cli.Command{
 var pipeCommand = cli.Command{
 	Name:           "pipe",
 	Usage:          "",
-	ArgsUsage:      "[flags] <address>",
+	ArgsUsage:      "[flags] <stdin pipe> <stdout pipe> <stderr pipe>",
 	Flags:          []cli.Flag{},
 	SkipArgReorder: true,
-	Before:         appargs.Validate(appargs.String),
 	Action: func(clictx *cli.Context) error {
 		args := clictx.Args()
-		address := args[0]
 
-		l, err := winio.ListenPipe(address, nil)
-		if err != nil {
-			return err
+		f := func(name, pipe string, wg *sync.WaitGroup, copy func(c net.Conn) (int64, error)) {
+			defer wg.Done()
+			l, err := winio.ListenPipe(pipe, nil)
+			if err != nil {
+				panic(err)
+			}
+			fmt.Printf("%s: listening on %s\n", name, pipe)
+			c, err := l.Accept()
+			if err != nil {
+				panic(err)
+			}
+			fmt.Printf("%s: received connection\n", name)
+			n, err := copy(c)
+			fmt.Printf("%s: copy completed after %d bytes", name, n)
+			if err != nil {
+				fmt.Printf(" and error: %s", err)
+			}
+			fmt.Printf("\n")
 		}
-		fmt.Printf("listening on %s\n", address)
-		c, err := l.Accept()
-		if err != nil {
-			return err
+
+		var wg sync.WaitGroup
+		if len(args) > 0 {
+			wg.Add(1)
+			go f("stdin", args[0], &wg, func(c net.Conn) (int64, error) { return io.Copy(c, os.Stdin) })
 		}
-		fmt.Printf("received connection\n")
-		if _, err := io.Copy(os.Stdout, c); err != nil {
-			return err
+		if len(args) > 1 {
+			wg.Add(1)
+			go f("stdout", args[1], &wg, func(c net.Conn) (int64, error) { return io.Copy(os.Stdout, c) })
 		}
+		if len(args) > 2 {
+			wg.Add(1)
+			go f("stderr", args[2], &wg, func(c net.Conn) (int64, error) { return io.Copy(os.Stderr, c) })
+		}
+		wg.Wait()
+
 		return nil
 	},
 }
@@ -452,9 +473,9 @@ var lmTransferCommand = cli.Command{
 
 var lmFinalizeCommand = cli.Command{
 	Name:           "lmfinalize",
-	ArgsUsage:      "[flags] <pipe>",
+	ArgsUsage:      "[flags] <pipe> resume|stop",
 	SkipArgReorder: true,
-	Before:         appargs.Validate(appargs.String),
+	Before:         appargs.Validate(appargs.String, appargs.String),
 	Action: func(clictx *cli.Context) error {
 		args := clictx.Args()
 		address := args[0]
@@ -469,7 +490,16 @@ var lmFinalizeCommand = cli.Command{
 
 		ctx := context.Background()
 
-		if _, err := svc.FinalizeSandbox(ctx, &lmproto.FinalizeSandboxRequest{}); err != nil {
+		req := &lmproto.FinalizeSandboxRequest{}
+		switch args[1] {
+		case "resume":
+			req.Action = lmproto.FinalizeSandboxRequest_ACTION_RESUME
+		case "stop":
+			req.Action = lmproto.FinalizeSandboxRequest_ACTION_STOP
+		default:
+			return fmt.Errorf("bad action, should be resume or stop: %s", args[1])
+		}
+		if _, err := svc.FinalizeSandbox(ctx, req); err != nil {
 			return err
 		}
 		return nil
@@ -537,6 +567,60 @@ var pb2jsonCommand = cli.Command{
 			return err
 		}
 		if err := os.WriteFile(clictx.Args()[2], output, 0644); err != nil {
+			return err
+		}
+		return nil
+	},
+}
+
+var deleteCommand = cli.Command{
+	Name:           "delete",
+	ArgsUsage:      "<pipe> <task id>",
+	SkipArgReorder: true,
+	Before:         appargs.Validate(appargs.String, appargs.String),
+	Action: func(clictx *cli.Context) error {
+		args := clictx.Args()
+		address := args[0]
+		id := args[1]
+
+		conn, err := winio.DialPipe(address, nil)
+		if err != nil {
+			return fmt.Errorf("dial %s: %w", address, err)
+		}
+
+		client := ttrpc.NewClient(conn)
+		svc := task.NewTaskClient(client)
+
+		ctx := context.Background()
+
+		if _, err := svc.Delete(ctx, &task.DeleteRequest{ID: id}); err != nil {
+			return err
+		}
+		return nil
+	},
+}
+
+var shutdownCommand = cli.Command{
+	Name:           "shutdown",
+	ArgsUsage:      "<pipe> <task id>",
+	SkipArgReorder: true,
+	Before:         appargs.Validate(appargs.String, appargs.String),
+	Action: func(clictx *cli.Context) error {
+		args := clictx.Args()
+		address := args[0]
+		id := args[1]
+
+		conn, err := winio.DialPipe(address, nil)
+		if err != nil {
+			return fmt.Errorf("dial %s: %w", address, err)
+		}
+
+		client := ttrpc.NewClient(conn)
+		svc := task.NewTaskClient(client)
+
+		ctx := context.Background()
+
+		if _, err := svc.Shutdown(ctx, &task.ShutdownRequest{ID: id}); err != nil {
 			return err
 		}
 		return nil
