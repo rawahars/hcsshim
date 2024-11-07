@@ -6,6 +6,7 @@ import (
 	"net/netip"
 	"os"
 	"path/filepath"
+	"time"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/internal/cmd"
@@ -19,6 +20,7 @@ import (
 	"golang.org/x/sys/windows"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 type migrationState struct {
@@ -149,22 +151,49 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	if s.migState.c == 0 {
 		return fmt.Errorf("must set up channel before transferring")
 	}
+	start := time.Now()
+	if err := stream.Send(&lmproto.TransferSandboxResponse{
+		MessageId:  1,
+		Status:     lmproto.TransferSandboxResponse_STATUS_BROWNOUT_IN_PROGRESS,
+		StartTime:  timestamppb.New(start),
+		UpdateTime: timestamppb.Now(),
+	}); err != nil {
+		logrus.WithError(err).Error("failed stream send")
+		return fmt.Errorf("send brownout status: %w", err)
+	}
 	if err := s.migState.sandbox.LMTransfer(ctx, uintptr(s.migState.c)); err != nil {
 		if err := stream.Send(&lmproto.TransferSandboxResponse{
-			MessageId:    1,
+			MessageId:    2,
 			Status:       lmproto.TransferSandboxResponse_STATUS_FAILED,
 			ErrorMessage: err.Error(),
+			StartTime:    timestamppb.New(start),
+			UpdateTime:   timestamppb.Now(),
 		}); err != nil {
 			logrus.WithError(err).Error("failed stream send")
+			return fmt.Errorf("send failed status: %w", err)
 		}
 		return err
 	}
 	logrus.Info("LM transfer complete")
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
-		MessageId: 1,
-		Status:    lmproto.TransferSandboxResponse_STATUS_CONMPLETE,
+		MessageId:  2,
+		Status:     lmproto.TransferSandboxResponse_STATUS_BLACKOUT_IN_PROGRESS,
+		StartTime:  timestamppb.New(start),
+		UpdateTime: timestamppb.Now(),
+		Progress:   0.5,
 	}); err != nil {
 		logrus.WithError(err).Error("failed stream send")
+		return fmt.Errorf("send blackout status: %w", err)
+	}
+	if err := stream.Send(&lmproto.TransferSandboxResponse{
+		MessageId:  3,
+		Status:     lmproto.TransferSandboxResponse_STATUS_CONMPLETE,
+		StartTime:  timestamppb.New(start),
+		UpdateTime: timestamppb.Now(),
+		Progress:   1,
+	}); err != nil {
+		logrus.WithError(err).Error("failed stream send")
+		return fmt.Errorf("send complete status: %w", err)
 	}
 	return nil
 }
