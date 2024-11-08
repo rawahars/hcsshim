@@ -586,7 +586,17 @@ func NewLMSandbox(ctx context.Context, id string, config *statepkg.SandboxState,
 	logrus.WithField("config", config).Info("creating lm sandbox with config")
 	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
 	vmConfig.Serial = annos["io.microsoft.virtualmachine.console.pipe"]
-	vm, err := vm.NewVM(ctx, fmt.Sprintf("%s@vm", id), vmConfig, vm.WithLM(config.Vm.CompatInfo))
+	vmID := fmt.Sprintf("%s@vm", id)
+	for _, controller := range vmConfig.SCSI {
+		for _, att := range controller {
+			if att.Type == vmpkg.SCSIAttachmentTypeVHD || att.Type == vmpkg.SCSIAttachmentTypePassThru {
+				if err := wclayer.GrantVmAccess(ctx, vmID, att.Path); err != nil {
+					return nil, fmt.Errorf("grant vm access to %s: %w", att.Path, err)
+				}
+			}
+		}
+	}
+	vm, err := vm.NewVM(ctx, vmID, vmConfig, vm.WithLM(config.Vm.CompatInfo))
 	if err != nil {
 		return nil, err
 	}
