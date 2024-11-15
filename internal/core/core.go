@@ -41,11 +41,19 @@ type Ctr interface {
 	CreateProcess(ctx context.Context, c *ProcessConfig) (Process, error)
 }
 
+type Migrator interface {
+	LMTransfer(ctx context.Context, socket uintptr) (Migrated, error)
+}
+
 type Migratable interface {
+	Migrator
 	LMPrepare(ctx context.Context) (*statepkg.SandboxState, *Resources, error)
-	LMTransfer(ctx context.Context, socket uintptr) error
-	LMFinalize(ctx context.Context, resume bool) error
 	RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (Ctr, error)
+}
+
+type Migrated interface {
+	LMComplete(ctx context.Context) (Sandbox, error)
+	LMKill(ctx context.Context) error
 }
 
 type Sandbox interface {

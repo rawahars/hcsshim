@@ -24,11 +24,13 @@ import (
 )
 
 type migrationState struct {
-	l         windows.Handle
-	c         windows.Handle
-	sandbox   core.Migratable
-	taskState map[string]*statepkg.TaskState
-	newID     string
+	l          windows.Handle
+	c          windows.Handle
+	migratable core.Migratable
+	migrator   core.Migrator
+	migrated   core.Migrated
+	taskState  map[string]*statepkg.TaskState
+	newID      string
 }
 
 var _ (lmproto.MigrationService) = (*service)(nil)
@@ -62,7 +64,10 @@ func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandbo
 	for _, r := range resources.Layers {
 		outResources = append(outResources, &lmproto.SourceRootFS{Id: r.ResourceID, TaskId: r.ContainerID})
 	}
-	s.migState = &migrationState{sandbox: s.sandbox.Sandbox.(core.Migratable)}
+	s.migState = &migrationState{
+		migratable: s.sandbox.Sandbox.(core.Migratable),
+		migrator:   s.sandbox.Sandbox.(core.Migratable),
+	}
 	return &lmproto.PrepareSandboxResponse{
 		Config:    stateAny,
 		Resources: outResources,
@@ -82,13 +87,13 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 	if !ok {
 		return fmt.Errorf("expected TaskServerState, got %T instead", configRaw)
 	}
-	sandbox, err := linuxvm.NewLMSandbox(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations)
+	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations)
 	if err != nil {
 		return err
 	}
 	s.migState = &migrationState{
 		newID:     req.ID,
-		sandbox:   sandbox,
+		migrator:  migrator,
 		taskState: config.Tasks,
 	}
 	return nil
@@ -163,7 +168,8 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 		logrus.WithError(err).Error("failed stream send")
 		return fmt.Errorf("send brownout status: %w", err)
 	}
-	if err := s.migState.sandbox.LMTransfer(ctx, uintptr(s.migState.c)); err != nil {
+	migrated, err := s.migState.migrator.LMTransfer(ctx, uintptr(s.migState.c))
+	if err != nil {
 		if err := stream.Send(&lmproto.TransferSandboxResponse{
 			MessageId:    2,
 			Status:       lmproto.TransferSandboxResponse_STATUS_FAILED,
@@ -197,24 +203,29 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 		logrus.WithError(err).Error("failed stream send")
 		return fmt.Errorf("send complete status: %w", err)
 	}
+	s.migState.migrated = migrated
 	return nil
 }
 
 func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSandboxRequest) (*lmproto.FinalizeSandboxResponse, error) {
+	if s.migState.migrated == nil {
+		return nil, fmt.Errorf("No migrated sandbox is present")
+	}
 	switch req.Action {
 	case lmproto.FinalizeSandboxRequest_ACTION_RESUME:
-		if err := s.migState.sandbox.LMFinalize(ctx, true); err != nil {
+		sandbox, err := s.migState.migrated.LMComplete(ctx)
+		if err != nil {
 			return nil, err
 		}
 		s.sandbox = &Sandbox{
 			State: &State{
 				TaskID: s.migState.newID,
 			},
-			Sandbox: s.migState.sandbox.(core.Sandbox),
+			Sandbox: sandbox,
 			Tasks:   make(map[string]*Task),
 		}
 	case lmproto.FinalizeSandboxRequest_ACTION_STOP:
-		if err := s.migState.sandbox.LMFinalize(ctx, false); err != nil {
+		if err := s.migState.migrated.LMKill(ctx); err != nil {
 			return nil, err
 		}
 	default:
@@ -320,7 +331,7 @@ func (s *service) newRestoreContainer(ctx context.Context, shimOpts *runhcsopts.
 		return fmt.Errorf("terminal setting must match original container")
 	}
 
-	ctr, err := s.migState.sandbox.RestoreLinuxContainer(ctx, spec.OriginalId, taskState.Pid, io)
+	ctr, err := s.sandbox.Sandbox.(core.Migratable).RestoreLinuxContainer(ctx, spec.OriginalId, taskState.Pid, io)
 	if err != nil {
 		return err
 	}

@@ -23,12 +23,10 @@ import (
 	"github.com/Microsoft/hcsshim/internal/resources"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
-	vm "github.com/Microsoft/hcsshim/internal/vm2"
 	vmpkg "github.com/Microsoft/hcsshim/internal/vm2"
 	"github.com/Microsoft/hcsshim/internal/wclayer"
 	"github.com/Microsoft/hcsshim/pkg/annotations"
 	"github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
 )
 
 type Sandbox struct {
@@ -41,10 +39,10 @@ type Sandbox struct {
 	waitCh         chan struct{}
 	waitErr        error
 	allowMigration bool
-	netns          string
 	endpoints      map[string]string // VM NIC ID -> guest interface ID
 	isLMSrc        bool
 	ifaces         []*statepkg.GuestInterface
+	state          *statepkg.SandboxState
 }
 
 type translator struct {
@@ -230,7 +228,6 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		pauseCtr:       pauseCtr,
 		ctrs:           make(map[string]*ctr),
 		allowMigration: allowMigration,
-		netns:          netns,
 		waitCh:         make(chan struct{}),
 		ifaces:         ifaces,
 	}, nil
@@ -521,163 +518,6 @@ func (s *Sandbox) CreateProcess(ctx context.Context, c *core.ProcessConfig) (cor
 		Stdout: c.IO.Stdout(),
 		Stderr: c.IO.Stderr(),
 	}, c.IO), nil
-}
-
-func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *core.Resources, err error) {
-	compatInfo, err := s.vm.LMPrepare(ctx)
-	if err != nil {
-		return nil, nil, err
-	}
-	defer func() {
-		if err != nil {
-			// s.LMCancel(ctx)
-		}
-	}()
-	g, err := guid.NewV4()
-	if err != nil {
-		return nil, nil, err
-	}
-	resources := &core.Resources{Layers: []*core.LayersResource{{ResourceID: g.String(), ContainerID: "SandboxID"}}}
-	for cid := range s.ctrs {
-		g, err := guid.NewV4()
-		if err != nil {
-			return nil, nil, err
-		}
-		resources.Layers = append(resources.Layers, &core.LayersResource{ResourceID: g.String(), ContainerID: cid})
-	}
-	var intResources []*statepkg.Resource
-	for id, r := range s.translator.resources {
-		var roLayers []*statepkg.Resource_Layers_SCSI
-		for _, l := range r.readOnlyLayers {
-			roLayers = append(roLayers, &statepkg.Resource_Layers_SCSI{
-				Controller: uint32(l.controller),
-				Lun:        uint32(l.lun),
-			})
-		}
-		intR := &statepkg.Resource{
-			Type: &statepkg.Resource_Layers_{
-				Layers: &statepkg.Resource_Layers{
-					TaskId: id,
-					Scratch: &statepkg.Resource_Layers_SCSI{
-						Controller: uint32(r.scratchLayer.controller),
-						Lun:        uint32(r.scratchLayer.lun),
-					},
-					ReadOnlyLayers: roLayers,
-				},
-			},
-		}
-		intResources = append(intResources, intR)
-	}
-	s.isLMSrc = true
-	vmConfig := s.vm.Config()
-	vmConfig.NICs = nil
-	return &statepkg.SandboxState{
-		Vm: &statepkg.VMState{
-			Config:     statepkg.VMConfigFromInternal(vmConfig),
-			CompatInfo: compatInfo,
-			Resources:  intResources,
-		},
-		Agent:  s.gm.State(),
-		Ifaces: s.ifaces,
-	}, resources, nil
-}
-
-func NewLMSandbox(ctx context.Context, id string, config *statepkg.SandboxState, netns string, annos map[string]string) (_ core.Migratable, err error) {
-	logrus.WithField("config", config).Info("creating lm sandbox with config")
-	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
-	vmConfig.Serial = annos["io.microsoft.virtualmachine.console.pipe"]
-	vmID := fmt.Sprintf("%s@vm", id)
-	for _, controller := range vmConfig.SCSI {
-		for _, att := range controller {
-			if att.Type == vmpkg.SCSIAttachmentTypeVHD || att.Type == vmpkg.SCSIAttachmentTypePassThru {
-				if err := wclayer.GrantVmAccess(ctx, vmID, att.Path); err != nil {
-					return nil, fmt.Errorf("grant vm access to %s: %w", att.Path, err)
-				}
-			}
-		}
-	}
-	vm, err := vm.NewVM(ctx, vmID, vmConfig, vm.WithLM(config.Vm.CompatInfo))
-	if err != nil {
-		return nil, err
-	}
-	gm, err := guestmanager.NewLinuxManagerFromState(
-		func(port uint32) (net.Listener, error) { return vm.ListenHVSocket(winio.VsockServiceID(port)) },
-		config.Agent)
-	if err != nil {
-		return nil, err
-	}
-	return &Sandbox{
-		vm: vm,
-		gm: gm,
-		gt: newGuestThing(gm),
-		translator: &translator{
-			vm:             vm,
-			scsiAttacher:   nil,
-			allowMigration: true,
-			resources:      make(map[string]resourceUseLayers),
-		},
-		waitCh: make(chan struct{}),
-		netns:  netns,
-		ifaces: config.Ifaces,
-	}, nil
-}
-
-func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) error {
-	// TODO: Disconnect GCS
-
-	if err := s.vm.LMTransfer(ctx, socket, s.isLMSrc); err != nil {
-		return err
-	}
-	return nil
-}
-
-func (s *Sandbox) LMFinalize(ctx context.Context, resume bool) error {
-	if err := s.vm.LMFinalize(ctx, resume); err != nil {
-		return err
-	}
-	if !resume {
-		return nil
-	}
-	if err := s.gm.Start(ctx, false); err != nil {
-		return err
-	}
-	for _, iface := range s.ifaces {
-		if err := s.gm.RemoveNetworkInterface(ctx, iface.Nsid, iface.Id); err != nil {
-			return fmt.Errorf("remove iface %s from ns %s: %w", iface.Id, iface.Nsid, err)
-		}
-	}
-	if s.netns != "" {
-		endpoints, err := hns.GetNamespaceEndpoints(s.netns)
-		if err != nil {
-			return fmt.Errorf("find netns endpoints: %w", err)
-		}
-		for _, endpointID := range endpoints {
-			endpoint, err := hns.GetHNSEndpointByID(endpointID)
-			if err != nil {
-				return err
-			}
-			g, err := guid.NewV4()
-			if err != nil {
-				return err
-			}
-			if err := s.vm.AddNIC(ctx, g.String(), vmpkg.NIC{EndpointID: endpoint.Id, MACAddress: endpoint.MacAddress}); err != nil {
-				return err
-			}
-			if err := s.gm.AddNetworkInterface(ctx, guestNamespaceID.String(), g.String(), &guestmanager.InterfaceConfig{
-				MACAddress:      endpoint.MacAddress,
-				IPAddress:       endpoint.IPAddress.String(),
-				PrefixLength:    endpoint.PrefixLength,
-				GatewayAddress:  endpoint.GatewayAddress,
-				DNSSuffix:       endpoint.DNSSuffix,
-				DNSServerList:   endpoint.DNSServerList,
-				EnableLowMetric: endpoint.EnableLowMetric,
-				EncapOverhead:   endpoint.EncapOverhead,
-			}); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
 }
 
 // type ResourceMap map[ResourceKey]resourceUse
