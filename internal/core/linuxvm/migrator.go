@@ -78,6 +78,7 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 }
 
 func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) (core.Migrated, error) {
+	s.waitCancel()
 	if err := s.vm.LMTransfer(ctx, socket, s.isLMSrc); err != nil {
 		return nil, err
 	}
@@ -201,6 +202,7 @@ func newSandbox(ctx context.Context, vm *vm.VM, agentConfig *statepkg.GCState, n
 		}
 	}
 
+	waitCtx, waitCancel := context.WithCancel(context.Background())
 	return &Sandbox{
 		vm: vm,
 		gm: gm,
@@ -211,7 +213,9 @@ func newSandbox(ctx context.Context, vm *vm.VM, agentConfig *statepkg.GCState, n
 			allowMigration: true,
 			resources:      make(map[string]resourceUseLayers),
 		},
-		waitCh: make(chan struct{}),
-		ifaces: ifaces,
+		waitCh:     make(chan struct{}),
+		ifaces:     ifaces,
+		waitCtx:    waitCtx,
+		waitCancel: waitCancel,
 	}, nil
 }

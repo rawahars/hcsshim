@@ -3,18 +3,19 @@ package linuxvm
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
-	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/hns"
@@ -29,12 +30,17 @@ import (
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
+var (
+	ErrClose = errors.New("sandbox was closed")
+)
+
 type Sandbox struct {
 	vm             *vmpkg.VM
 	gm             *guestmanager.LinuxManager
 	gt             *guestThing
 	translator     *translator
 	pauseCtr       *ctr
+	ctrsLock       sync.Mutex
 	ctrs           map[string]*ctr
 	waitCh         chan struct{}
 	waitErr        error
@@ -43,6 +49,8 @@ type Sandbox struct {
 	isLMSrc        bool
 	ifaces         []*statepkg.GuestInterface
 	state          *statepkg.SandboxState
+	waitCtx        context.Context
+	waitCancel     func()
 }
 
 type translator struct {
@@ -215,21 +223,26 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		allowMigration: allowMigration,
 		resources:      make(map[string]resourceUseLayers),
 	}
-	pauseCtr, err := createCtr(ctx, ctrConfig, translator, gt)
+	waitCtx, waitCancel := context.WithCancel(context.Background())
+	pauseCtr, err := createCtr(ctx, ctrConfig, translator, gt, waitCtx)
 	if err != nil {
 		return nil, err
 	}
 
 	return &Sandbox{
-		vm:             vm,
-		gm:             gm,
-		gt:             gt,
-		translator:     translator,
-		pauseCtr:       pauseCtr,
-		ctrs:           make(map[string]*ctr),
+		vm:         vm,
+		gm:         gm,
+		gt:         gt,
+		translator: translator,
+		pauseCtr:   pauseCtr,
+		ctrs: map[string]*ctr{
+			id: pauseCtr,
+		},
 		allowMigration: allowMigration,
 		waitCh:         make(chan struct{}),
 		ifaces:         ifaces,
+		waitCtx:        waitCtx,
+		waitCancel:     waitCancel,
 	}, nil
 }
 
@@ -275,7 +288,14 @@ func (s *Sandbox) Start(ctx context.Context) error {
 }
 
 func (s *Sandbox) CreateLinuxContainer(ctx context.Context, c *core.LinuxCtrConfig) (_ core.Ctr, err error) {
-	return createCtr(ctx, c, s.translator, s.gt)
+	ctr, err := createCtr(ctx, c, s.translator, s.gt, s.waitCtx)
+	if err != nil {
+		return nil, err
+	}
+	s.ctrsLock.Lock()
+	s.ctrs[c.ID] = ctr
+	s.ctrsLock.Unlock()
+	return ctr, nil
 }
 
 func (s *Sandbox) RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (core.Ctr, error) {
@@ -302,28 +322,11 @@ func (s *Sandbox) RestoreLinuxContainer(ctx context.Context, cid string, pid uin
 		init:     p,
 		io:       myIO,
 		waitCh:   make(chan struct{}),
+		waitCtx:  s.waitCtx,
 	}
 	go p.waitBackground()
 	go c.waitBackground()
 	return c, nil
-}
-
-func restoreCtr(innerCtr cow.Container, processSpec *specs.Process, io cmd.UpstreamIO) *ctr {
-	cmd := &cmd.Cmd{
-		Host: innerCtr,
-		Spec: processSpec,
-	}
-	if io != nil {
-		cmd.Stdin = io.Stdin()
-		cmd.Stdout = io.Stdout()
-		cmd.Stderr = io.Stderr()
-	}
-	ctr := &ctr{
-		innerCtr: innerCtr,
-		init:     newProcess(cmd, io),
-		waitCh:   make(chan struct{}),
-	}
-	return ctr
 }
 
 type cleanupSet []resources.ResourceCloser
@@ -337,7 +340,7 @@ func (cs cleanupSet) Release(ctx context.Context) (retErr error) {
 	return
 }
 
-func createCtr(ctx context.Context, c *core.LinuxCtrConfig, t *translator, gt *guestThing) (_ *ctr, err error) {
+func createCtr(ctx context.Context, c *core.LinuxCtrConfig, t *translator, gt *guestThing, waitCtx context.Context) (_ *ctr, err error) {
 	gc, _, err := t.translate(ctx, c)
 	if err != nil {
 		return nil, err
@@ -346,7 +349,7 @@ func createCtr(ctx context.Context, c *core.LinuxCtrConfig, t *translator, gt *g
 	if err != nil {
 		return nil, err
 	}
-	return newCtr(ctr, c.IO), nil
+	return newCtr(ctr, c.IO, waitCtx), nil
 }
 
 func (t *translator) translate(ctx context.Context, c *core.LinuxCtrConfig) (_ *guestConfig, _ []resources.ResourceCloser, err error) {

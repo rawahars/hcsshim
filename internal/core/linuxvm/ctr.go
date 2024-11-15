@@ -15,11 +15,12 @@ type ctr struct {
 	io       cmd.UpstreamIO
 	waitCh   chan struct{}
 	waitErr  error
+	waitCtx  context.Context
 }
 
 var _ core.Ctr = (*ctr)(nil)
 
-func newCtr(innerCtr cow.Container, io cmd.UpstreamIO) *ctr {
+func newCtr(innerCtr cow.Container, io cmd.UpstreamIO, waitCtx context.Context) *ctr {
 	cmd := &cmd.Cmd{
 		Host: innerCtr,
 	}
@@ -32,6 +33,7 @@ func newCtr(innerCtr cow.Container, io cmd.UpstreamIO) *ctr {
 		innerCtr: innerCtr,
 		init:     newProcess(cmd, io),
 		waitCh:   make(chan struct{}),
+		waitCtx:  waitCtx,
 	}
 	return ctr
 }
@@ -58,11 +60,17 @@ func (c *ctr) Wait(ctx context.Context) error {
 
 func (c *ctr) waitBackground() {
 	c.waitErr = func() error {
-		if err := c.init.Wait(context.Background()); err != nil {
+		if err := c.init.Wait(c.waitCtx); err == context.Canceled {
+			return ErrClose
+		} else if err != nil {
 			return err
 		}
-		<-c.innerCtr.WaitChannel()
-		return c.innerCtr.WaitError()
+		select {
+		case <-c.innerCtr.WaitChannel():
+			return c.innerCtr.WaitError()
+		case <-c.waitCtx.Done():
+			return ErrClose
+		}
 	}()
 	if c.io != nil {
 		c.io.Close(context.Background())

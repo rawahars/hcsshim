@@ -277,7 +277,24 @@ func (s *service) Start(ctx context.Context, req *task.StartRequest) (*task.Star
 		}
 	}
 	go func() {
-		c.Wait(context.Background())
+		waitCh := make(chan error)
+		go func() {
+			waitCh <- c.Wait(context.Background())
+		}()
+		select {
+		case err := <-waitCh:
+			logrus.WithFields(logrus.Fields{
+				"taskID":        req.ID,
+				"execID":        req.ExecID,
+				logrus.ErrorKey: err,
+			}).Error("failed waiting for task exit")
+		case <-s.sandbox.waitCtx.Done():
+			logrus.WithFields(logrus.Fields{
+				"taskID": req.ID,
+				"execID": req.ExecID,
+			}).Info("aborted task wait")
+			return
+		}
 		state.setExited(uint32(c.Status().ExitCode()))
 		if err := s.publisher.PublishEvent(ctx, runtime.TaskExitEventTopic, &events.TaskExit{
 			ContainerID: state.TaskID,

@@ -154,6 +154,10 @@ func (s *service) DialChannel(ctx context.Context, req *lmproto.DialChannelReque
 }
 
 func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSandboxRequest, stream lmproto.Migration_TransferSandboxServer) error {
+	if s.sandbox != nil {
+		logrus.Info("aborting task waits")
+		s.sandbox.waitCancel()
+	}
 	logrus.Info("TransferSandbox called")
 	if s.migState.c == 0 {
 		return fmt.Errorf("must set up channel before transferring")

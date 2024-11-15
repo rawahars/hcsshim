@@ -75,9 +75,11 @@ func (s *State) setExited(code uint32) {
 
 type Sandbox struct {
 	*State
-	Sandbox core.Sandbox
-	m       sync.Mutex
-	Tasks   map[string]*Task
+	Sandbox    core.Sandbox
+	m          sync.Mutex
+	Tasks      map[string]*Task
+	waitCtx    context.Context
+	waitCancel func()
 }
 
 func (s *Sandbox) get(taskID, execID string) (core.GenericCompute, *State, error) {
@@ -178,10 +180,13 @@ func (s *service) newOCISandbox(ctx context.Context, shimOpts *runhcsopts.Option
 		return nil, err
 	}
 
+	waitCtx, waitCancel := context.WithCancel(context.Background())
 	return &Sandbox{
-		Sandbox: sandbox,
-		Tasks:   make(map[string]*Task),
-		State:   newTaskState(req),
+		Sandbox:    sandbox,
+		Tasks:      make(map[string]*Task),
+		State:      newTaskState(req),
+		waitCtx:    waitCtx,
+		waitCancel: waitCancel,
 	}, nil
 }
 
