@@ -28,6 +28,7 @@ type migrationState struct {
 	c         windows.Handle
 	sandbox   core.Migratable
 	taskState map[string]*statepkg.TaskState
+	newID     string
 }
 
 var _ (lmproto.MigrationService) = (*service)(nil)
@@ -86,6 +87,7 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 		return err
 	}
 	s.migState = &migrationState{
+		newID:     req.ID,
 		sandbox:   sandbox,
 		taskState: config.Tasks,
 	}
@@ -205,6 +207,9 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 			return nil, err
 		}
 		s.sandbox = &Sandbox{
+			State: &State{
+				TaskID: s.migState.newID,
+			},
 			Sandbox: s.migState.sandbox.(core.Sandbox),
 			Tasks:   make(map[string]*Task),
 		}

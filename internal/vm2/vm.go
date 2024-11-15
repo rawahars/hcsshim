@@ -244,7 +244,8 @@ func convertConfig(config *Config) (*hcsschema.ComputeSystem, error) {
 				LinuxKernelDirect: &hcsschema.LinuxKernelDirect{
 					KernelFilePath: filepath.Join(bootFilesDir, "vmlinux"),
 					InitRdPath:     filepath.Join(bootFilesDir, "initrd.img"),
-					KernelCmdLine:  fmt.Sprintf("init=/init 8250_core.nr_uarts=1 8250_core.skip_txen_test=1 console=ttyS0,115200 panic=-1 debug pci=off nr_cpus=%d brd.rd_nr=0 pmtmr=0 printk.devkmsg=on -- -e 1 /bin/gcs -v4 /log-format json -loglevel debug", config.ProcessorCount),
+					// KernelCmdLine:  fmt.Sprintf("init=/init 8250_core.nr_uarts=1 8250_core.skip_txen_test=1 console=ttyS0,115200 panic=-1 debug pci=off nr_cpus=%d brd.rd_nr=0 pmtmr=0 printk.devkmsg=on -- -e 1 sh -c \"/bin/gcs -v4 /log-format json -loglevel debug & exec sh\"", config.ProcessorCount),
+					KernelCmdLine: fmt.Sprintf("init=/init 8250_core.nr_uarts=1 8250_core.skip_txen_test=1 console=ttyS0,115200 panic=-1 debug pci=off nr_cpus=%d brd.rd_nr=0 pmtmr=0 printk.devkmsg=on -- -e 1 /bin/gcs -v4 /log-format json -loglevel debug", config.ProcessorCount),
 				},
 			},
 			ComputeTopology: &hcsschema.Topology{

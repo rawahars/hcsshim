@@ -23,6 +23,7 @@ func main() {
 		execCommand,
 		closeIOCommand,
 		waitCommand,
+		connectCommand,
 		shutdownCommand,
 		// Extra
 		pipeCommand,

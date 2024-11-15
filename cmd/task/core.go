@@ -322,7 +322,7 @@ var execCommand = cli.Command{
 			Usage: "Named pipe path",
 		},
 		cli.BoolFlag{
-			Name:  "terminal",
+			Name:  "tty",
 			Usage: "Enable terminal mode for task IO",
 		},
 	},
@@ -437,6 +437,33 @@ var waitCommand = cli.Command{
 			ID:     id,
 			ExecID: execID,
 		}); err != nil {
+			return err
+		}
+		return nil
+	},
+}
+
+var connectCommand = cli.Command{
+	Name:           "connect",
+	ArgsUsage:      "<pipe> <task id>",
+	SkipArgReorder: true,
+	Before:         appargs.Validate(appargs.String, appargs.String),
+	Action: func(clictx *cli.Context) error {
+		args := clictx.Args()
+		address := args[0]
+		id := args[1]
+
+		conn, err := winio.DialPipe(address, nil)
+		if err != nil {
+			return fmt.Errorf("dial %s: %w", address, err)
+		}
+
+		client := ttrpc.NewClient(conn)
+		svc := task.NewTaskClient(client)
+
+		ctx := context.Background()
+
+		if _, err := svc.Connect(ctx, &task.ConnectRequest{ID: id}); err != nil {
 			return err
 		}
 		return nil
