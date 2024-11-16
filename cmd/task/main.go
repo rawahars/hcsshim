@@ -26,7 +26,7 @@ func main() {
 		connectCommand,
 		shutdownCommand,
 		// Extra
-		pipeCommand,
+		ioCommand,
 		eventsCommand,
 	}
 	if err := app.Run(os.Args); err != nil {

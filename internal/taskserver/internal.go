@@ -13,12 +13,18 @@ import (
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/core/linuxvm"
+	"github.com/Microsoft/hcsshim/internal/ctrdpub"
 	"github.com/Microsoft/hcsshim/internal/layers"
+	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oci"
+	"github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
 	containerd_v1_types "github.com/containerd/containerd/api/types/task"
 	taskapi "github.com/containerd/containerd/api/types/task"
+	"github.com/containerd/containerd/protobuf"
+	"github.com/containerd/containerd/runtime"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sirupsen/logrus"
 )
 
 type State struct {
@@ -218,4 +224,36 @@ func getOCISpec(ctx context.Context, bundle string, shimOpts *runhcsopts.Options
 		}
 	}
 	return &spec, nil
+}
+
+func waitContainer(ctx context.Context, c core.GenericCompute, state *State, publisher *ctrdpub.Publisher) {
+	waitCh := make(chan error)
+	go func() {
+		waitCh <- c.Wait(ctx)
+	}()
+	select {
+	case err := <-waitCh:
+		logrus.WithFields(logrus.Fields{
+			"taskID":        state.TaskID,
+			"execID":        state.ExecID,
+			logrus.ErrorKey: err,
+		}).Error("failed waiting for task exit")
+	case <-ctx.Done():
+		logrus.WithFields(logrus.Fields{
+			"taskID": state.TaskID,
+			"execID": state.ExecID,
+		}).Info("aborted task wait")
+		return
+	}
+	state.setExited(uint32(c.Status().ExitCode()))
+	if err := publisher.PublishEvent(ctx, runtime.TaskExitEventTopic, &events.TaskExit{
+		ContainerID: state.TaskID,
+		ID:          state.ExecID,
+		Pid:         state.Pid,
+		ExitStatus:  state.ExitStatus,
+		ExitedAt:    protobuf.ToTimestamp(state.ExitedAt),
+	}); err != nil {
+		log.G(ctx).WithError(err).Info("PublishEvent failed")
+	}
+	close(state.waitCh)
 }

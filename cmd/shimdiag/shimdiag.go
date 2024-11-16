@@ -27,14 +27,8 @@ func main() {
 		lmDialCommand,
 		lmTransferCommand,
 		lmFinalizeCommand,
-		createCommand,
-		pipeCommand,
-		startCommand,
-		eventsCommand,
 		json2pbCommand,
 		pb2jsonCommand,
-		deleteCommand,
-		shutdownCommand,
 	}
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)

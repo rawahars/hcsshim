@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net"
 	"slices"
 	"strconv"
@@ -210,7 +209,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		return nil, err
 	}
 	ctrConfig := &core.LinuxCtrConfig{
-		ID:     id,
+		ID:     "SANDBOX",
 		Layers: l,
 		Spec:   newSpec,
 	}
@@ -236,7 +235,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		translator: translator,
 		pauseCtr:   pauseCtr,
 		ctrs: map[string]*ctr{
-			id: pauseCtr,
+			"SANDBOX": pauseCtr,
 		},
 		allowMigration: allowMigration,
 		waitCh:         make(chan struct{}),
@@ -296,37 +295,6 @@ func (s *Sandbox) CreateLinuxContainer(ctx context.Context, c *core.LinuxCtrConf
 	s.ctrs[c.ID] = ctr
 	s.ctrsLock.Unlock()
 	return ctr, nil
-}
-
-func (s *Sandbox) RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (core.Ctr, error) {
-	innerCtr, err := s.gt.OpenContainer(ctx, cid)
-	if err != nil {
-		return nil, err
-	}
-	var (
-		stdin          io.Reader
-		stdout, stderr io.Writer
-	)
-	if myIO != nil {
-		stdin = myIO.Stdin()
-		stdout = myIO.Stdout()
-		stderr = myIO.Stderr()
-	}
-	cmd, err := cmd.Open(ctx, innerCtr, pid, stdin, stdout, stderr)
-	if err != nil {
-		return nil, err
-	}
-	p := newProcess(cmd, myIO)
-	c := &ctr{
-		innerCtr: innerCtr,
-		init:     p,
-		io:       myIO,
-		waitCh:   make(chan struct{}),
-		waitCtx:  s.waitCtx,
-	}
-	go p.waitBackground()
-	go c.waitBackground()
-	return c, nil
 }
 
 type cleanupSet []resources.ResourceCloser

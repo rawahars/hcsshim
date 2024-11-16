@@ -251,12 +251,12 @@ func (b *Bridge) ListenAndServe(bridgeIn io.ReadCloser, bridgeOut io.WriteCloser
 	responseErrChan := make(chan error, 1)
 	b.quitChan = make(chan bool)
 
-	defer close(b.quitChan)
 	defer bridgeOut.Close()
 	// defer close(responseErrChan)
 	defer close(b.responseChan)
 	// defer close(requestChan)
 	// defer close(requestErrChan)
+	defer close(b.quitChan)
 	defer bridgeIn.Close()
 
 	// Receive bridge requests and schedule them to be processed.
@@ -386,6 +386,11 @@ func (b *Bridge) ListenAndServe(bridgeIn io.ReadCloser, bridgeOut io.WriteCloser
 						setErrorForResponseBase(resp.Base(), err)
 					}
 					br.response = resp
+					select {
+					case <-b.quitChan:
+						return
+					default:
+					}
 					select {
 					case b.responseChan <- br:
 					case <-b.quitChan:

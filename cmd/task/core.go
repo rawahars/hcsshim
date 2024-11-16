@@ -200,14 +200,21 @@ var startCommand = cli.Command{
 }
 
 var deleteCommand = cli.Command{
-	Name:           "delete",
-	ArgsUsage:      "<pipe> <task id>",
+	Name:      "delete",
+	ArgsUsage: "<pipe> <task id>",
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "execid",
+		},
+	},
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String, appargs.String),
 	Action: func(clictx *cli.Context) error {
 		args := clictx.Args()
 		address := args[0]
 		id := args[1]
+
+		execID := clictx.String("execid")
 
 		conn, err := winio.DialPipe(address, nil)
 		if err != nil {
@@ -219,7 +226,7 @@ var deleteCommand = cli.Command{
 
 		ctx := context.Background()
 
-		if _, err := svc.Delete(ctx, &task.DeleteRequest{ID: id}); err != nil {
+		if _, err := svc.Delete(ctx, &task.DeleteRequest{ID: id, ExecID: execID}); err != nil {
 			return err
 		}
 		return nil

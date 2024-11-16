@@ -13,8 +13,11 @@ import (
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/core/linuxvm"
 	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
+	"github.com/Microsoft/hcsshim/internal/log"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
+	"github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
+	"github.com/containerd/containerd/runtime"
 	"github.com/containerd/typeurl/v2"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sys/windows"
@@ -213,7 +216,7 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 
 func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSandboxRequest) (*lmproto.FinalizeSandboxResponse, error) {
 	if s.migState.migrated == nil {
-		return nil, fmt.Errorf("No migrated sandbox is present")
+		return nil, fmt.Errorf("no migrated sandbox is present")
 	}
 	switch req.Action {
 	case lmproto.FinalizeSandboxRequest_ACTION_RESUME:
@@ -221,17 +224,47 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 		if err != nil {
 			return nil, err
 		}
+		waitCtx, waitCancel := context.WithCancel(context.Background())
 		s.sandbox = &Sandbox{
 			State: &State{
 				TaskID: s.migState.newID,
+				waitCh: make(chan struct{}),
 			},
-			Sandbox: sandbox,
-			Tasks:   make(map[string]*Task),
+			Sandbox:    sandbox,
+			Tasks:      make(map[string]*Task),
+			waitCtx:    waitCtx,
+			waitCancel: waitCancel,
 		}
+		go waitContainer(s.sandbox.waitCtx, s.sandbox.Sandbox, s.sandbox.State, s.publisher)
 	case lmproto.FinalizeSandboxRequest_ACTION_STOP:
 		if err := s.migState.migrated.LMKill(ctx); err != nil {
 			return nil, err
 		}
+		for _, t := range s.sandbox.Tasks {
+			t.setExited(255)
+			if err := s.publisher.PublishEvent(ctx, runtime.TaskExitEventTopic, &events.TaskExit{
+				ContainerID: t.TaskID,
+				ID:          t.ExecID,
+				Pid:         t.Pid,
+				ExitStatus:  t.ExitStatus,
+				ExitedAt:    timestamppb.New(t.ExitedAt),
+			}); err != nil {
+				log.G(ctx).WithError(err).Info("PublishEvent failed")
+			}
+		}
+		s.sandbox.setExited(255)
+		if err := s.publisher.PublishEvent(ctx, runtime.TaskExitEventTopic, &events.TaskExit{
+			ContainerID: s.sandbox.TaskID,
+			Pid:         s.sandbox.Pid,
+			ExitStatus:  s.sandbox.ExitStatus,
+			ExitedAt:    timestamppb.New(s.sandbox.ExitedAt),
+		}); err != nil {
+			log.G(ctx).WithError(err).Info("PublishEvent failed")
+		}
+		s.sandbox = nil
+		// We should do this for resume at some point as well, but can't do it right away,
+		// since we need the info in migState for container restore.
+		s.migState = nil
 	default:
 		return nil, fmt.Errorf("unsupported action: %v", req.Action)
 	}
@@ -339,12 +372,14 @@ func (s *service) newRestoreContainer(ctx context.Context, shimOpts *runhcsopts.
 	if err != nil {
 		return err
 	}
-
-	s.sandbox.Tasks[req.ID] = &Task{
+	t := &Task{
 		State: newTaskState(req),
 		Ctr:   ctr,
 		Execs: make(map[string]*Exec),
 	}
+	s.sandbox.Tasks[req.ID] = t
+
+	go waitContainer(s.sandbox.waitCtx, ctr, t.State, s.publisher)
 
 	return nil
 }

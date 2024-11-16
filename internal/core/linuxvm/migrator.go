@@ -3,10 +3,12 @@ package linuxvm
 import (
 	"context"
 	"fmt"
+	"io"
 	"net"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	"github.com/Microsoft/hcsshim/internal/hns"
@@ -65,14 +67,21 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 	s.isLMSrc = true
 	vmConfig := s.vm.Config()
 	vmConfig.NICs = nil
+	containers := make(map[string]*statepkg.Container)
+	for id, ctr := range s.ctrs {
+		containers[id] = &statepkg.Container{
+			InitPid: uint32(ctr.Pid()),
+		}
+	}
 	s.state = &statepkg.SandboxState{
 		Vm: &statepkg.VMState{
 			Config:     statepkg.VMConfigFromInternal(vmConfig),
 			CompatInfo: compatInfo,
 			Resources:  intResources,
 		},
-		Agent:  s.gm.State(),
-		Ifaces: s.ifaces,
+		Agent:      s.gm.State(),
+		Ifaces:     s.ifaces,
+		Containers: containers,
 	}
 	return s.state, resources, nil
 }
@@ -89,17 +98,18 @@ func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) (core.Migrated
 }
 
 type migrated struct {
-	vm          *vm.VM
-	agentConfig *statepkg.GCState
-	newNetNS    string
-	oldIfaces   []*statepkg.GuestInterface
+	vm               *vm.VM
+	sandboxContainer *statepkg.Container
+	agentConfig      *statepkg.GCState
+	newNetNS         string
+	oldIfaces        []*statepkg.GuestInterface
 }
 
 func (m *migrated) LMComplete(ctx context.Context) (core.Sandbox, error) {
 	if err := m.vm.LMFinalize(ctx, true); err != nil {
 		return nil, err
 	}
-	return newSandbox(ctx, m.vm, m.agentConfig, m.newNetNS, m.oldIfaces)
+	return newSandbox(ctx, m.vm, m.sandboxContainer, m.agentConfig, m.newNetNS, m.oldIfaces)
 }
 
 func (m *migrated) LMKill(ctx context.Context) error {
@@ -145,14 +155,15 @@ func (m *migrator) LMTransfer(ctx context.Context, socket uintptr) (core.Migrate
 		return nil, err
 	}
 	return &migrated{
-		vm:          m.vm,
-		agentConfig: m.sandboxState.Agent,
-		newNetNS:    m.netns,
-		oldIfaces:   m.sandboxState.Ifaces,
+		vm:               m.vm,
+		sandboxContainer: m.sandboxState.Containers["SANDBOX"],
+		agentConfig:      m.sandboxState.Agent,
+		newNetNS:         m.netns,
+		oldIfaces:        m.sandboxState.Ifaces,
 	}, nil
 }
 
-func newSandbox(ctx context.Context, vm *vm.VM, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface) (core.Sandbox, error) {
+func newSandbox(ctx context.Context, vm *vm.VM, sandboxContainer *statepkg.Container, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface) (core.Sandbox, error) {
 	gm, err := guestmanager.NewLinuxManagerFromState(
 		func(port uint32) (net.Listener, error) { return vm.ListenHVSocket(winio.VsockServiceID(port)) },
 		agentConfig)
@@ -203,10 +214,16 @@ func newSandbox(ctx context.Context, vm *vm.VM, agentConfig *statepkg.GCState, n
 	}
 
 	waitCtx, waitCancel := context.WithCancel(context.Background())
-	return &Sandbox{
+	gt := newGuestThing(gm)
+	pauseCtr, err := restoreContainer(ctx, gt, waitCtx, "SANDBOX", sandboxContainer.InitPid, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	sandbox := &Sandbox{
 		vm: vm,
 		gm: gm,
-		gt: newGuestThing(gm),
+		gt: gt,
 		translator: &translator{
 			vm:             vm,
 			scsiAttacher:   nil,
@@ -217,5 +234,47 @@ func newSandbox(ctx context.Context, vm *vm.VM, agentConfig *statepkg.GCState, n
 		ifaces:     ifaces,
 		waitCtx:    waitCtx,
 		waitCancel: waitCancel,
-	}, nil
+		pauseCtr:   pauseCtr,
+	}
+	go sandbox.waitBackground()
+	return sandbox, nil
+}
+
+func restoreContainer(ctx context.Context, gt *guestThing, waitCtx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (*ctr, error) {
+	innerCtr, err := gt.OpenContainer(ctx, cid)
+	if err != nil {
+		return nil, err
+	}
+	var (
+		stdin          io.Reader
+		stdout, stderr io.Writer
+	)
+	if myIO != nil {
+		stdin = myIO.Stdin()
+		stdout = myIO.Stdout()
+		stderr = myIO.Stderr()
+	}
+	cmd, err := cmd.Open(ctx, innerCtr, pid, stdin, stdout, stderr)
+	if err != nil {
+		return nil, err
+	}
+	p := newProcess(cmd, myIO)
+	c := &ctr{
+		innerCtr: innerCtr,
+		init:     p,
+		io:       myIO,
+		waitCh:   make(chan struct{}),
+		waitCtx:  waitCtx,
+	}
+	go p.waitBackground()
+	go c.waitBackground()
+	return c, nil
+}
+
+func (s *Sandbox) RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (core.Ctr, error) {
+	c, err := restoreContainer(ctx, s.gt, s.waitCtx, cid, pid, myIO)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }

@@ -4,13 +4,15 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"net"
 	"os"
+	"path/filepath"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/hcsshim/internal/appargs"
+	"github.com/containerd/console"
 	eventtypes "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/services/ttrpc/events/v1"
 	"github.com/containerd/ttrpc"
@@ -19,48 +21,97 @@ import (
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
-var pipeCommand = cli.Command{
-	Name:           "pipe",
-	Usage:          "",
-	ArgsUsage:      "[flags] <stdin pipe> <stdout pipe> <stderr pipe>",
-	Flags:          []cli.Flag{},
-	SkipArgReorder: true,
-	Action: func(clictx *cli.Context) error {
-		args := clictx.Args()
+type rawConReader struct {
+	f *os.File
+}
 
-		f := func(name, pipe string, wg *sync.WaitGroup, copy func(c net.Conn) (int64, error)) {
-			defer wg.Done()
-			l, err := winio.ListenPipe(pipe, nil)
+func (r rawConReader) Read(b []byte) (int, error) {
+	n, err := syscall.Read(syscall.Handle(r.f.Fd()), b)
+	if n == 0 && len(b) != 0 && err == nil {
+		// A zero-byte read on a console indicates that the user wrote Ctrl-Z.
+		b[0] = 26
+		return 1, nil
+	}
+	return n, err
+}
+
+func pipeIO(name string, path string, f interface{}, in bool, wg *sync.WaitGroup) error {
+	l, err := winio.ListenPipe(path, nil)
+	if err != nil {
+		return err
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		fmt.Printf("%s: listening on %s\n", name, path)
+		c, err := l.Accept()
+		if err != nil {
+			fmt.Printf("%s: connection failed: %s\n", name, err)
+			return
+		}
+		fmt.Printf("%s: received connection\n", name)
+		var copy func() (int64, error)
+		if in {
+			copy = func() (int64, error) { return io.Copy(c, f.(io.Reader)) }
+			defer c.Close()
+		} else {
+			copy = func() (int64, error) { return io.Copy(f.(io.Writer), c) }
+		}
+		n, err := copy()
+		fmt.Printf("%s: copy completed after %d bytes", name, n)
+		if err != nil {
+			fmt.Printf(" with error: %s", err)
+		}
+		fmt.Printf("\n")
+	}()
+	return nil
+}
+
+var ioCommand = cli.Command{
+	Name:      "io",
+	Usage:     "",
+	ArgsUsage: "[flags] <pipe base name>",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name: "tty",
+		},
+	},
+	SkipArgReorder: true,
+	Before:         appargs.Validate(appargs.String),
+	Action: func(clictx *cli.Context) error {
+		pipeBase := clictx.Args()[0]
+
+		var stdin io.Reader = os.Stdin
+		if clictx.Bool("tty") {
+			con, err := console.ConsoleFromFile(os.Stdin)
 			if err != nil {
-				panic(err)
+				return err
 			}
-			fmt.Printf("%s: listening on %s\n", name, pipe)
-			c, err := l.Accept()
-			if err != nil {
-				panic(err)
+			if err := con.SetRaw(); err != nil {
+				return err
 			}
-			fmt.Printf("%s: received connection\n", name)
-			n, err := copy(c)
-			fmt.Printf("%s: copy completed after %d bytes", name, n)
-			if err != nil {
-				fmt.Printf(" and error: %s", err)
-			}
-			fmt.Printf("\n")
+			defer con.Reset()
+			stdin = rawConReader{os.Stdin}
 		}
 
 		var wg sync.WaitGroup
-		if len(args) > 0 {
-			wg.Add(1)
-			go f("stdin", args[0], &wg, func(c net.Conn) (int64, error) { return io.Copy(c, os.Stdin) })
+
+		stdinPath := filepath.Join(pipeBase, "stdin")
+		if err := pipeIO("stdin", stdinPath, stdin, true, &wg); err != nil {
+			return err
 		}
-		if len(args) > 1 {
-			wg.Add(1)
-			go f("stdout", args[1], &wg, func(c net.Conn) (int64, error) { return io.Copy(os.Stdout, c) })
+		stdoutPath := filepath.Join(pipeBase, "stdout")
+		if err := pipeIO("stdout", stdoutPath, os.Stdout, false, &wg); err != nil {
+			return err
 		}
-		if len(args) > 2 {
-			wg.Add(1)
-			go f("stderr", args[2], &wg, func(c net.Conn) (int64, error) { return io.Copy(os.Stderr, c) })
+		var stderrPath string
+		if !clictx.Bool("tty") {
+			stderrPath = filepath.Join(pipeBase, "stderr")
+			if err := pipeIO("stderr", stderrPath, os.Stderr, false, &wg); err != nil {
+				return err
+			}
 		}
+
 		wg.Wait()
 
 		return nil
