@@ -242,6 +242,7 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 		}
 		for _, t := range s.sandbox.Tasks {
 			t.setExited(255)
+			close(t.waitCh)
 			if err := s.publisher.PublishEvent(ctx, runtime.TaskExitEventTopic, &events.TaskExit{
 				ContainerID: t.TaskID,
 				ID:          t.ExecID,
@@ -253,6 +254,7 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 			}
 		}
 		s.sandbox.setExited(255)
+		close(s.sandbox.waitCh)
 		if err := s.publisher.PublishEvent(ctx, runtime.TaskExitEventTopic, &events.TaskExit{
 			ContainerID: s.sandbox.TaskID,
 			Pid:         s.sandbox.Pid,

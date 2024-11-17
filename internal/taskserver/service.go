@@ -25,6 +25,7 @@ import (
 )
 
 type service struct {
+	shimID    string
 	sandbox   *Sandbox
 	m         sync.Mutex
 	closeCh   chan<- struct{}
@@ -33,8 +34,9 @@ type service struct {
 	migState  *migrationState
 }
 
-func NewService(closeCh chan<- struct{}, publisher *ctrdpub.Publisher) *service {
+func NewService(shimID string, closeCh chan<- struct{}, publisher *ctrdpub.Publisher) *service {
 	return &service{
+		shimID:    shimID,
 		closeCh:   closeCh,
 		publisher: publisher,
 	}
@@ -244,7 +246,7 @@ func (s *service) Resume(ctx context.Context, req *task.ResumeRequest) (*emptypb
 }
 
 func (s *service) Shutdown(ctx context.Context, req *task.ShutdownRequest) (*emptypb.Empty, error) {
-	if req.ID == s.sandbox.TaskID {
+	if req.ID == s.shimID {
 		s.closeOnce.Do(func() { close(s.closeCh) })
 	}
 	return &emptypb.Empty{}, nil

@@ -205,7 +205,7 @@ var serveCommand = cli.Command{
 
 		// Setup the ttrpc server
 		closeCh := make(chan struct{})
-		coreSvc := taskserver.NewService(closeCh, publisher)
+		coreSvc := taskserver.NewService(idFlag, closeCh, publisher)
 		taskSvc := taskserver.NewInstrumentedService(coreSvc)
 		// svc, err = NewService(WithEventPublisher(ttrpcEventPublisher),
 		// 	WithTID(idFlag),

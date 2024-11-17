@@ -44,7 +44,6 @@ type Sandbox struct {
 	waitCh         chan struct{}
 	waitErr        error
 	allowMigration bool
-	endpoints      map[string]string // VM NIC ID -> guest interface ID
 	isLMSrc        bool
 	ifaces         []*statepkg.GuestInterface
 	state          *statepkg.SandboxState

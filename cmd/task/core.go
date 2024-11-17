@@ -440,12 +440,15 @@ var waitCommand = cli.Command{
 
 		ctx := context.Background()
 
-		if _, err := svc.Wait(ctx, &task.WaitRequest{
+		resp, err := svc.Wait(ctx, &task.WaitRequest{
 			ID:     id,
 			ExecID: execID,
-		}); err != nil {
+		})
+		if err != nil {
 			return err
 		}
+		fmt.Printf("ExitStatus: %d\n", resp.ExitStatus)
+		fmt.Printf("ExitedAt: %v\n", resp.ExitedAt.AsTime())
 		return nil
 	},
 }
