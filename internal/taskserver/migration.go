@@ -375,12 +375,13 @@ func (s *service) newRestoreContainer(ctx context.Context, shimOpts *runhcsopts.
 		return err
 	}
 	t := &Task{
-		State: newTaskState(req),
+		State: restoredTaskState(req, taskState.Pid),
 		Ctr:   ctr,
 		Execs: make(map[string]*Exec),
 	}
 	s.sandbox.Tasks[req.ID] = t
 
+	// TODO: Don't assume it's already started here.
 	go waitContainer(s.sandbox.waitCtx, ctr, t.State, s.publisher)
 
 	return nil

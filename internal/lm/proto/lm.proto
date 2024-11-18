@@ -93,7 +93,7 @@ message TransferSandboxResponse {
         STATUS_UNSPECIFIED = 0;
         STATUS_BROWNOUT_IN_PROGRESS = 1;
         STATUS_BLACKOUT_IN_PROGRESS = 2;
-        STATUS_CONMPLETE = 3;
+        STATUS_COMPLETE = 3;
         STATUS_FAILED = 4;
         STATUS_CANCEL = 5;
     }

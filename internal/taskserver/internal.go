@@ -67,6 +67,13 @@ func newExecState(req *task.ExecProcessRequest, bundle string) *State {
 	return newState(req.ID, req.ExecID, req.Stdin, req.Stdout, req.Stderr, req.Terminal, bundle)
 }
 
+func restoredTaskState(req *task.CreateTaskRequest, pid uint32) *State {
+	// TODO: Don't hardcode RUNNING here.
+	state := newState(req.ID, "", req.Stdin, req.Stdout, req.Stderr, req.Terminal, req.Bundle)
+	state.setStarted(pid)
+	return state
+}
+
 func (s *State) setStarted(pid uint32) {
 	s.Pid = pid
 	s.Status = containerd_v1_types.Status_RUNNING

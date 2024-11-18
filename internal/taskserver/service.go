@@ -84,6 +84,10 @@ func (s *service) Create(ctx context.Context, req *task.CreateTaskRequest) (*tas
 		return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "if using terminal, stderr must be empty")
 	}
 
+	resp := &task.CreateTaskResponse{
+		Pid: 0,
+	}
+
 	if s.sandbox == nil {
 		switch shimOpts.BundleType {
 		case runhcsopts.BundleType_BUNDLE_OCI:
@@ -109,13 +113,10 @@ func (s *service) Create(ctx context.Context, req *task.CreateTaskRequest) (*tas
 			if err := s.newRestoreContainer(ctx, shimOpts, req); err != nil {
 				return nil, err
 			}
+			resp.Pid = s.sandbox.Tasks[req.ID].Pid
 		default:
 			return nil, fmt.Errorf("unsupported bundle type: %s", shimOpts.BundleType)
 		}
-	}
-
-	resp := &task.CreateTaskResponse{
-		Pid: 0,
 	}
 
 	if err := s.publisher.PublishEvent(ctx, runtime.TaskCreateEventTopic, &events.TaskCreate{
