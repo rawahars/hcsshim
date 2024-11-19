@@ -123,6 +123,7 @@ func (gc *GuestConnection) execInner(ctx context.Context, cid string, params int
 		return 0, err
 	}
 	p.id = resp.ProcessID
+	p.startWait(ctx)
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
 	gc.procs[procIdent{cid, p.id}] = p
@@ -133,19 +134,25 @@ func (gc *GuestConnection) execInner(ctx context.Context, cid string, params int
 func (gc *GuestConnection) OpenProcess(ctx context.Context, cid string, pid uint32) (_ cow.Process, err error) {
 	gc.mu.Lock()
 	defer gc.mu.Unlock()
-	p := gc.procs[procIdent{cid, pid}]
-	// Start a wait message.
+	p, ok := gc.procs[procIdent{cid, pid}]
+	if !ok {
+		return nil, fmt.Errorf("process %d in container %s not found", pid, cid)
+	}
+	return p, nil
+}
+
+func (p *Process) startWait(ctx context.Context) (err error) {
 	waitReq := containerWaitForProcess{
-		requestBase: makeRequest(ctx, cid),
+		requestBase: makeRequest(ctx, p.cid),
 		ProcessID:   p.id,
 		TimeoutInMs: 0xffffffff,
 	}
-	p.waitCall, err = gc.brdg.AsyncRPC(ctx, rpcWaitForProcess, &waitReq, &p.waitResp)
+	p.waitCall, err = p.gc.brdg.AsyncRPC(ctx, rpcWaitForProcess, &waitReq, &p.waitResp)
 	if err != nil {
-		return nil, fmt.Errorf("failed to wait on process, leaking process: %s", err)
+		return fmt.Errorf("failed to wait on process, leaking process: %s", err)
 	}
 	go p.waitBackground()
-	return p, nil
+	return nil
 }
 
 type processState struct {

@@ -137,8 +137,8 @@ func (gcc *GuestConnectionConfig) Connect(ctx context.Context, isColdStart bool)
 		gc.Close()
 		return nil, err
 	}
-	for id := range gc.procs {
-		if _, err := gc.OpenProcess(ctx, id.cid, id.pid); err != nil {
+	for _, p := range gc.procs {
+		if err := p.startWait(ctx); err != nil {
 			return nil, err
 		}
 	}
