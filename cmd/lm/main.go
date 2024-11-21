@@ -13,14 +13,17 @@ import (
 
 func main() {
 	app := cli.NewApp()
-	app.Name = "shimdiag"
-	app.Usage = "runhcs shim diagnostic tool"
+	app.Name = "lm"
+	app.Usage = "Interact with runhcs shim live migration interface"
 	app.Commands = []cli.Command{
-		listCommand,
-		execCommand,
-		stacksCommand,
-		tasksCommand,
-		shareCommand,
+		lmPrepareCommand,
+		lmListenCommand,
+		lmAcceptCommand,
+		lmDialCommand,
+		lmTransferCommand,
+		lmFinalizeCommand,
+		json2pbCommand,
+		pb2jsonCommand,
 	}
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)
