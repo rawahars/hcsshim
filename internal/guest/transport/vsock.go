@@ -4,10 +4,14 @@
 package transport
 
 import (
+	"context"
 	"fmt"
+	"sync"
 	"syscall"
 	"time"
 
+	"github.com/Microsoft/hcsshim/internal/guest/reconn"
+	"github.com/cenkalti/backoff/v4"
 	"github.com/linuxkit/virtsock/pkg/vsock"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
@@ -15,7 +19,10 @@ import (
 
 // VsockTransport is an implementation of Transport which uses vsock
 // sockets.
-type VsockTransport struct{}
+type VsockTransport struct {
+	m     sync.Mutex
+	conns []*reconn.Pipe
+}
 
 var _ Transport = &VsockTransport{}
 
@@ -45,3 +52,49 @@ func (t *VsockTransport) Dial(port uint32) (Connection, error) {
 	}
 	return nil, fmt.Errorf("failed connecting the VsockConnection: can't connect after 10 attempts")
 }
+
+func (t *VsockTransport) DialReconn(port uint32) (NewConnection, error) {
+	c, err := t.Dial(port)
+	if err != nil {
+		return nil, err
+	}
+	rp := reconn.NewPipe(
+		func(ctx context.Context) (reconn.Conn, error) {
+			logrus.WithField("port", port).Info("reconnecting port")
+			return vsock.Dial(vsock.CIDHost, port)
+		},
+		c,
+		backoff.NewConstantBackOff(5*time.Second),
+		func(err error) bool {
+			return true
+		},
+	)
+	t.m.Lock()
+	t.conns = append(t.conns, rp)
+	t.m.Unlock()
+	return &connWrapper{rp, t}, nil
+}
+
+func (t *VsockTransport) DisconnectReconns() {
+	t.m.Lock()
+	defer t.m.Unlock()
+	for _, conn := range t.conns {
+		conn.Disconnect()
+	}
+}
+
+type connWrapper struct {
+	NewConnection
+	t *VsockTransport
+}
+
+// func (w *connWrapper) Close() error {
+// 	w.t.m.Lock()
+// 	for i, conn := range w.t.conns {
+// 		if conn == w.Connection {
+// 			w.t.conns = append(w.t.conns[:i], w.t.conns[i+1:]...)
+// 		}
+// 	}
+// 	w.t.m.Unlock()
+// 	return w.Connection.Close()
+// }

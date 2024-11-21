@@ -4,14 +4,9 @@
 package stdio
 
 import (
-	"context"
 	"io"
-	"time"
 
-	"github.com/Microsoft/hcsshim/internal/guest/reconn"
 	"github.com/Microsoft/hcsshim/internal/guest/transport"
-	"github.com/cenkalti/backoff/v4"
-	"github.com/linuxkit/virtsock/pkg/vsock"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -80,71 +75,36 @@ func Connect(tport transport.Transport, settings ConnectionSettings) (_ *Connect
 		}
 	}()
 	if settings.StdIn != nil {
-		port := *settings.StdIn
-		c, err := tport.Dial(port)
+		logrus.WithField("port", *settings.StdIn).Info("connecting to stdin port")
+		c, err := tport.DialReconn(*settings.StdIn)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed creating stdin Connection")
 		}
-		rp := reconn.NewPipe(
-			func(ctx context.Context) (reconn.Conn, error) {
-				logrus.Info("redialing stdin")
-				return vsock.Dial(vsock.CIDHost, port)
-			},
-			c,
-			backoff.NewConstantBackOff(5*time.Second),
-			func(err error) bool {
-				logrus.Infof("stdin disconnected with %s", err)
-				return true
-			},
-		)
 		connSet.In = &logConnection{
-			con:  rp,
+			con:  c,
 			port: *settings.StdIn,
 		}
 	}
 	if settings.StdOut != nil {
-		port := *settings.StdOut
-		c, err := tport.Dial(port)
+		logrus.WithField("port", *settings.StdOut).Info("connecting to stdout port")
+		c, err := tport.DialReconn(*settings.StdOut)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed creating stdout Connection")
 		}
-		rp := reconn.NewPipe(
-			func(ctx context.Context) (reconn.Conn, error) {
-				logrus.Info("redialing stdout")
-				return vsock.Dial(vsock.CIDHost, port)
-			},
-			c,
-			backoff.NewConstantBackOff(5*time.Second),
-			func(err error) bool {
-				logrus.Infof("stdout disconnected with %s", err)
-				return true
-			},
-		)
 		connSet.Out = &logConnection{
-			con:  rp,
+			con:  c,
 			port: *settings.StdOut,
 		}
 	}
 	if settings.StdErr != nil {
-		port := *settings.StdErr
-		c, err := tport.Dial(port)
+		logrus.WithField("port", *settings.StdErr).Info("connecting to stderr port")
+		c, err := tport.DialReconn(*settings.StdErr)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed creating stderr Connection")
 		}
-		rp := reconn.NewPipe(
-			func(ctx context.Context) (reconn.Conn, error) {
-				logrus.Info("redialing stderr")
-				return vsock.Dial(vsock.CIDHost, port)
-			},
-			c,
-			backoff.NewConstantBackOff(5*time.Second),
-			func(err error) bool {
-				logrus.Infof("stderr disconnected with %s", err)
-				return true
-			},
-		)
+
 		connSet.Err = &logConnection{
-			con:  rp,
+			con:  c,
 			port: *settings.StdErr,
 		}
 	}

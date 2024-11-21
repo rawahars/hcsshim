@@ -61,6 +61,13 @@ func NewPipe(d Dialer, c Conn, backoff backoff.BackOff, errFilter func(err error
 	return p
 }
 
+func (r *Pipe) Disconnect() error {
+	c := r.c.Load().(Conn)
+	c.Close()
+	go r.reconn(c, 2)
+	return nil
+}
+
 func (r *Pipe) Read(p []byte) (n int, err error) {
 	if r.readClosed.Load() {
 		return 0, fmt.Errorf("read is closed")

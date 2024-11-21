@@ -422,6 +422,7 @@ func main() {
 				logrus.ErrorKey: err,
 			}).Error("failed to serve gcs service")
 		}
+		tport.DisconnectReconns()
 		time.Sleep(3 * time.Second)
 	}
 
