@@ -6,7 +6,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/Microsoft/go-winio"
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
@@ -21,22 +23,17 @@ import (
 	"google.golang.org/protobuf/types/known/anypb"
 )
 
-var lmPrepareCommand = cli.Command{
-	Name:      "lmprepare",
-	Usage:     "Prepares the sandbox for migration",
-	ArgsUsage: "[flags] <pipe> <output file>",
-	Flags: []cli.Flag{
-		cli.StringFlag{
-			Name:  "format",
-			Usage: "Can be 'bin' or 'json'",
-			Value: "bin",
-		},
-	},
+var prepareCommand = cli.Command{
+	Name:           "prepare",
+	Usage:          "Prepares the sandbox for migration",
+	ArgsUsage:      "[flags] <pipe> <config output file> <resources output file>",
 	SkipArgReorder: true,
-	Before:         appargs.Validate(appargs.String, appargs.String),
+	Before:         appargs.Validate(appargs.String, appargs.String, appargs.String),
 	Action: func(clictx *cli.Context) error {
 		args := clictx.Args()
 		address := args[0]
+		configPath := args[1]
+		resourcesPath := args[2]
 
 		conn, err := winio.DialPipe(address, nil)
 		if err != nil {
@@ -52,30 +49,65 @@ var lmPrepareCommand = cli.Command{
 		if err != nil {
 			return err
 		}
-		var marshaler interface {
-			Marshal(protoreflect.ProtoMessage) ([]byte, error)
+
+		writeOutput := func(path string, data protoreflect.ProtoMessage) error {
+			marshaler, err := getMarshalerByExtension(path)
+			if err != nil {
+				return err
+			}
+			output, err := marshaler.Marshal(data)
+			if err != nil {
+				return err
+			}
+			if err := os.WriteFile(path, output, 0644); err != nil {
+				return err
+			}
+			return nil
 		}
-		switch clictx.String("format") {
-		case "bin":
-			marshaler = proto.MarshalOptions{}
-		case "json":
-			marshaler = protojson.MarshalOptions{Multiline: true, Indent: "\t", EmitUnpopulated: true}
-		default:
-			return fmt.Errorf("unsupported format: %s", clictx.String("format"))
+
+		if err := writeOutput(configPath, resp.Config); err != nil {
+			return fmt.Errorf("writing config output file: %w", err)
 		}
-		output, err := marshaler.Marshal(resp)
-		if err != nil {
-			return err
+		if err := writeOutput(resourcesPath, resp.Resources); err != nil {
+			return fmt.Errorf("writing config output file: %w", err)
 		}
-		if err := os.WriteFile(args[1], output, 0644); err != nil {
-			return err
-		}
+
 		return nil
 	},
 }
 
-var lmListenCommand = cli.Command{
-	Name:      "lmlisten",
+type marshaler interface {
+	Marshal(protoreflect.ProtoMessage) ([]byte, error)
+}
+
+type unmarshaler interface {
+	Unmarshal(b []byte, m protoreflect.ProtoMessage) error
+}
+
+func getMarshalerByExtension(path string) (marshaler, error) {
+	switch filepath.Ext(path) {
+	case ".binpb":
+		return proto.MarshalOptions{}, nil
+	case ".jsonpb":
+		return protojson.MarshalOptions{Multiline: true, Indent: "\t", EmitUnpopulated: true}, nil
+	default:
+		return nil, fmt.Errorf("only .binpb and .jsonpb file extensions are supported: %s", filepath.Ext(path))
+	}
+}
+
+func getUnmarshalerByExtension(path string) (unmarshaler, error) {
+	switch filepath.Ext(path) {
+	case ".binpb":
+		return proto.UnmarshalOptions{}, nil
+	case ".jsonpb":
+		return protojson.UnmarshalOptions{}, nil
+	default:
+		return nil, fmt.Errorf("only .binpb and .jsonpb file extensions are supported: %s", filepath.Ext(path))
+	}
+}
+
+var listenCommand = cli.Command{
+	Name:      "listen",
 	ArgsUsage: "[flags] <pipe> <ip>",
 	Flags: []cli.Flag{
 		cli.IntFlag{
@@ -115,8 +147,8 @@ var lmListenCommand = cli.Command{
 	},
 }
 
-var lmAcceptCommand = cli.Command{
-	Name:           "lmaccept",
+var acceptCommand = cli.Command{
+	Name:           "accept",
 	ArgsUsage:      "[flags] <pipe>",
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String),
@@ -142,8 +174,8 @@ var lmAcceptCommand = cli.Command{
 	},
 }
 
-var lmDialCommand = cli.Command{
-	Name:           "lmdial",
+var dialCommand = cli.Command{
+	Name:           "dial",
 	ArgsUsage:      "[flags] <pipe> <ip> <port>",
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String, appargs.String, appargs.String),
@@ -176,8 +208,8 @@ var lmDialCommand = cli.Command{
 	},
 }
 
-var lmTransferCommand = cli.Command{
-	Name:           "lmtransfer",
+var transferCommand = cli.Command{
+	Name:           "transfer",
 	ArgsUsage:      "[flags] <pipe>",
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String),
@@ -205,7 +237,7 @@ var lmTransferCommand = cli.Command{
 				return err
 			}
 			fmt.Printf("Received status update:\n\tID: %d\n\tStatus: %v\n\tError: %s\n", msg.MessageId, msg.Status, msg.ErrorMessage)
-			if msg.Status == lmproto.TransferSandboxResponse_STATUS_CONMPLETE ||
+			if msg.Status == lmproto.TransferSandboxResponse_STATUS_COMPLETE ||
 				msg.Status == lmproto.TransferSandboxResponse_STATUS_FAILED ||
 				msg.Status == lmproto.TransferSandboxResponse_STATUS_CANCEL {
 				break
@@ -215,8 +247,8 @@ var lmTransferCommand = cli.Command{
 	},
 }
 
-var lmFinalizeCommand = cli.Command{
-	Name:           "lmfinalize",
+var finalizeCommand = cli.Command{
+	Name:           "finalize",
 	ArgsUsage:      "[flags] <pipe> resume|stop",
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String, appargs.String),
@@ -313,6 +345,79 @@ var pb2jsonCommand = cli.Command{
 		if err := os.WriteFile(clictx.Args()[2], output, 0644); err != nil {
 			return err
 		}
+		return nil
+	},
+}
+
+var specCommand = cli.Command{
+	Name:      "spec",
+	ArgsUsage: "[flags] <config> <output file>",
+	Flags: []cli.Flag{
+		cli.StringFlag{
+			Name: "resources",
+		},
+		cli.StringFlag{
+			Name: "netns",
+		},
+		cli.StringSliceFlag{
+			Name: "anno",
+		},
+	},
+	SkipArgReorder: true,
+	Before:         appargs.Validate(appargs.String, appargs.String),
+	Action: func(clictx *cli.Context) error {
+		args := clictx.Args()
+		configPath := args[0]
+		outPath := args[1]
+
+		readInput := func(path string, m protoreflect.ProtoMessage) error {
+			data, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			unmarshaler, err := getUnmarshalerByExtension(path)
+			if err != nil {
+				return err
+			}
+			if err := unmarshaler.Unmarshal(data, m); err != nil {
+				return err
+			}
+			return nil
+		}
+
+		var config anypb.Any
+		if err := readInput(configPath, &config); err != nil {
+			return err
+		}
+		var resources lmproto.DestinationResources
+		if clictx.IsSet("resources") {
+			if err := readInput(clictx.String("resources"), &resources); err != nil {
+				return err
+			}
+		}
+
+		spec := &lmproto.SandboxLMSpec{
+			Config:      &config,
+			Resources:   &resources,
+			Netns:       clictx.String("netns"),
+			Annotations: make(map[string]string),
+		}
+		for _, anno := range clictx.StringSlice("anno") {
+			fields := strings.SplitN(anno, "=", 2)
+			if len(fields) < 2 {
+				return fmt.Errorf("invalid annotation format: %s", anno)
+			}
+			spec.Annotations[fields[0]] = fields[1]
+		}
+
+		data, err := proto.MarshalOptions{}.Marshal(spec)
+		if err != nil {
+			return err
+		}
+		if err := os.WriteFile(outPath, data, 0644); err != nil {
+			return err
+		}
+
 		return nil
 	},
 }

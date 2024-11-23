@@ -13,8 +13,12 @@ message SandboxLMSpec {
     // The new network namespace to use for the sandbox.
     string netns = 2;
     // Adjusted resources (only rootfs supported for now).
-    repeated DestinationRootFS resources = 3;
+    DestinationResources resources = 5;
     map<string, string> annotations = 4;
+}
+
+message DestinationResources {
+    repeated DestinationRootFS task_rootfs = 1;
 }
 
 message DestinationRootFS {
@@ -55,7 +59,11 @@ message PrepareSandboxResponse {
     // An opaque config that should be set in the SandboxLMSpec on the destination.
     google.protobuf.Any config = 1;
     // Original resources (only rootfs supported for now).
-    repeated SourceRootFS resources = 2;
+    SourceResources resources = 3;
+}
+
+message SourceResources {
+    repeated SourceRootFS task_rootfs = 1;
 }
 
 message SourceRootFS {

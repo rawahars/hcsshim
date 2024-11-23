@@ -16,14 +16,15 @@ func main() {
 	app.Name = "lm"
 	app.Usage = "Interact with runhcs shim live migration interface"
 	app.Commands = []cli.Command{
-		lmPrepareCommand,
-		lmListenCommand,
-		lmAcceptCommand,
-		lmDialCommand,
-		lmTransferCommand,
-		lmFinalizeCommand,
+		prepareCommand,
+		listenCommand,
+		acceptCommand,
+		dialCommand,
+		transferCommand,
+		finalizeCommand,
 		json2pbCommand,
 		pb2jsonCommand,
+		specCommand,
 	}
 	if err := app.Run(os.Args); err != nil {
 		fmt.Fprintln(os.Stderr, err)

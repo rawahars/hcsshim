@@ -73,7 +73,7 @@ func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandbo
 	}
 	return &lmproto.PrepareSandboxResponse{
 		Config:    stateAny,
-		Resources: outResources,
+		Resources: &lmproto.SourceResources{TaskRootfs: outResources},
 	}, nil
 }
 
@@ -202,7 +202,7 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	}
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
 		MessageId:  3,
-		Status:     lmproto.TransferSandboxResponse_STATUS_CONMPLETE,
+		Status:     lmproto.TransferSandboxResponse_STATUS_COMPLETE,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
 		Progress:   1,
