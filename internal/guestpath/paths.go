@@ -7,6 +7,8 @@ const (
 	// WCOWRootPrefixInUVM is the path inside UVM where WCOW container's root
 	// file system will be mounted
 	WCOWRootPrefixInUVM = `C:\c`
+	// VHDMountPrefix is mount prefix used in container spec to mark a VHD mount.
+	VHDMountPrefix = "vhd://"
 	// SandboxMountPrefix is mount prefix used in container spec to mark a
 	// sandbox-mount
 	SandboxMountPrefix = "sandbox://"
