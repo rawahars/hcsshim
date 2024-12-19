@@ -99,7 +99,9 @@ func (s *service) Create(ctx context.Context, req *task.CreateTaskRequest) (*tas
 			s.sandbox = sandbox
 		case runhcsopts.BundleType_BUNDLE_POD_LM:
 			logrus.Info("creating lm sandbox")
-			s.newSandboxLM(ctx, shimOpts, req)
+			if err := s.newSandboxLM(ctx, shimOpts, req); err != nil {
+				return nil, fmt.Errorf("Sandbox LM creation failed: %w", err)
+			}
 		default:
 			return nil, fmt.Errorf("unsupported bundle type: %s", shimOpts.BundleType)
 		}

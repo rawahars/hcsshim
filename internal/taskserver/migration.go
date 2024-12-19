@@ -12,11 +12,13 @@ import (
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/core/linuxvm"
+	"github.com/Microsoft/hcsshim/internal/layers"
 	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	"github.com/Microsoft/hcsshim/internal/log"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
+	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/runtime"
 	"github.com/containerd/typeurl/v2"
 	"github.com/sirupsen/logrus"
@@ -90,7 +92,18 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 	if !ok {
 		return fmt.Errorf("expected TaskServerState, got %T instead", configRaw)
 	}
-	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations)
+
+	var replacements []*core.LayersReplacement
+	for _, resource := range spec.Resources.TaskRootfs {
+		l, err := layers.GetLCOWLayers([]*types.Mount{resource.Rootfs}, nil)
+		if err != nil {
+			return err
+		}
+		l2 := layers.GetLCOWLayers2(l)
+		replacements = append(replacements, &core.LayersReplacement{ResourceID: resource.Id, Layers: l2})
+	}
+
+	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations, &core.Replacements{Layers: replacements})
 	if err != nil {
 		return err
 	}

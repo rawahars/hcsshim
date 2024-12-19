@@ -34,6 +34,7 @@ var (
 )
 
 type Sandbox struct {
+	id             string
 	vm             *vmpkg.VM
 	gm             *guestmanager.LinuxManager
 	gt             *guestThing
@@ -208,7 +209,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		return nil, err
 	}
 	ctrConfig := &core.LinuxCtrConfig{
-		ID:     "SANDBOX",
+		ID:     id,
 		Layers: l,
 		Spec:   newSpec,
 	}
@@ -228,13 +229,14 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 	}
 
 	return &Sandbox{
+		id:         id,
 		vm:         vm,
 		gm:         gm,
 		gt:         gt,
 		translator: translator,
 		pauseCtr:   pauseCtr,
 		ctrs: map[string]*ctr{
-			"SANDBOX": pauseCtr,
+			id: pauseCtr,
 		},
 		allowMigration: allowMigration,
 		waitCh:         make(chan struct{}),

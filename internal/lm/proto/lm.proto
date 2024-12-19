@@ -26,7 +26,6 @@ message DestinationRootFS {
     string id = 1;
     // The new mount that should be used to replace the task's rootfs.
     containerd.types.Mount rootfs = 2;
-    string group = 3;
 }
 
 // This type should be binary-protobuf serialized and put in config.binpb in the container's bundle.

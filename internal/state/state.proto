@@ -10,6 +10,7 @@ message TaskServerState {
 }
 
 message SandboxState {
+    string sandbox_id = 5;
     VMState vm = 1;
     GCState agent = 2;
     repeated GuestInterface ifaces = 4;
@@ -68,12 +69,32 @@ message Resource {
             uint32 lun = 2;
         }
 
-        string task_id = 1;
         SCSI Scratch = 2;
         repeated SCSI ReadOnlyLayers = 3;
     }
 
+    string resource_id = 1;
+
     oneof type {
+        Layers layers = 2;
+    }
+}
+
+message VMResources {
+    map<uint32, SCSIControllerResource> scsi = 1;
+}
+
+message SCSIControllerResource {
+    map<uint32, SCSIAttachmentResource> attachments = 2;
+}
+
+message SCSIAttachmentResource {
+    message Layers {
+        string resource_id = 1;
+        
+    }
+
+    oneof source {
         Layers layers = 1;
     }
 }

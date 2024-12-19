@@ -12,6 +12,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	"github.com/Microsoft/hcsshim/internal/hns"
+	"github.com/Microsoft/hcsshim/internal/layers"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	vm "github.com/Microsoft/hcsshim/internal/vm2"
 	vmpkg "github.com/Microsoft/hcsshim/internal/vm2"
@@ -29,20 +30,15 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 			// s.LMCancel(ctx)
 		}
 	}()
-	g, err := guid.NewV4()
-	if err != nil {
-		return nil, nil, err
-	}
-	resources := &core.Resources{Layers: []*core.LayersResource{{ResourceID: g.String(), ContainerID: "SandboxID"}}}
-	for cid := range s.ctrs {
+	var resources core.Resources
+	var intResources []*statepkg.Resource
+	for id, r := range s.translator.resources {
 		g, err := guid.NewV4()
 		if err != nil {
 			return nil, nil, err
 		}
-		resources.Layers = append(resources.Layers, &core.LayersResource{ResourceID: g.String(), ContainerID: cid})
-	}
-	var intResources []*statepkg.Resource
-	for id, r := range s.translator.resources {
+		resources.Layers = append(resources.Layers, &core.LayersResource{ResourceID: g.String(), ContainerID: id})
+
 		var roLayers []*statepkg.Resource_Layers_SCSI
 		for _, l := range r.readOnlyLayers {
 			roLayers = append(roLayers, &statepkg.Resource_Layers_SCSI{
@@ -51,9 +47,9 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 			})
 		}
 		intR := &statepkg.Resource{
+			ResourceId: g.String(),
 			Type: &statepkg.Resource_Layers_{
 				Layers: &statepkg.Resource_Layers{
-					TaskId: id,
 					Scratch: &statepkg.Resource_Layers_SCSI{
 						Controller: uint32(r.scratchLayer.controller),
 						Lun:        uint32(r.scratchLayer.lun),
@@ -74,6 +70,7 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 		}
 	}
 	s.state = &statepkg.SandboxState{
+		SandboxId: s.id,
 		Vm: &statepkg.VMState{
 			Config:     statepkg.VMConfigFromInternal(vmConfig),
 			CompatInfo: compatInfo,
@@ -83,7 +80,7 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 		Ifaces:     s.ifaces,
 		Containers: containers,
 	}
-	return s.state, resources, nil
+	return s.state, &resources, nil
 }
 
 func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) (core.Migrated, error) {
@@ -99,6 +96,7 @@ func (s *Sandbox) LMTransfer(ctx context.Context, socket uintptr) (core.Migrated
 
 type migrated struct {
 	vm               *vm.VM
+	sandboxID        string
 	sandboxContainer *statepkg.Container
 	agentConfig      *statepkg.GCState
 	newNetNS         string
@@ -106,10 +104,19 @@ type migrated struct {
 }
 
 func (m *migrated) LMComplete(ctx context.Context) (core.Sandbox, error) {
+	for _, controller := range m.vm.Config().SCSI {
+		for _, att := range controller {
+			if att.Type == vm.SCSIAttachmentTypeVHD || att.Type == vm.SCSIAttachmentTypePassThru {
+				if err := wclayer.GrantVmAccess(ctx, m.vm.ID(), att.Path); err != nil {
+					return nil, fmt.Errorf("grant vm access to %s: %w", att.Path, err)
+				}
+			}
+		}
+	}
 	if err := m.vm.LMFinalize(ctx, true); err != nil {
 		return nil, err
 	}
-	return newSandbox(ctx, m.vm, m.sandboxContainer, m.agentConfig, m.newNetNS, m.oldIfaces)
+	return newSandbox(ctx, m.vm, m.sandboxID, m.sandboxContainer, m.agentConfig, m.newNetNS, m.oldIfaces)
 }
 
 func (m *migrated) LMKill(ctx context.Context) error {
@@ -125,20 +132,45 @@ type migrator struct {
 	netns        string
 }
 
-func NewMigrator(ctx context.Context, id string, config *statepkg.SandboxState, netns string, annos map[string]string) (_ core.Migrator, err error) {
+func NewMigrator(ctx context.Context, id string, config *statepkg.SandboxState, netns string, annos map[string]string, replacements *core.Replacements) (_ core.Migrator, err error) {
 	logrus.WithField("config", config).Info("creating lm sandbox with config")
 	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
 	vmConfig.Serial = annos["io.microsoft.virtualmachine.console.pipe"]
-	vmID := fmt.Sprintf("%s@vm", id)
-	for _, controller := range vmConfig.SCSI {
-		for _, att := range controller {
-			if att.Type == vm.SCSIAttachmentTypeVHD || att.Type == vm.SCSIAttachmentTypePassThru {
-				if err := wclayer.GrantVmAccess(ctx, vmID, att.Path); err != nil {
-					return nil, fmt.Errorf("grant vm access to %s: %w", att.Path, err)
+
+	for _, replacement := range replacements.Layers {
+		for _, resource := range config.Vm.Resources {
+			if replacement.ResourceID == resource.ResourceId {
+				resource, ok := resource.Type.(*statepkg.Resource_Layers_)
+				if !ok {
+					return nil, fmt.Errorf("resource %s must be layers", replacement.ResourceID)
+				}
+				if len(replacement.Layers.Layers) != len(resource.Layers.ReadOnlyLayers) {
+					return nil, fmt.Errorf("mismatched number of layers in resource %s", replacement.ResourceID)
+				}
+				replace := func(controller, lun uint, replacement layers.LCOWLayer2) error {
+					att := vmConfig.SCSI[controller][lun]
+					switch v := replacement.(type) {
+					case *layers.LCOWLayerVHD:
+						att.Path = v.VHDPath
+					default:
+						return fmt.Errorf("invalid layer type: %T", v)
+					}
+					vmConfig.SCSI[controller][lun] = att
+					return nil
+				}
+				if err := replace(uint(resource.Layers.Scratch.Controller), uint(resource.Layers.Scratch.Lun), replacement.Layers.Scratch); err != nil {
+					return nil, fmt.Errorf("error replacing resource %s: %w", replacement.ResourceID, err)
+				}
+				for i, resourceLayer := range resource.Layers.ReadOnlyLayers {
+					if err := replace(uint(resourceLayer.Controller), uint(resourceLayer.Lun), replacement.Layers.Layers[i]); err != nil {
+						return nil, fmt.Errorf("error replacing resource %s: %w", replacement.ResourceID, err)
+					}
 				}
 			}
 		}
 	}
+
+	vmID := fmt.Sprintf("%s@vm", id)
 	vm, err := vm.NewVM(ctx, vmID, vmConfig, vm.WithLM(config.Vm.CompatInfo))
 	if err != nil {
 		return nil, err
@@ -156,14 +188,15 @@ func (m *migrator) LMTransfer(ctx context.Context, socket uintptr) (core.Migrate
 	}
 	return &migrated{
 		vm:               m.vm,
-		sandboxContainer: m.sandboxState.Containers["SANDBOX"],
+		sandboxID:        m.sandboxState.SandboxId,
+		sandboxContainer: m.sandboxState.Containers[m.sandboxState.SandboxId],
 		agentConfig:      m.sandboxState.Agent,
 		newNetNS:         m.netns,
 		oldIfaces:        m.sandboxState.Ifaces,
 	}, nil
 }
 
-func newSandbox(ctx context.Context, vm *vm.VM, sandboxContainer *statepkg.Container, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface) (core.Sandbox, error) {
+func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContainer *statepkg.Container, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface) (core.Sandbox, error) {
 	gm, err := guestmanager.NewLinuxManagerFromState(
 		func(port uint32) (net.Listener, error) { return vm.ListenHVSocket(winio.VsockServiceID(port)) },
 		agentConfig)
@@ -215,7 +248,7 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxContainer *statepkg.Conta
 
 	waitCtx, waitCancel := context.WithCancel(context.Background())
 	gt := newGuestThing(gm)
-	pauseCtr, err := restoreContainer(ctx, gt, waitCtx, "SANDBOX", sandboxContainer.InitPid, nil)
+	pauseCtr, err := restoreContainer(ctx, gt, waitCtx, sandboxID, sandboxContainer.InitPid, nil)
 	if err != nil {
 		return nil, err
 	}

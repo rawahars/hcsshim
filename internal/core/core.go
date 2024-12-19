@@ -80,3 +80,12 @@ type LayersResource struct {
 	ResourceID  string
 	ContainerID string
 }
+
+type Replacements struct {
+	Layers []*LayersReplacement
+}
+
+type LayersReplacement struct {
+	ResourceID string
+	Layers     *layers.LCOWLayers2
+}
