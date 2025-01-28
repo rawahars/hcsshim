@@ -139,52 +139,31 @@ func main() {
 
 	log.SetOutput(f)
 
-	/*
-		type srvResp struct {
-			err error
+	chsrv := make(chan error)
+	go func() {
+		defer close(chsrv)
+
+		if err := runService("gcs-sidecar", false); err != nil {
+			log.Fatalf("error starting gcs-sidecar service: %v", err)
 		}
 
-		chsrv := make(chan error)
-		go func() {
-			defer close(chsrv)
+		chsrv <- err
+	}()
 
-			if err := runService("gcs-sidecar", false); err != nil {
-				log.Fatalf("error starting gcs-sidecar service: %v", err)
-			}
-
-			chsrv <- err
-		}()
-
-		select {
-		// case <-ctx.Done():
-		//	return ctx.Err()
-		case r := <-chsrv:
-			if r != nil {
-				log.Fatal(r)
-			}
+	select {
+	// case <-ctx.Done():
+	//	return ctx.Err()
+	case r := <-chsrv:
+		if r != nil {
+			log.Fatal(r)
 		}
-	*/
-
-	// take in the uvm id as args
-	if len(os.Args) != 2 {
-		log.Printf("unexpected num of args: %v", len(os.Args))
-		return
-	}
-	uvmID, err := guid.FromString(os.Args[1])
-	if err != nil {
-		log.Printf("error getting guid from string %v", os.Args[1])
-		return
 	}
 
 	ctx := context.Background()
+
 	// 1. Start external server to connect with inbox GCS
 	listener, err := winio.ListenHvsock(&winio.HvsockAddr{
-		VMID: uvmID,
-		// TODO: Following line is commented out only for POC as we want to
-		// start gcs-sidecar.exe on the host (external to uvm).
-		// The VMID needs to be replaces with HV_GUID_PARENT in the
-		// final changes.
-		//HV_GUID_PARENT,
+		VMID:      gcs.HV_GUID_LOOPBACK,
 		ServiceID: gcs.WindowsGcsHvsockServiceID,
 	})
 	if err != nil {
@@ -194,7 +173,6 @@ func main() {
 
 	var gcsListener net.Listener
 	gcsListener = listener
-
 	gcsCon, err := acceptAndClose(ctx, gcsListener)
 	if err != nil {
 		log.Printf("Err accepting inbox GCS connection %v", err)
@@ -202,12 +180,13 @@ func main() {
 	}
 
 	// 2. Setup connection with hcsshim external gcs connection
+	//	var establishedShimConnection chan bool
 	hvsockAddr := &winio.HvsockAddr{
-		VMID:      gcs.HV_GUID_LOOPBACK,
+		VMID:      gcs.HV_GUID_PARENT,
 		ServiceID: gcs.WindowsSidecarGcsHvsockServiceID,
 	}
-	log.Printf("Dialing to hcsshim external bridge at address %v", hvsockAddr)
 
+	log.Printf("Dialing to hcsshim external bridge at address %v", hvsockAddr)
 	shimCon, err := winio.Dial(ctx, hvsockAddr)
 	if err != nil {
 		log.Printf("Error dialing hcsshim external bridge at address %v", hvsockAddr)
