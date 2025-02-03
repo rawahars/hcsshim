@@ -16,6 +16,8 @@ const (
 	// BlockDevMountPrefix is mount prefix used in container spec to mark a
 	// block-device mount.
 	BlockDevMountPrefix = "blockdev://"
+	// VHDMountPrefix is mount prefix used in container spec to mark a VHD mount.
+	VHDMountPrefix = "vhd://"
 	// PipePrefix is the mount prefix used in container spec to mark a named pipe
 	PipePrefix = `\\.\pipe`
 	// LCOWMountPathPrefixFmt is the path format in the LCOW UVM where

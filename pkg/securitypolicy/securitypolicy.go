@@ -442,7 +442,8 @@ func newOptionsFromConfig(mCfg *MountConfig) []string {
 	mountOpts := []string{"rbind"}
 
 	if strings.HasPrefix(mCfg.HostPath, guestpath.SandboxMountPrefix) ||
-		strings.HasPrefix(mCfg.HostPath, guestpath.HugePagesMountPrefix) {
+		strings.HasPrefix(mCfg.HostPath, guestpath.HugePagesMountPrefix) ||
+		strings.HasPrefix(mCfg.HostPath, guestpath.VHDMountPrefix) {
 		mountOpts = append(mountOpts, "rshared")
 	} else {
 		mountOpts = append(mountOpts, "rprivate")
@@ -461,7 +462,8 @@ func newOptionsFromConfig(mCfg *MountConfig) []string {
 func newMountTypeFromConfig(mCfg *MountConfig) string {
 	if strings.HasPrefix(mCfg.HostPath, guestpath.SandboxMountPrefix) ||
 		strings.HasPrefix(mCfg.HostPath, guestpath.HugePagesMountPrefix) ||
-		strings.HasPrefix(mCfg.HostPath, plan9Prefix) {
+		strings.HasPrefix(mCfg.HostPath, plan9Prefix) ||
+		strings.HasPrefix(mCfg.HostPath, guestpath.VHDMountPrefix) {
 		return "bind"
 	}
 	return "none"
