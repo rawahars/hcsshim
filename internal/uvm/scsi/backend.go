@@ -197,6 +197,7 @@ func mountRequest(controller, lun uint, path string, config *mountConfig, osType
 			EnsureFilesystem: config.ensureFilesystem,
 			Filesystem:       config.filesystem,
 			BlockDev:         config.blockDev,
+			OCIMount:         config.ociMount,
 		}
 	default:
 		return guestrequest.ModificationRequest{}, fmt.Errorf("unsupported os type: %s", osType)
@@ -223,6 +224,7 @@ func unmountRequest(controller, lun uint, path string, config *mountConfig, osTy
 			Partition:  config.partition,
 			Controller: uint8(controller),
 			BlockDev:   config.blockDev,
+			OCIMount:   config.ociMount,
 		}
 	default:
 		return guestrequest.ModificationRequest{}, fmt.Errorf("unsupported os type: %s", osType)

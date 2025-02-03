@@ -15,6 +15,7 @@ import (
 	"os/exec"
 	"path"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -36,6 +37,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/guest/storage/pmem"
 	"github.com/Microsoft/hcsshim/internal/guest/storage/scsi"
 	"github.com/Microsoft/hcsshim/internal/guest/transport"
+	"github.com/Microsoft/hcsshim/internal/guestpath"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
@@ -549,6 +551,19 @@ func (h *Host) modifyHostSettings(ctx context.Context, containerID string, req *
 		return modifySCSIDevice(ctx, req.RequestType, req.Settings.(*guestresource.SCSIDevice))
 	case guestresource.ResourceTypeMappedVirtualDisk:
 		mvd := req.Settings.(*guestresource.LCOWMappedVirtualDisk)
+
+		if mvd.OCIMount {
+			// Ensure that OCI mounts are always mounted at /run/mounts/scsi/m.
+			vhdMountPathCompiledExpression := regexp.MustCompile(guestpath.LCOWSCSIMountPrefixRegex)
+			if !vhdMountPathCompiledExpression.MatchString(mvd.MountPath) {
+				return fmt.Errorf("invalid OCI mount path %s", mvd.MountPath)
+			}
+			// In the case of Confidential Containers, for OCI mounts, we only allow block devices.
+			if len(h.securityPolicyEnforcer.EncodedSecurityPolicy()) > 0 && !mvd.BlockDev {
+				return fmt.Errorf("OCI mounts are allowed only as block devices when security policy is set")
+			}
+		}
+
 		// find the actual controller number on the bus and update the incoming request.
 		var cNum uint8
 		cNum, err := scsi.ActualControllerNumber(ctx, mvd.Controller)
@@ -584,7 +599,7 @@ func (h *Host) modifyHostSettings(ctx context.Context, containerID string, req *
 				}()
 			}
 		}
-		return modifyMappedVirtualDisk(ctx, req.RequestType, mvd, h.securityPolicyEnforcer)
+		return modifyMappedVirtualDisk(ctx, req.RequestType, mvd, h.securityPolicyEnforcer, mvd.OCIMount && mvd.BlockDev)
 	case guestresource.ResourceTypeMappedDirectory:
 		return modifyMappedDirectory(ctx, h.vsock, req.RequestType, req.Settings.(*guestresource.LCOWMappedDirectory), h.securityPolicyEnforcer)
 	case guestresource.ResourceTypeVPMemDevice:
@@ -970,9 +985,10 @@ func modifyMappedVirtualDisk(
 	rt guestrequest.RequestType,
 	mvd *guestresource.LCOWMappedVirtualDisk,
 	securityPolicy securitypolicy.SecurityPolicyEnforcer,
+	isOCIBlockDevice bool,
 ) (err error) {
 	var verityInfo *guestresource.DeviceVerityInfo
-	if mvd.ReadOnly {
+	if mvd.ReadOnly && !isOCIBlockDevice {
 		// The only time the policy is empty, and we want it to be empty
 		// is when no policy is provided, and we default to open door
 		// policy. In any other case, e.g. explicit open door or any
@@ -993,7 +1009,7 @@ func modifyMappedVirtualDisk(
 		mountCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 		defer cancel()
 		if mvd.MountPath != "" {
-			if mvd.ReadOnly {
+			if mvd.ReadOnly && !isOCIBlockDevice {
 				var deviceHash string
 				if verityInfo != nil {
 					deviceHash = verityInfo.RootDigest
@@ -1016,7 +1032,7 @@ func modifyMappedVirtualDisk(
 		return nil
 	case guestrequest.RequestTypeRemove:
 		if mvd.MountPath != "" {
-			if mvd.ReadOnly {
+			if mvd.ReadOnly && !isOCIBlockDevice {
 				if err := securityPolicy.EnforceDeviceUnmountPolicy(ctx, mvd.MountPath); err != nil {
 					return fmt.Errorf("unmounting scsi device at %s denied by policy: %w", mvd.MountPath, err)
 				}

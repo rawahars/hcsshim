@@ -86,6 +86,7 @@ type LCOWMappedVirtualDisk struct {
 	Encrypted  bool     `json:"Encrypted,omitempty"`
 	Options    []string `json:"Options,omitempty"`
 	BlockDev   bool     `json:"BlockDev,omitempty"`
+	OCIMount   bool     `json:"OCIMount,omitempty"`
 	// Deprecated: verity info is read by the guest
 	VerityInfo       *DeviceVerityInfo `json:"VerityInfo,omitempty"`
 	EnsureFilesystem bool              `json:"EnsureFilesystem,omitempty"`
