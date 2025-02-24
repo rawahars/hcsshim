@@ -918,10 +918,10 @@ func (h *Host) runExternalProcess(
 		}
 	} else {
 		var fileSet *stdio.FileSet = &stdio.FileSet{}
-		// fileSet, err = stdioSet.Files()
-		// if err != nil {
-		// 	return -1, errors.Wrap(err, "failed to set cmd stdio")
-		// }
+		fileSet, err = stdioSet.Files()
+		if err != nil {
+			return -1, errors.Wrap(err, "failed to set cmd stdio")
+		}
 		defer fileSet.Close()
 		defer stdioSet.Close()
 		cmd.Stdin = fileSet.In

@@ -17,6 +17,7 @@ import (
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/windows"
 
+	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/hcsshim/internal/gcs"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
@@ -194,24 +195,24 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 		})
 	}
 
-	if uvm.outputListener != nil {
-		g.Go(func() error {
-			conn, err := uvm.acceptAndClose(gctx, uvm.outputListener)
-			uvm.outputListener = nil
-			if err != nil {
-				e.WithError(err).Error("failed to connect to log socket")
-				close(uvm.outputProcessingDone)
-				return fmt.Errorf("failed to connect to log socket: %w", err)
-			}
-			go func() {
-				e.Trace("uvm output handler starting")
-				uvm.outputHandler(conn)
-				close(uvm.outputProcessingDone)
-				e.Debug("uvm output handler finished")
-			}()
-			return nil
-		})
-	}
+	// if uvm.outputListener != nil {
+	// 	g.Go(func() error {
+	// 		conn, err := uvm.acceptAndClose(gctx, uvm.outputListener)
+	// 		uvm.outputListener = nil
+	// 		if err != nil {
+	// 			e.WithError(err).Error("failed to connect to log socket")
+	// 			close(uvm.outputProcessingDone)
+	// 			return fmt.Errorf("failed to connect to log socket: %w", err)
+	// 		}
+	// 		go func() {
+	// 			e.Trace("uvm output handler starting")
+	// 			uvm.outputHandler(conn)
+	// 			close(uvm.outputProcessingDone)
+	// 			e.Debug("uvm output handler finished")
+	// 		}()
+	// 		return nil
+	// 	})
+	// }
 
 	err = uvm.hcsSystem.Start(ctx)
 	if err != nil {
@@ -275,7 +276,9 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 		gcc := &gcs.GuestConnectionConfig{
 			Conn: conn.(gcs.Conn),
 			Log:  e,
-			// IoListen:       gcs.HvsockIoListen(uvm.runtimeID),
+			IoListen: func(port uint32) (net.Listener, error) {
+				return winio.ListenHvsock(&winio.HvsockAddr{VMID: uvm.runtimeID, ServiceID: winio.VsockServiceID(port)})
+			},
 			InitGuestState: initGuestState,
 		}
 		uvm.gc, err = gcc.Connect(ctx, true)

@@ -6,6 +6,7 @@ package transport
 import (
 	"context"
 	"fmt"
+	"os"
 	"sync"
 	"syscall"
 	"time"
@@ -86,6 +87,14 @@ func (t *VsockTransport) DisconnectReconns() {
 type connWrapper struct {
 	NewConnection
 	t *VsockTransport
+}
+
+func (cw *connWrapper) File() (*os.File, error) {
+	filer, ok := cw.NewConnection.(interface{ File() (*os.File, error) })
+	if !ok {
+		return nil, fmt.Errorf("NewConnection does not support File")
+	}
+	return filer.File()
 }
 
 // func (w *connWrapper) Close() error {

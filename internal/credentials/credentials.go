@@ -87,7 +87,7 @@ func CreateCredentialGuard(ctx context.Context, id, credSpec string, hypervisorI
 		return nil, nil, fmt.Errorf("failed to generate container credential guard instance: %s", err)
 	}
 
-	q := hcsschema.PropertyQuery{
+	q := hcsschema.ServicePropertyQuery{
 		PropertyTypes: []hcsschema.PropertyType{hcsschema.PTContainerCredentialGuard},
 	}
 	serviceProps, err := hcs.GetServiceProperties(ctx, q)

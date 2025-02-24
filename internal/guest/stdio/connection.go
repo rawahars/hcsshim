@@ -4,7 +4,9 @@
 package stdio
 
 import (
+	"fmt"
 	"io"
+	"os"
 
 	"github.com/Microsoft/hcsshim/internal/guest/transport"
 	"github.com/pkg/errors"
@@ -28,6 +30,14 @@ type ConnectionSettings struct {
 type logConnection struct {
 	con  Conn
 	port uint32
+}
+
+func (lc *logConnection) File() (*os.File, error) {
+	filer, ok := lc.con.(interface{ File() (*os.File, error) })
+	if !ok {
+		return nil, fmt.Errorf("con does not support File")
+	}
+	return filer.File()
 }
 
 func (lc *logConnection) Read(b []byte) (int, error) {

@@ -4,6 +4,7 @@
 package stdio
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
@@ -73,35 +74,47 @@ func (fs *FileSet) Close() error {
 	return err
 }
 
-// // Files returns a FileSet with an os.File for each connection
-// // in the connection set.
-// func (s *ConnectionSet) Files() (_ *FileSet, err error) {
-// 	fs := &FileSet{}
-// 	defer func() {
-// 		if err != nil {
-// 			fs.Close()
-// 		}
-// 	}()
-// 	if s.In != nil {
-// 		fs.In, err = s.In.File()
-// 		if err != nil {
-// 			return nil, errors.Wrap(err, "failed to dup stdin socket for command")
-// 		}
-// 	}
-// 	if s.Out != nil {
-// 		fs.Out, err = s.Out.File()
-// 		if err != nil {
-// 			return nil, errors.Wrap(err, "failed to dup stdout socket for command")
-// 		}
-// 	}
-// 	if s.Err != nil {
-// 		fs.Err, err = s.Err.File()
-// 		if err != nil {
-// 			return nil, errors.Wrap(err, "failed to dup stderr socket for command")
-// 		}
-// 	}
-// 	return fs, nil
-// }
+// Files returns a FileSet with an os.File for each connection
+// in the connection set.
+func (s *ConnectionSet) Files() (_ *FileSet, err error) {
+	fs := &FileSet{}
+	defer func() {
+		if err != nil {
+			fs.Close()
+		}
+	}()
+	if s.In != nil {
+		filer, ok := s.In.(interface{ File() (*os.File, error) })
+		if !ok {
+			return nil, fmt.Errorf("stdin does not support File")
+		}
+		fs.In, err = filer.File()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to dup stdin socket for command")
+		}
+	}
+	if s.Out != nil {
+		filer, ok := s.Out.(interface{ File() (*os.File, error) })
+		if !ok {
+			return nil, fmt.Errorf("stdout does not support File")
+		}
+		fs.Out, err = filer.File()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to dup stdout socket for command")
+		}
+	}
+	if s.Err != nil {
+		filer, ok := s.Err.(interface{ File() (*os.File, error) })
+		if !ok {
+			return nil, fmt.Errorf("stderr does not support File")
+		}
+		fs.Err, err = filer.File()
+		if err != nil {
+			return nil, errors.Wrap(err, "failed to dup stderr socket for command")
+		}
+	}
+	return fs, nil
+}
 
 // NewPipeRelay returns a new pipe relay wrapping the given connection stdin,
 // stdout, stderr set. If s is nil will assume al stdin, stdout, stderr pipes.

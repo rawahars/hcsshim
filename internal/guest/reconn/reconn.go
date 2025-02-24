@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -44,6 +45,14 @@ const (
 	intentRead intent = iota
 	intentWrite
 )
+
+func (r *Pipe) File() (*os.File, error) {
+	filer, ok := r.c.Load().(interface{ File() (*os.File, error) })
+	if !ok {
+		return nil, fmt.Errorf("c does not support File")
+	}
+	return filer.File()
+}
 
 func NewPipe(d Dialer, c Conn, backoff backoff.BackOff, errFilter func(err error) bool) *Pipe {
 	if c == nil {

@@ -14,3 +14,7 @@ type PropertyQuery struct {
 	PropertyTypes []PropertyType `json:"PropertyTypes,omitempty"`
 	Queries       map[string]interface{}
 }
+
+type ServicePropertyQuery struct {
+	PropertyTypes []PropertyType `json:"PropertyTypes,omitempty"`
+}
