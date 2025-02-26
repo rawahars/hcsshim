@@ -56,6 +56,21 @@ import (
 // for V2 where the specific message is targeted at the UVM itself.
 const UVMContainerID = "00000000-0000-0000-0000-000000000000"
 
+var (
+	// scsiActualControllerNumberFn is the function to retrieves the actual controller
+	// number assigned to a SCSI controller.
+	scsiActualControllerNumberFn = scsi.ActualControllerNumber
+	// scsiGetDevicePathFn is the function to retrieves the device path for a SCSI device.
+	scsiGetDevicePathFn = scsi.GetDevicePath
+	// scsiMountFn is the function to mount a SCSI device.
+	scsiMountFn = scsi.Mount
+	// scsiUnmountFn is the function to unmount a SCSI device.
+	scsiUnmountFn = scsi.Unmount
+	// readVeritySuperBlockFn is the function to read ext4 super block
+	// for a given VHD to then further read the dm-verity super block and root hash.
+	readVeritySuperBlockFn = verity.ReadVeritySuperBlock
+)
+
 // Host is the structure tracking all UVM host state including all containers
 // and processes.
 type Host struct {
@@ -566,7 +581,7 @@ func (h *Host) modifyHostSettings(ctx context.Context, containerID string, req *
 
 		// find the actual controller number on the bus and update the incoming request.
 		var cNum uint8
-		cNum, err := scsi.ActualControllerNumber(ctx, mvd.Controller)
+		cNum, err := scsiActualControllerNumberFn(ctx, mvd.Controller)
 		if err != nil {
 			return err
 		}
@@ -575,7 +590,7 @@ func (h *Host) modifyHostSettings(ctx context.Context, containerID string, req *
 		if !mvd.ReadOnly {
 			localCtx, cancel := context.WithTimeout(ctx, time.Second*5)
 			defer cancel()
-			source, err := scsi.GetDevicePath(localCtx, mvd.Controller, mvd.Lun, mvd.Partition)
+			source, err := scsiGetDevicePathFn(localCtx, mvd.Controller, mvd.Lun, mvd.Partition)
 			if err != nil {
 				return err
 			}
@@ -1018,11 +1033,11 @@ func modifyMappedVirtualDisk(
 	// it is a block device meant for a container mount. In the latter case,
 	// we don't want to check the verity information.
 	if len(securityPolicy.EncodedSecurityPolicy()) > 0 && enforcePolicy {
-		devPath, err := scsi.GetDevicePath(ctx, mvd.Controller, mvd.Lun, mvd.Partition)
+		devPath, err := scsiGetDevicePathFn(ctx, mvd.Controller, mvd.Lun, mvd.Partition)
 		if err != nil {
 			return err
 		}
-		verityInfo, err = verity.ReadVeritySuperBlock(ctx, devPath)
+		verityInfo, err = readVeritySuperBlockFn(ctx, devPath)
 		if err != nil {
 			return err
 		}
@@ -1049,7 +1064,7 @@ func modifyMappedVirtualDisk(
 				Filesystem:       mvd.Filesystem,
 				BlockDev:         mvd.BlockDev,
 			}
-			return scsi.Mount(mountCtx, mvd.Controller, mvd.Lun, mvd.Partition, mvd.MountPath,
+			return scsiMountFn(mountCtx, mvd.Controller, mvd.Lun, mvd.Partition, mvd.MountPath,
 				mvd.ReadOnly, mvd.Options, config)
 		}
 		return nil
@@ -1067,7 +1082,7 @@ func modifyMappedVirtualDisk(
 				Filesystem:       mvd.Filesystem,
 				BlockDev:         mvd.BlockDev,
 			}
-			if err := scsi.Unmount(ctx, mvd.Controller, mvd.Lun, mvd.Partition,
+			if err := scsiUnmountFn(ctx, mvd.Controller, mvd.Lun, mvd.Partition,
 				mvd.MountPath, config); err != nil {
 				return err
 			}
@@ -1116,7 +1131,7 @@ func modifyMappedVPMemDevice(ctx context.Context,
 		if vpd.MappingInfo != nil {
 			return fmt.Errorf("multi mapping is not supported with verity")
 		}
-		verityInfo, err = verity.ReadVeritySuperBlock(ctx, pmem.GetDevicePath(vpd.DeviceNumber))
+		verityInfo, err = readVeritySuperBlockFn(ctx, pmem.GetDevicePath(vpd.DeviceNumber))
 		if err != nil {
 			return err
 		}
