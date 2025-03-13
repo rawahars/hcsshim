@@ -250,7 +250,7 @@ func convertConfig(config *Config) (*hcsschema.ComputeSystem, error) {
 			},
 			ComputeTopology: &hcsschema.Topology{
 				Memory: &hcsschema.Memory2{
-					SizeInMB:        config.MemoryMB,
+					SizeInMB:        (config.MemoryMB + 1) &^ 1,
 					AllowOvercommit: config.VABacked,
 				},
 				Processor: &hcsschema.Processor2{
