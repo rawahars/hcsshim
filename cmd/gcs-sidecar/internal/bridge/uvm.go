@@ -146,6 +146,20 @@ func unmarshalContainerModifySettings(req *request) (*containerModifySettings, e
 		}
 		modifyGuestSettingsRequest.Settings = securityPolicyRequest
 
+	case guestresource.ResourceTypeMappedVirtualDiskForContainerScratch:
+		wcowMappedVirtualDisk := &guestresource.WCOWMappedVirtualDisk{}
+		if err := commonutils.UnmarshalJSONWithHresult(rawGuestRequest, wcowMappedVirtualDisk); err != nil {
+			log.Printf("invalid ResourceTypeMappedVirtualDisk request %v", r)
+			return nil, fmt.Errorf("invalid ResourceTypeMappedVirtualDisk request %v", r)
+		}
+
+	case guestresource.ResourceTypeWCOWBlockCims:
+		wcowBlockCimMounts := &guestresource.WCOWBlockCIMMounts{}
+		if err := commonutils.UnmarshalJSONWithHresult(rawGuestRequest, wcowBlockCimMounts); err != nil {
+			log.Printf("invalid ResourceTypeWCOWBlockCims request %v", r)
+			return nil, fmt.Errorf("invalid ResourceTypeWCOWBlockCims request %v", r)
+		}
+
 	default:
 		// Invalid request
 		log.Printf("\n Invald modifySettingsRequest: %v", modifyGuestSettingsRequest.ResourceType)

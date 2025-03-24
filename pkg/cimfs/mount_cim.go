@@ -15,6 +15,10 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+const (
+	VolumePathFormat = "\\\\?\\Volume{%s}\\"
+)
+
 type MountError struct {
 	Cim        string
 	Op         string
@@ -116,5 +120,5 @@ func MountMergedBlockCIMs(mergedCIM *BlockCIM, sourceCIMs []*BlockCIM, mountFlag
 	if err := winapi.CimMergeMountImage(uint32(len(cimsToMerge)), &cimsToMerge[0], mountFlags, &volumeGUID); err != nil {
 		return "", &MountError{Cim: filepath.Join(mergedCIM.BlockPath, mergedCIM.CimName), Op: "MountMerged", Err: err}
 	}
-	return fmt.Sprintf("\\\\?\\Volume{%s}\\", volumeGUID.String()), nil
+	return fmt.Sprintf(VolumePathFormat, volumeGUID.String()), nil
 }

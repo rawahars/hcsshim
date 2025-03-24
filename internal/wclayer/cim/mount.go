@@ -108,7 +108,21 @@ func MergeMountBlockCIMLayer(ctx context.Context, mergedLayer *cimfs.BlockCIM, p
 	if err != nil {
 		return "", fmt.Errorf("generated cim mount GUID: %w", err)
 	}
+
+	// Assuming the call will be similar to the following:
+	//if vm == nil {
 	return cimfs.MountMergedBlockCIMs(mergedLayer, parentLayers, mountFlags, volumeGUID)
+	//	} else {
+	/*
+				// make mount request to gcs-sidecar
+		req := guestrequest.ModificationRequest{
+			ResourceType: guestresource.ResourceTypeMappedVirtualDisk,
+			RequestType:  guestrequest.RequestTypeAdd,
+		}
+
+			}
+	*/
+
 }
 
 // Unmounts the cim mounted at the given volume

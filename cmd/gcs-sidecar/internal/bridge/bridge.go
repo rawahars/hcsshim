@@ -252,7 +252,7 @@ func (b *Bridge) ListenAndServeShimRequests() error {
 			var msgBase requestBase
 			_ = json.Unmarshal(msg, &msgBase)
 			req := request{
-				// ctx
+				ctx:        context.Background(),
 				activityID: msgBase.ActivityID,
 				header:     header,
 				message:    msg,

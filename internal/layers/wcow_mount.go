@@ -401,7 +401,24 @@ func mountHypervIsolatedWCIFSLayers(ctx context.Context, l *wcowWCIFSLayers, vm 
 	hostPath := filepath.Join(l.scratchLayerPath, "sandbox.vhdx")
 	log.G(ctx).WithField("hostPath", hostPath).Debug("mounting scratch VHD")
 
-	scsiMount, err := vm.SCSIManager.AddVirtualDisk(ctx, hostPath, false, vm.ID(), "", &scsi.MountConfig{})
+	mountConfig := scsi.MountConfig{}
+	// NOTE: This is just an example of what needs to be done in cimfs block cim
+	// code once its merged. This will cause gcs-sidecar to invoke the refs formatter.
+	// Also note the refs formatted needs the scratch to be >= 30 GB so ensure to set
+	// the following in ContainerConfig.json:
+	/*
+		    "windows": {
+			"resources": {
+				"rootfs_size_in_bytes": 42949672960
+				}
+		    }
+	*/
+	/*
+		if vm.WCOWconfidentialUVMOptions != nil && vm.WCOWconfidentialUVMOptions.WCOWSecurityPolicy != "" {
+			mountConfig.FormatWithRefs = true
+		}
+	*/
+	scsiMount, err := vm.SCSIManager.AddVirtualDisk(ctx, hostPath, false, vm.ID(), "", &mountConfig)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to add SCSI scratch VHD: %w", err)
 	}
