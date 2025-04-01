@@ -6,7 +6,6 @@ package securitypolicy
 import (
 	"strings"
 
-	"github.com/Microsoft/hcsshim/internal/guest/spec"
 	specInternal "github.com/Microsoft/hcsshim/internal/guest/spec"
 	"github.com/Microsoft/hcsshim/internal/guestpath"
 )
@@ -26,10 +25,10 @@ func substituteUVMPath(sandboxID string, m mountInternal) mountInternal {
 
 // SandboxMountsDir returns sandbox mounts directory inside UVM/host.
 func SandboxMountsDir(sandboxID string) string {
-	return spec.SandboxMountsDir((sandboxID))
+	return specInternal.SandboxMountsDir((sandboxID))
 }
 
 // HugePagesMountsDir returns hugepages mounts directory inside UVM.
 func HugePagesMountsDir(sandboxID string) string {
-	return spec.HugePagesMountsDir(sandboxID)
+	return specInternal.HugePagesMountsDir(sandboxID)
 }
