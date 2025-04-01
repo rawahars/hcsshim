@@ -91,7 +91,7 @@ func (b *Bridge) shutdownGraceful(req *request) error {
 	}
 	log.Printf("rpcShutdownGraceful: \n requestBase: %v", r)
 
-	b.PolicyEnforcer.securityPolicyEnforcer.EnforceShutdownContainerPolicy(ctx, r.ContainerID)
+	err = b.PolicyEnforcer.securityPolicyEnforcer.EnforceShutdownContainerPolicy(ctx, r.ContainerID)
 	if err != nil {
 		return fmt.Errorf("rpcShudownGraceful operation not allowed: %v", err)
 	}
@@ -348,11 +348,12 @@ func (b *Bridge) unmarshalModifySettingsAndForward(req *request) error {
 				return fmt.Errorf("invalid ResourceTypeMappedVirtualDisk request %v", r)
 			}
 
-			var ctx context.Context
+			// TODO: uncomment this when Cimfs API is ready
+			/*var ctx context.Context
 			policy_err := modifyMappedVirtualDisk(ctx, guestRequestType, wcowMappedVirtualDisk, b.PolicyEnforcer.securityPolicyEnforcer)
 			if policy_err != nil {
-				return fmt.Errorf("Mount device denied by policy %v", r)
-			}
+				//return fmt.Errorf("mount device denied by policy %v", r)
+			}*/
 			log.Printf(", wcowMappedVirtualDisk { %v} \n", wcowMappedVirtualDisk)
 
 		case guestresource.ResourceTypeHvSocket:
@@ -434,7 +435,12 @@ func modifyCombinedLayers(
 		layerPaths := make([]string, len(cl.Layers))
 		for i, layer := range cl.Layers {
 			layerPaths[i] = layer.Path
+			//TODO: Remove this when there is verified Cimfs API. This only here to mock
+			// mount device
+			log.Printf("enforcing mount_device in combinedlayers: %v, %v", layer.Path, layer.Id)
+			securityPolicy.EnforceDeviceMountPolicy(ctx, layer.Path, layer.Id)
 		}
+		log.Printf("enforcing mount_overlay in combinedlayers")
 		return securityPolicy.EnforceOverlayMountPolicy(ctx, containerID, layerPaths, cl.ContainerRootPath)
 	case guestrequest.RequestTypeRemove:
 		return securityPolicy.EnforceOverlayUnmountPolicy(ctx, cl.ContainerRootPath)
