@@ -5,13 +5,17 @@ package prot
 
 import (
 	"encoding/json"
+	"fmt"
+	"math"
 	"strconv"
 
 	v1 "github.com/containerd/cgroups/v3/cgroup1/stats"
 	oci "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 
 	"github.com/Microsoft/hcsshim/internal/guest/commonutils"
+	"github.com/Microsoft/hcsshim/internal/guest/gcserr"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
@@ -827,4 +831,49 @@ type Properties struct {
 type PropertiesV2 struct {
 	ProcessList []ProcessDetails `json:"ProcessList,omitempty"`
 	Metrics     *v1.Metrics      `json:"LCOWMetrics,omitempty"`
+}
+
+// SetErrorForResponseBase modifies the passed-in MessageResponseBase to
+// contain information pertaining to the given error.
+func SetErrorForResponseBase(response *MessageResponseBase, errForResponse error, moduleName string) {
+	errorMessage := errForResponse.Error()
+	stackString := ""
+	fileName := ""
+	// We use -1 as a sentinel if no line number found (or it cannot be parsed),
+	// but that will ultimately end up as [math.MaxUint32], so set it to that explicitly.
+	// (Still keep using -1 for backwards compatibility ...)
+	lineNumber := uint32(math.MaxUint32)
+	functionName := ""
+	if stack := gcserr.BaseStackTrace(errForResponse); stack != nil {
+		bottomFrame := stack[0]
+		stackString = fmt.Sprintf("%+v", stack)
+		fileName = fmt.Sprintf("%s", bottomFrame)
+		lineNumberStr := fmt.Sprintf("%d", bottomFrame)
+		if n, err := strconv.ParseUint(lineNumberStr, 10, 32); err == nil {
+			lineNumber = uint32(n)
+		} else {
+			logrus.WithFields(logrus.Fields{
+				"line-number":   lineNumberStr,
+				logrus.ErrorKey: err,
+			}).Error("opengcs::bridge::setErrorForResponseBase - failed to parse line number, using -1 instead")
+		}
+		functionName = fmt.Sprintf("%n", bottomFrame)
+	}
+	hresult, err := gcserr.GetHresult(errForResponse)
+	if err != nil {
+		// Default to using the generic failure HRESULT.
+		hresult = gcserr.HrFail
+	}
+	response.Result = int32(hresult)
+	response.ErrorMessage = errorMessage
+	newRecord := ErrorRecord{
+		Result:       int32(hresult),
+		Message:      errorMessage,
+		StackTrace:   stackString,
+		ModuleName:   moduleName,
+		FileName:     fileName,
+		Line:         lineNumber,
+		FunctionName: functionName,
+	}
+	response.ErrorRecords = append(response.ErrorRecords, newRecord)
 }

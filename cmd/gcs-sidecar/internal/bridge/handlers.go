@@ -4,8 +4,6 @@
 package bridge
 
 import (
-	"context"
-	"encoding/binary"
 	"encoding/json"
 	"fmt"
 	"log"
@@ -14,15 +12,18 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
-	windowssecuritypolicy "github.com/Microsoft/hcsshim/pkg/securitypolicy"
 	"github.com/pkg/errors"
 )
 
-// Current intent of these handler functions is to call the security policy
-// enforcement code as needed and return nil if the operation is allowed.
-// Else error is returned.
-// Also, these handler functions decide if request needs to be forwarded
-// to inbox GCS or not. Request is forwarded asynchronously.
+// - Current intent of these handler functions is to call the security policy
+// enforcement code as needed.
+// - These handler functions forward the message to inbox GCS or sends response
+// back to hcsshim in cases where we do not need to forward message to
+// inbox GCS for further processing.
+// For example: ResourceTypeSecurityPolicy is something only the gcs-sidecar
+// understands and need not be forwarded to inbox gcs.
+// - In case of any error encountered during processing, appropriate error
+// messages are returned and responses are sent back to hcsshim from caller, ListerAndServer().
 func (b *Bridge) createContainer(req *request) error {
 	var err error = nil
 	var r containerCreate
@@ -31,7 +32,6 @@ func (b *Bridge) createContainer(req *request) error {
 	r.ContainerConfig.Value = &containerConfig
 	if err = json.Unmarshal(req.message, &r); err != nil {
 		log.Printf("failed to unmarshal rpcCreate: %v", req)
-		// TODO: Send valid error response back to the sender before closing bridge
 		return fmt.Errorf("failed to unmarshal rpcCreate: %v", req)
 	}
 
@@ -42,92 +42,67 @@ func (b *Bridge) createContainer(req *request) error {
 		systemType := uvmConfig.SystemType
 		timeZoneInformation := uvmConfig.TimeZoneInformation
 		log.Printf("rpcCreate: \n ContainerCreate{ requestBase: %v, uvmConfig: {systemType: %v, timeZoneInformation: %v}}", r.requestBase, systemType, timeZoneInformation)
-		// TODO: call policy enforcement points once ready
-		// err = call policyEnforcer
-		// return on err
 	} else if err = json.Unmarshal(containerConfig, &hostedSystemConfig); err == nil {
 		schemaVersion := hostedSystemConfig.SchemaVersion
 		container := hostedSystemConfig.Container
 		log.Printf("rpcCreate: \n ContainerCreate{ requestBase: %v, ContainerConfig: {schemaVersion: %v, container: %v}}", r.requestBase, schemaVersion, container)
-		// TODO: call policy enforcement points once ready
-		// err = call policyEnforcer
-		// return on err
 	} else {
 		log.Printf("createContainer: invalid containerConfig type. Request: %v", req)
-		// TODO: Send valid error response back to the sender before closing bridge
 		return fmt.Errorf("createContainer: invalid containerConfig type. Request: %v", r)
 	}
 
-	// If we've reached here, means the policy has allowed operation.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return err
 }
 
 func (b *Bridge) startContainer(req *request) error {
 	var r requestBase
-	var err error
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal rpcStart: %v", req)
 	}
 	log.Printf("rpcStart: \n requestBase: %v", r)
 
-	// TODO: call policy enforcement points once ready
-	// err = call policyEnforcer
-	// return on err
-
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
 func (b *Bridge) shutdownGraceful(req *request) error {
 	var r requestBase
-	var err error = nil
-	var ctx context.Context
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal rpcShutdownGraceful: %v", req)
 	}
 	log.Printf("rpcShutdownGraceful: \n requestBase: %v", r)
 
-	err = b.PolicyEnforcer.securityPolicyEnforcer.EnforceShutdownContainerPolicy(ctx, r.ContainerID)
-	if err != nil {
-		return fmt.Errorf("rpcShudownGraceful operation not allowed: %v", err)
+	// Since gcs-sidecar can be used for all types of windows
+	// containers, it is important to check if we want to
+	// enforce policy or not.
+	if b.hostState.isSecurityPolicyEnforcerInitialized() {
+		err := b.hostState.securityPolicyEnforcer.EnforceShutdownContainerPolicy(req.ctx, r.ContainerID)
+		if err != nil {
+			return fmt.Errorf("rpcShudownGraceful operation not allowed: %v", err)
+		}
 	}
 
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
 func (b *Bridge) shutdownForced(req *request) error {
 	var r requestBase
-	var err error = nil
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal rpcShutdownForced: %v", req)
 	}
 	log.Printf("rpcShutdownForced: \n requestBase: %v", r)
 
-	/*
-		containerdID := r.ContainerdID
-		b.securityPolicyEnforcer.EnforceShutdownContainerPolicy(ctx, containerID)
-		if err != nil {
-			return fmt.Errorf("rpcShudownGraceful operation not allowed: %v", err)
-		}
-	*/
-
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
 func (b *Bridge) executeProcess(req *request) error {
-	var err error = nil
 	var r containerExecuteProcess
 	var processParamSettings json.RawMessage
 	r.Settings.ProcessParameters.Value = &processParamSettings
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal rpcExecuteProcess: %v", req)
 	}
 	containerID := r.requestBase.ContainerID
@@ -135,89 +110,58 @@ func (b *Bridge) executeProcess(req *request) error {
 	vsockStdioRelaySettings := r.Settings.VsockStdioRelaySettings
 
 	var processParams hcsschema.ProcessParameters
-	if err = json.Unmarshal(processParamSettings, &processParams); err != nil {
+	if err := json.Unmarshal(processParamSettings, &processParams); err != nil {
 		log.Printf("rpcExecProcess: invalid params type for request %v", r.Settings)
 		return fmt.Errorf("rpcExecProcess: invalid params type for request %v", r.Settings)
 	}
-
 	log.Printf("rpcExecProcess: \n containerID: %v, schema1.ProcessParameters{ params: %v, stdioRelaySettings: %v, vsockStdioRelaySettings: %v }", containerID, processParams, stdioRelaySettings, vsockStdioRelaySettings)
-	// err = call policy enforcer
 
-	b.sendToGCSCh <- *req
-
-	return err
+	b.forwardRequestToGcs(req)
+	return nil
 }
 
 func (b *Bridge) waitForProcess(req *request) error {
 	var r containerWaitForProcess
-	var err error = nil
-
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal waitForProcess: %v", req)
 	}
 	log.Printf("rpcWaitForProcess: \n containerWaitForProcess{ requestBase: %v, processID: %v, timeoutInMs: %v }", r.requestBase, r.ProcessID, r.TimeoutInMs)
 
-	// enforcement
-
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
 func (b *Bridge) signalProcess(req *request) error {
-	var err error
 	var r containerSignalProcess
 	var rawOpts json.RawMessage
 	r.Options = &rawOpts
-
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal rpcSignalProcess: %v", req)
 	}
 
 	log.Printf("rpcSignalProcess: request %v", r)
 
 	var wcowOptions guestresource.SignalProcessOptionsWCOW
-	if rawOpts == nil {
-		b.sendToGCSCh <- *req
-		return nil
-	} else if err = json.Unmarshal(rawOpts, &wcowOptions); err != nil {
-		log.Printf("rpcSignalProcess: invalid Options type for request %v", r)
-		return fmt.Errorf("rpcSignalProcess: invalid Options type for request %v", r)
+	if rawOpts != nil {
+		if err := json.Unmarshal(rawOpts, &wcowOptions); err != nil {
+			log.Printf("rpcSignalProcess: invalid Options type for request %v", r)
+			return fmt.Errorf("rpcSignalProcess: invalid Options type for request %v", r)
+		}
 	}
 	log.Printf("rpcSignalProcess: \n containerSignalProcess{ requestBase: %v, processID: %v, Options: %v }", r.requestBase, r.ProcessID, wcowOptions)
 
-	// placeholder for calling policy enforcer and return error message
-	err = signalProcess(r.ContainerID, r.ProcessID, wcowOptions.Signal)
-	if err != nil {
-		return fmt.Errorf("waitForProcess not allowed due to policy")
-	}
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
 func (b *Bridge) resizeConsole(req *request) error {
 	var r containerResizeConsole
-	var err error = nil
-
-	if err = json.Unmarshal(req.message, &r); err != nil {
+	if err := json.Unmarshal(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal rpcSignalProcess: %v", req)
 	}
 	log.Printf("rpcResizeConsole: \n containerResizeConsole{ requestBase: %v, processID: %v, height: %v, width: %v }", r.requestBase, r.ProcessID, r.Height, r.Width)
 
-	// placeholder for calling policy enforcer and return error message
-	err = resizeConsole(r.ContainerID, r.Height, r.Width)
-	if err != nil {
-		return fmt.Errorf("waitForProcess not allowed due to policy")
-	}
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
@@ -230,44 +174,79 @@ func (b *Bridge) getProperties(req *request) error {
 		}
 	*/
 	// TODO: Error out if v1 schema is being used as we will not support bringing up sidecar-gcs there
-	b.sendToGCSCh <- *req
+	b.forwardRequestToGcs(req)
 	return nil
 }
 
-func (b *Bridge) unmarshalModifySettingsAndForward(req *request) error {
-	log.Printf("\n, unmarshalModifySettingsAndForward:Header {Type: %v Size: %v ID: %v }\n msg: %v \n", getMessageType(req.header), getMessageSize(req.header), getMessageID(req.header), string(req.message))
-	// skipSendToGCS := false
-	var r containerModifySettings
-	var requestRawSettings json.RawMessage
-	r.Request = &requestRawSettings
+func (b *Bridge) negotiateProtocol(req *request) error {
+	var r negotiateProtocolRequest
 	if err := json.Unmarshal(req.message, &r); err != nil {
-		return fmt.Errorf("failed to unmarshal rpcModifySettings: %v", req)
+		return fmt.Errorf("failed to unmarshal rpcNegotiateProtocol: %v", req)
+	}
+	log.Printf("rpcNegotiateProtocol: negotiateProtocolRequest{ requestBase %v, MinVersion: %v, MaxVersion: %v }", r.requestBase, r.MinimumVersion, r.MaximumVersion)
+
+	b.forwardRequestToGcs(req)
+	return nil
+}
+
+func (b *Bridge) dumpStacks(req *request) error {
+	var r dumpStacksRequest
+	if err := json.Unmarshal(req.message, &r); err != nil {
+		return fmt.Errorf("failed to unmarshal rpcStart: %v", req)
 	}
 
-	var modifyGuestSettingsRequest guestrequest.ModificationRequest
-	var rawGuestRequest json.RawMessage
-	modifyGuestSettingsRequest.Settings = &rawGuestRequest
-	if err := json.Unmarshal(requestRawSettings, &modifyGuestSettingsRequest); err != nil {
-		log.Printf("invalid rpcModifySettings ModificationRequest request %v", r)
-		return fmt.Errorf("invalid rpcModifySettings ModificationRequest request %v", r)
+	if b.hostState.isSecurityPolicyEnforcerInitialized() {
+		err := b.hostState.securityPolicyEnforcer.EnforceDumpStacksPolicy(req.ctx)
+		if err != nil {
+			return errors.Wrapf(err, "dump stacks denied due to policy")
+		}
 	}
-	log.Printf("rpcModifySettings: ModificationRequest %v\n", modifyGuestSettingsRequest)
 
+	log.Printf("rpcDumpStacks: \n requestBase: %v", r.requestBase)
+
+	b.forwardRequestToGcs(req)
+	return nil
+}
+
+func (b *Bridge) deleteContainerState(req *request) error {
+	var r deleteContainerStateRequest
+	if err := json.Unmarshal(req.message, &r); err != nil {
+		return fmt.Errorf("failed to unmarshal rpcStart: %v", req)
+	}
+	log.Printf("rpcDeleteContainerRequest: \n requestBase: %v", r.requestBase)
+
+	b.forwardRequestToGcs(req)
+	return nil
+}
+
+func (b *Bridge) updateContainer(req *request) error {
+	// No callers in the code for rpcUpdateContainer
+	b.forwardRequestToGcs(req)
+	return nil
+}
+
+func (b *Bridge) lifecycleNotification(req *request) error {
+	// No callers in the code for rpcLifecycleNotification
+	b.forwardRequestToGcs(req)
+	return nil
+}
+
+func (b *Bridge) modifySettings(req *request) error {
+	log.Printf("\n, modifySettings:Header {Type: %v Size: %v ID: %v }\n msg: %v \n", req.header.Type, req.header.Size, req.header.ID, string(req.message))
+	modifyRequest, err := unmarshalContainerModifySettings(req)
+	if err != nil {
+		return err
+	}
+	modifyGuestSettingsRequest := modifyRequest.Request.(*guestrequest.ModificationRequest)
 	guestResourceType := modifyGuestSettingsRequest.ResourceType
 	guestRequestType := modifyGuestSettingsRequest.RequestType // add, remove, preadd, update
-	if guestResourceType == "" {
-		modifyGuestSettingsRequest.RequestType = guestrequest.RequestTypeAdd
-	}
 	log.Printf("rpcModifySettings: guestRequest.ModificationRequest { resourceType: %v \n, requestType: %v", guestResourceType, guestRequestType)
 
 	// TODO: Do we need to validate request types?
 	switch guestRequestType {
 	case guestrequest.RequestTypeAdd:
-
 	case guestrequest.RequestTypeRemove:
-
 	case guestrequest.RequestTypePreAdd:
-
 	case guestrequest.RequestTypeUpdate:
 	default:
 		log.Printf("\n Invald guestRequestType: %v", guestRequestType)
@@ -277,30 +256,25 @@ func (b *Bridge) unmarshalModifySettingsAndForward(req *request) error {
 	if guestResourceType != "" {
 		switch guestResourceType {
 		case guestresource.ResourceTypeCWCOWCombinedLayers:
-			settings := &guestresource.CWCOWCombinedLayers{}
-			if err := json.Unmarshal(rawGuestRequest, settings); err != nil {
-				log.Printf("invalid ResourceTypeCombinedLayers request %v", r)
-				return fmt.Errorf("invalid ResourceTypeCombinedLayers request %v", r)
-			}
+			settings := modifyGuestSettingsRequest.Settings.(*guestresource.CWCOWCombinedLayers)
 			containerID := settings.ContainerID
 			log.Printf(", CWCOWCombinedLayers {ContainerID: %v {ContainerRootPath: %v, Layers: %v, ScratchPath: %v}} \n",
 				containerID, settings.CombinedLayers.ContainerRootPath, settings.CombinedLayers.Layers, settings.CombinedLayers.ScratchPath)
 
-			// check that this is not denied by policy
-			// TODO: modify gcs-sidecar code to pass context across all calls
 			// TODO: Update modifyCombinedLayers with verified CimFS API
-			var ctx context.Context
-			policy_err := modifyCombinedLayers(ctx, containerID, guestRequestType, settings.CombinedLayers, b.PolicyEnforcer.securityPolicyEnforcer)
-			if policy_err != nil {
-				return fmt.Errorf("CimFS layer mount is denied by policy: %v", r)
+			if b.hostState.isSecurityPolicyEnforcerInitialized() {
+				policy_err := modifyCombinedLayers(req.ctx, containerID, guestRequestType, settings.CombinedLayers, b.hostState.securityPolicyEnforcer)
+				if policy_err != nil {
+					return fmt.Errorf("CimFS layer mount is denied by policy: %v", modifyRequest)
+				}
 			}
 
-			// reconstruct WCOWCombinedLayers{} and req before forwarding to GCS
+			// Reconstruct WCOWCombinedLayers{} and req before forwarding to GCS
 			// as GCS does not understand containerID in CombinedLayers request
 			modifyGuestSettingsRequest.ResourceType = guestresource.ResourceTypeCombinedLayers
 			modifyGuestSettingsRequest.Settings = settings.CombinedLayers
-			r.Request = modifyGuestSettingsRequest
-			buf, err := json.Marshal(r)
+			modifyRequest.Request = modifyGuestSettingsRequest
+			buf, err := json.Marshal(modifyRequest)
 			if err != nil {
 				return fmt.Errorf("failed to marshal rpcModifySettings: %v", req)
 			}
@@ -308,267 +282,56 @@ func (b *Bridge) unmarshalModifySettingsAndForward(req *request) error {
 			var newRequest request
 			newRequest.header = req.header
 			size := uint32(len(buf)) + hdrSize
-			binary.LittleEndian.PutUint32(newRequest.header[hdrOffSize:], size)
+			newRequest.header.Size = size
 			newRequest.message = buf
 			req = &newRequest
 
 		case guestresource.ResourceTypeCombinedLayers:
-			settings := &guestresource.WCOWCombinedLayers{}
-			if err := json.Unmarshal(rawGuestRequest, settings); err != nil {
-				log.Printf("invalid ResourceTypeCombinedLayers request %v", r)
-				return fmt.Errorf("invalid ResourceTypeCombinedLayers request %v", r)
-			}
-
+			settings := modifyGuestSettingsRequest.Settings.(*guestresource.WCOWCombinedLayers)
 			log.Printf(", WCOWCombinedLayers {ContainerRootPath: %v, Layers: %v, ScratchPath: %v} \n", settings.ContainerRootPath, settings.Layers, settings.ScratchPath)
 
 		case guestresource.ResourceTypeNetworkNamespace:
-			settings := &hcn.HostComputeNamespace{}
-			if err := json.Unmarshal(rawGuestRequest, settings); err != nil {
-				log.Printf("invalid ResourceTypeNetworkNamespace request %v", r)
-				return fmt.Errorf("invalid ResourceTypeNetworkNamespace request %v", r)
-			}
-
+			settings := modifyGuestSettingsRequest.Settings.(*hcn.HostComputeNamespace)
 			log.Printf(", HostComputeNamespaces { %v} \n", settings)
 
 		case guestresource.ResourceTypeNetwork:
-			// following valid only for osversion.Build() >= osversion.RS5
-			// since Cwcow is available only for latest versions this is ok
-			settings := &guestrequest.NetworkModifyRequest{}
-			if err := json.Unmarshal(rawGuestRequest, settings); err != nil {
-				log.Printf("invalid ResourceTypeNetwork request %v", r)
-				return fmt.Errorf("invalid ResourceTypeNetwork request %v", r)
-			}
-
+			settings := modifyGuestSettingsRequest.Settings.(*guestrequest.NetworkModifyRequest)
 			log.Printf(", NetworkModifyRequest { %v} \n", settings)
 
 		case guestresource.ResourceTypeMappedVirtualDisk:
-			wcowMappedVirtualDisk := &guestresource.WCOWMappedVirtualDisk{}
-			if err := json.Unmarshal(rawGuestRequest, wcowMappedVirtualDisk); err != nil {
-				log.Printf("invalid ResourceTypeMappedVirtualDisk request %v", r)
-				return fmt.Errorf("invalid ResourceTypeMappedVirtualDisk request %v", r)
-			}
-
-			// TODO: uncomment this when Cimfs API is ready
-			/*var ctx context.Context
-			policy_err := modifyMappedVirtualDisk(ctx, guestRequestType, wcowMappedVirtualDisk, b.PolicyEnforcer.securityPolicyEnforcer)
-			if policy_err != nil {
-				//return fmt.Errorf("mount device denied by policy %v", r)
-			}*/
+			wcowMappedVirtualDisk := modifyGuestSettingsRequest.Settings.(*guestresource.WCOWMappedVirtualDisk)
+			// TODO: For verified cims (Cimfs API not ready yet)
 			log.Printf(", wcowMappedVirtualDisk { %v} \n", wcowMappedVirtualDisk)
 
 		case guestresource.ResourceTypeHvSocket:
-			hvSocketAddress := &hcsschema.HvSocketAddress{}
-			if err := json.Unmarshal(rawGuestRequest, hvSocketAddress); err != nil {
-				log.Printf("invalid ResourceTypeHvSocket request %v", r)
-				return fmt.Errorf("invalid ResourceTypeHvSocket request %v", r)
-			}
-
+			log.Printf("guestresource.ResourceTypeHvSocket \n")
+			hvSocketAddress := modifyGuestSettingsRequest.Settings.(*hcsschema.HvSocketAddress)
 			log.Printf(", hvSocketAddress { %v} \n", hvSocketAddress)
 
 		case guestresource.ResourceTypeSecurityPolicy:
-			securityPolicyRequest := &guestresource.WCOWConfidentialOptions{}
-			if err := json.Unmarshal(rawGuestRequest, securityPolicyRequest); err != nil {
-				log.Printf("invalid ResourceTypeSecurityPolicy request %v", r)
-				return fmt.Errorf("invalid ResourceTypeSecurityPolicy request %v", r)
-			}
-
+			securityPolicyRequest := modifyGuestSettingsRequest.Settings.(*guestresource.WCOWConfidentialOptions)
 			log.Printf(", WCOWConfidentialOptions: { %v} \n", securityPolicyRequest)
-			_ = b.PolicyEnforcer.SetWCOWConfidentialUVMOptions( /*ctx, */ securityPolicyRequest)
-			// skipSendToGCS = true
-			// send response back to shim
-			log.Printf("\n early response to hcsshim? \n")
-			err := b.sendReplyToShim(rpcModifySettings, *req)
+			_ = b.hostState.SetWCOWConfidentialUVMOptions( /*ctx, */ securityPolicyRequest)
+
+			// Send response back to shim
+			resp := &responseBase{
+				Result:     0, // 0 means success
+				ActivityID: req.activityID,
+			}
+			err := b.sendResponseToShim(rpcModifySettings, req.header.ID, resp)
 			if err != nil {
-				//
-				log.Printf("error sending early reply back to hcsshim")
-				err = fmt.Errorf("error sending early reply back to hcsshim")
-				return err
+				log.Printf("error sending response to hcsshim: %v", err)
+				return fmt.Errorf("error sending early reply back to hcsshim")
 			}
 			return nil
-			//return err, skipSendToGCS
+
 		default:
-			// invalid
+			// Invalid request
 			log.Printf("\n Invald modifySettingsRequest: %v", guestResourceType)
 			return fmt.Errorf("invald modifySettingsRequest: %v", guestResourceType)
 		}
 	}
 
-	// If we are here, there is no error and we want to
-	// forward the message to inbox GCS
-	b.sendToGCSCh <- *req
-
-	return nil
-	//, skipSendToGCS
-}
-
-func newInvalidRequestTypeError(rt guestrequest.RequestType) error {
-	return errors.Errorf("the RequestType %q is not supported", rt)
-}
-
-func modifyMappedVirtualDisk(
-	ctx context.Context,
-	rt guestrequest.RequestType,
-	mvd *guestresource.WCOWMappedVirtualDisk,
-	securityPolicy windowssecuritypolicy.SecurityPolicyEnforcer,
-) (err error) {
-	switch rt {
-	case guestrequest.RequestTypeAdd:
-		// TODO: Modify and update this with verified Cims API
-		return securityPolicy.EnforceDeviceMountPolicy(ctx, mvd.ContainerPath, "hash")
-	case guestrequest.RequestTypeRemove:
-		// TODO: Modify and update this with verified Cims API
-		return securityPolicy.EnforceDeviceUnmountPolicy(ctx, mvd.ContainerPath)
-	default:
-		return newInvalidRequestTypeError(rt)
-	}
-}
-
-func modifyCombinedLayers(
-	ctx context.Context,
-	containerID string,
-	rt guestrequest.RequestType,
-	cl guestresource.WCOWCombinedLayers,
-	securityPolicy windowssecuritypolicy.SecurityPolicyEnforcer,
-) (err error) {
-	switch rt {
-	case guestrequest.RequestTypeAdd:
-		layerPaths := make([]string, len(cl.Layers))
-		for i, layer := range cl.Layers {
-			layerPaths[i] = layer.Path
-			//TODO: Remove this when there is verified Cimfs API. This only here to mock
-			// mount device
-			log.Printf("enforcing mount_device in combinedlayers: %v, %v", layer.Path, layer.Id)
-			securityPolicy.EnforceDeviceMountPolicy(ctx, layer.Path, layer.Id)
-		}
-		log.Printf("enforcing mount_overlay in combinedlayers")
-		return securityPolicy.EnforceOverlayMountPolicy(ctx, containerID, layerPaths, cl.ContainerRootPath)
-	case guestrequest.RequestTypeRemove:
-		return securityPolicy.EnforceOverlayUnmountPolicy(ctx, cl.ContainerRootPath)
-	default:
-		return newInvalidRequestTypeError(rt)
-	}
-}
-
-// TODO: cleanup helper
-func (b *Bridge) sendReplyToShim(rpcProcType rpcProc, req request) error {
-	respType := msgTypeResponse | msgType(rpcProcType)
-	var msgBase requestBase
-	_ = json.Unmarshal(req.message, &msgBase)
-	resp := &responseBase{
-		Result: 0, // 0 means succes!
-		//	ErrorMessage: "",
-		//fmt.Sprintf("Request %v not allowed", req.typ.String()),
-		ActivityID: msgBase.ActivityID,
-	}
-	msgb, err := json.Marshal(resp)
-	if err != nil {
-		return err
-	}
-	b.sendMessageToShim(respType, getMessageID(req.header), msgb)
-
-	return nil
-}
-
-// TODO (kiashok): Cleanup.
-// Sends early reply to shim
-func (b *Bridge) sendMessageToShim(typ msgType, id int64, msg []byte) {
-	var h [hdrSize]byte
-	binary.LittleEndian.PutUint32(h[:], uint32(typ))
-	binary.LittleEndian.PutUint32(h[4:], uint32(len(msg)+16))
-	binary.LittleEndian.PutUint64(h[8:], uint64(id))
-
-	b.sendToShimCh <- request{
-		header:  h,
-		message: msg,
-	}
-	// time.Sleep(2 * time.Second)
-}
-
-func (b *Bridge) modifySettings(req *request) error {
-	log.Printf("\n rpcModifySettings handler \n")
-
-	//skipSendToGCS := false
-	if err := b.unmarshalModifySettingsAndForward(req); err != nil {
-		return err
-	}
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	//	if !skipSendToGCS {
-	//		b.forwardMessageToGCS(*req)
-	//	}
-
-	return nil
-}
-
-func (b *Bridge) negotiateProtocol(req *request) error {
-	var r negotiateProtocolRequest
-	var err error
-	if err = json.Unmarshal(req.message, &r); err != nil {
-		return fmt.Errorf("failed to unmarshal rpcNegotiateProtocol: %v", req)
-	}
-	log.Printf("rpcNegotiateProtocol: negotiateProtocolRequest{ requestBase %v, MinVersion: %v, MaxVersion: %v }", r.requestBase, r.MinimumVersion, r.MaximumVersion)
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
-	return nil
-}
-
-func (b *Bridge) dumpStacks(req *request) error {
-	var r dumpStacksRequest
-	var err error
-	if err = json.Unmarshal(req.message, &r); err != nil {
-		return fmt.Errorf("failed to unmarshal rpcStart: %v", req)
-	}
-	var ctx context.Context
-	err = b.PolicyEnforcer.securityPolicyEnforcer.EnforceDumpStacksPolicy(ctx)
-
-	if err != nil {
-		return errors.Wrapf(err, "dump stacks denied due to policy")
-	}
-
-	log.Printf("rpcDumpStacks: \n requestBase: %v", r.requestBase)
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
-	return nil
-}
-
-func (b *Bridge) deleteContainerState(req *request) error {
-	var r deleteContainerStateRequest
-	var err error
-	if err = json.Unmarshal(req.message, &r); err != nil {
-		return fmt.Errorf("failed to unmarshal rpcStart: %v", req)
-	}
-	log.Printf("rpcDeleteContainerRequest: \n requestBase: %v", r.requestBase)
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
-	return nil
-}
-
-func (b *Bridge) updateContainer(req *request) error {
-	// No callers in the code for rpcUpdateContainer
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
-	return nil
-}
-
-func (b *Bridge) lifecycleNotification(req *request) error {
-	// No callers in the code for rpcLifecycleNotification
-
-	// If we've reached here, means the policy has allowed it.
-	// So forward msg to inbox GCS.
-	b.sendToGCSCh <- *req
-
+	b.forwardRequestToGcs(req)
 	return nil
 }

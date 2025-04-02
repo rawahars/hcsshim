@@ -11,9 +11,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"math"
 	"os"
-	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -360,7 +358,7 @@ func (b *Bridge) ListenAndServe(bridgeIn io.ReadCloser, bridgeOut io.WriteCloser
 					if span != nil {
 						oc.SetSpanStatus(span, err)
 					}
-					setErrorForResponseBase(resp.Base(), err)
+					prot.SetErrorForResponseBase(resp.Base(), err, "gcs" /* moduleName */)
 				}
 				br.response = resp
 				b.responseChan <- br
@@ -442,49 +440,4 @@ func (b *Bridge) PublishNotification(n *prot.ContainerNotification) {
 		response: n,
 	}
 	b.responseChan <- resp
-}
-
-// setErrorForResponseBase modifies the passed-in MessageResponseBase to
-// contain information pertaining to the given error.
-func setErrorForResponseBase(response *prot.MessageResponseBase, errForResponse error) {
-	errorMessage := errForResponse.Error()
-	stackString := ""
-	fileName := ""
-	// We use -1 as a sentinel if no line number found (or it cannot be parsed),
-	// but that will ultimately end up as [math.MaxUint32], so set it to that explicitly.
-	// (Still keep using -1 for backwards compatibility ...)
-	lineNumber := uint32(math.MaxUint32)
-	functionName := ""
-	if stack := gcserr.BaseStackTrace(errForResponse); stack != nil {
-		bottomFrame := stack[0]
-		stackString = fmt.Sprintf("%+v", stack)
-		fileName = fmt.Sprintf("%s", bottomFrame)
-		lineNumberStr := fmt.Sprintf("%d", bottomFrame)
-		if n, err := strconv.ParseUint(lineNumberStr, 10, 32); err == nil {
-			lineNumber = uint32(n)
-		} else {
-			logrus.WithFields(logrus.Fields{
-				"line-number":   lineNumberStr,
-				logrus.ErrorKey: err,
-			}).Error("opengcs::bridge::setErrorForResponseBase - failed to parse line number, using -1 instead")
-		}
-		functionName = fmt.Sprintf("%n", bottomFrame)
-	}
-	hresult, err := gcserr.GetHresult(errForResponse)
-	if err != nil {
-		// Default to using the generic failure HRESULT.
-		hresult = gcserr.HrFail
-	}
-	response.Result = int32(hresult)
-	response.ErrorMessage = errorMessage
-	newRecord := prot.ErrorRecord{
-		Result:       int32(hresult),
-		Message:      errorMessage,
-		StackTrace:   stackString,
-		ModuleName:   "gcs",
-		FileName:     fileName,
-		Line:         lineNumber,
-		FunctionName: functionName,
-	}
-	response.ErrorRecords = append(response.ErrorRecords, newRecord)
 }

@@ -214,6 +214,11 @@ func main() {
 		return
 	}
 
+	// TODO:
+	// Since gcs-sidecar can be used for all types of windows
+	// containers, it is important to check if we want to
+	// enforce policy or not. Therefore do we want to have
+	// an initialState?
 	// set up our initial stance policy enforcer
 	var initialEnforcer windowssecuritypolicy.SecurityPolicyEnforcer
 	initialPolicyStance := "allow"
@@ -229,14 +234,12 @@ func main() {
 	}
 
 	// 3. Create bridge and initializa
-	brdg := gcsBridge.NewBridge(shimCon, gcsCon)
-	brdg.PolicyEnforcer = gcsBridge.NewPolicyEnforcer(initialEnforcer)
+	brdg := gcsBridge.NewBridge(shimCon, gcsCon, initialEnforcer)
 	brdg.AssignHandlers()
 
 	// 3. Listen and serve for hcsshim requests.
-	// startSendAndRecvLoops(shimCon, gcsCon)
 	err = brdg.ListenAndServeShimRequests()
 	if err != nil {
-		log.Printf("failed to serve gcs service \n")
+		log.Printf("\n failed to serve request: %v", err)
 	}
 }

@@ -4,21 +4,50 @@
 package bridge
 
 import (
-	"context"
 	"errors"
 	"fmt"
+	"sync"
 
-	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
-	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
+	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
-	windowssecuritypolicy "github.com/Microsoft/hcsshim/pkg/securitypolicy"
+	"github.com/Microsoft/hcsshim/pkg/securitypolicy"
 )
 
-func (s *SecurityPoliyEnforcer) SetWCOWConfidentialUVMOptions(securityPolicyRequest *guestresource.WCOWConfidentialOptions) error {
-	s.policyMutex.Lock()
-	defer s.policyMutex.Unlock()
+type Host struct {
+	containersMutex sync.Mutex
+	containers      map[string]cow.Container
 
-	if s.securityPolicyEnforcerSet {
+	// state required for the security policy enforcement
+	policyMutex               sync.Mutex
+	securityPolicyEnforcer    securitypolicy.SecurityPolicyEnforcer
+	securityPolicyEnforcerSet bool
+	uvmReferenceInfo          string
+}
+
+type SecurityPoliyEnforcer struct {
+	// State required for the security policy enforcement
+	policyMutex               sync.Mutex
+	securityPolicyEnforcer    securitypolicy.SecurityPolicyEnforcer
+	securityPolicyEnforcerSet bool
+	uvmReferenceInfo          string
+}
+
+func NewHost(initialEnforcer securitypolicy.SecurityPolicyEnforcer) *Host {
+	return &Host{
+		securityPolicyEnforcer:    initialEnforcer,
+		securityPolicyEnforcerSet: false,
+	}
+}
+
+func (h *Host) isSecurityPolicyEnforcerInitialized() bool {
+	return h.securityPolicyEnforcer != nil
+}
+
+func (h *Host) SetWCOWConfidentialUVMOptions(securityPolicyRequest *guestresource.WCOWConfidentialOptions) error {
+	h.policyMutex.Lock()
+	defer h.policyMutex.Unlock()
+
+	if h.securityPolicyEnforcerSet {
 		return errors.New("security policy has already been set")
 	}
 
@@ -28,7 +57,7 @@ func (s *SecurityPoliyEnforcer) SetWCOWConfidentialUVMOptions(securityPolicyRequ
 
 	// Initialize security policy enforcer for a given enforcer type and
 	// encoded security policy.
-	p, err := windowssecuritypolicy.CreateSecurityPolicyEnforcer(
+	p, err := securitypolicy.CreateSecurityPolicyEnforcer(
 		"rego",
 		securityPolicyRequest.EncodedSecurityPolicy,
 		DefaultCRIMounts(),
@@ -66,42 +95,11 @@ func (s *SecurityPoliyEnforcer) SetWCOWConfidentialUVMOptions(securityPolicyRequ
 			return err
 		}*/
 
-	s.securityPolicyEnforcer = p
-	s.securityPolicyEnforcerSet = true
+	h.securityPolicyEnforcer = p
+	h.securityPolicyEnforcerSet = true
 
 	// TODO(kiashok): Update the following
 	// s.uvmReferenceInfo = s.EncodedUVMReference
 
-	return nil
-}
-
-func ExecProcess(ctx context.Context, containerID string, params hcsschema.ProcessParameters) error {
-	/*
-
-		err = h.securityPolicyEnforcer.EnforceExecExternalProcessPolicy(
-			ctx,
-			params.CommandArgs,
-			processParamEnvTOOCIEnv(params.Environment),
-			params.WorkingDirectory,
-		)
-		if err != nil {
-			return errors.Wrapf(err, "exec is denied due to policy")
-		}
-	*/
-	return nil
-}
-
-func signalProcess(containerID string, processID uint32, signal guestrequest.SignalValueWCOW) error {
-	/*
-		err = h.securityPolicyEnforcer.EnforceSignalContainerProcessPolicy(ctx, containerID, signal, signalingInitProcess, startupArgList)
-		if err != nil {
-			return err
-		}
-	*/
-
-	return nil
-}
-func resizeConsole(containerID string, height uint16, width uint16) error {
-	// not validated in clcow
 	return nil
 }
