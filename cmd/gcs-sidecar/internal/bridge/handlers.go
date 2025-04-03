@@ -289,6 +289,11 @@ func (b *Bridge) modifySettings(req *request) error {
 			hvSocketAddress := modifyGuestSettingsRequest.Settings.(*hcsschema.HvSocketAddress)
 			log.Printf(", hvSocketAddress { %v} \n", hvSocketAddress)
 
+		case guestresource.ResourceTypeMappedDirectory:
+			log.Printf("guestresource.ResourceTypeMappedDirectory \n")
+			settings := modifyGuestSettingsRequest.Settings.(*hcsschema.MappedDirectory)
+			log.Printf(", hcsschema.MappedDirectory { %v } \n", settings)
+
 		case guestresource.ResourceTypeSecurityPolicy:
 			securityPolicyRequest := modifyGuestSettingsRequest.Settings.(*guestresource.WCOWConfidentialOptions)
 			log.Printf(", WCOWConfidentialOptions: { %v} \n", securityPolicyRequest)

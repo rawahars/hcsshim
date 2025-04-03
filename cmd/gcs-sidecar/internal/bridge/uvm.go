@@ -138,6 +138,14 @@ func unmarshalContainerModifySettings(req *request) (*containerModifySettings, e
 		}
 		modifyGuestSettingsRequest.Settings = hvSocketAddress
 
+	case guestresource.ResourceTypeMappedDirectory:
+		settings := &hcsschema.MappedDirectory{}
+		if err := commonutils.UnmarshalJSONWithHresult(rawGuestRequest, settings); err != nil {
+			log.Printf("invalid ResourceTypeMappedDirectory request %v", r)
+			return nil, fmt.Errorf("invalid ResourceTypeMappedDirectory request %v", r)
+		}
+		modifyGuestSettingsRequest.Settings = settings
+
 	case guestresource.ResourceTypeSecurityPolicy:
 		securityPolicyRequest := &guestresource.WCOWConfidentialOptions{}
 		if err := commonutils.UnmarshalJSONWithHresult(rawGuestRequest, securityPolicyRequest); err != nil {
