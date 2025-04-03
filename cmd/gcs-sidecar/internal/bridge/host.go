@@ -4,13 +4,16 @@
 package bridge
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/cow"
+	"github.com/Microsoft/hcsshim/internal/jobcontainers"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 	"github.com/Microsoft/hcsshim/pkg/securitypolicy"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 type Host struct {
@@ -34,6 +37,7 @@ type SecurityPoliyEnforcer struct {
 
 func NewHost(initialEnforcer securitypolicy.SecurityPolicyEnforcer) *Host {
 	return &Host{
+		containers:                make(map[string]cow.Container),
 		securityPolicyEnforcer:    initialEnforcer,
 		securityPolicyEnforcerSet: false,
 	}
@@ -102,4 +106,95 @@ func (h *Host) SetWCOWConfidentialUVMOptions(securityPolicyRequest *guestresourc
 	// s.uvmReferenceInfo = s.EncodedUVMReference
 
 	return nil
+}
+
+func (h *Host) CreateContainer(ctx context.Context, id string, spec *specs.Spec) error {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	if _, ok := h.containers[id]; ok {
+		return NewHresultError(HrVmcomputeSystemAlreadyExists)
+	}
+
+	opts := jobcontainers.CreateOptions{WCOWLayers: nil}
+	container, _, err := jobcontainers.Create(
+		context.Background(),
+		id,
+		spec,
+		opts,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to create job container: %w", err)
+	}
+	h.containers[container.ID()] = container
+
+	return nil
+}
+
+func (h *Host) StartContainer(ctx context.Context, id string) error {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	c, ok := h.containers[id]
+	if !ok {
+		return NewHresultError(HrVmcomputeSystemNotFound)
+	}
+
+	return c.Start(ctx)
+}
+
+func (h *Host) ModifyContainer(ctx context.Context, id string, config interface{}) error {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	c, ok := h.containers[id]
+	if !ok {
+		return NewHresultError(HrVmcomputeSystemNotFound)
+	}
+
+	return c.Modify(ctx, config)
+}
+
+func (h *Host) ShutdownContainer(ctx context.Context, id string) error {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	c, ok := h.containers[id]
+	if !ok {
+		return NewHresultError(HrVmcomputeSystemNotFound)
+	}
+
+	return c.Shutdown(ctx)
+}
+
+func (h *Host) TerminateContainer(ctx context.Context, id string) error {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	c, ok := h.containers[id]
+	if !ok {
+		return NewHresultError(HrVmcomputeSystemNotFound)
+	}
+
+	return c.Terminate(ctx)
+}
+
+//func (h *Host) GetProperties(ctx context.Context, id string) error {
+//	h.containersMutex.Lock()
+//	defer h.containersMutex.Unlock()
+//
+//	c, ok := h.containers[id]
+//	if !ok {
+//		return NewHresultError(HrVmcomputeSystemNotFound)
+//	}
+//
+//	c.PropertiesV2(ctx)
+//}
+
+func (h *Host) IsManagedContainer(id string) bool {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	_, ok := h.containers[id]
+	return ok
 }

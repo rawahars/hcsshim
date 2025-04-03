@@ -359,3 +359,17 @@ func (b *Bridge) prepareResponseMessage(header MessageHeader, message []byte) by
 	buf.Write(message[:])
 	return buf
 }
+
+func (b *Bridge) sendSuccessMessageToShim(activityID guid.GUID, rpcProc rpcProc, id SequenceID) error {
+	resp := &responseBase{
+		Result:     0, // 0 means success
+		ActivityID: activityID,
+	}
+	err := b.sendResponseToShim(rpcProc, id, resp)
+	if err != nil {
+		log.Printf("error sending response to hcsshim: %v", err)
+		return fmt.Errorf("error sending reply back to hcsshim")
+	}
+
+	return nil
+}

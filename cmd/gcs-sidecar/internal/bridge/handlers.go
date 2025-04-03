@@ -7,6 +7,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/Microsoft/hcsshim/internal/gcs"
+	"github.com/Microsoft/hcsshim/internal/oci"
 	"log"
 	"os"
 	"path/filepath"
@@ -50,6 +52,7 @@ func (b *Bridge) createContainer(req *request) error {
 	// containerCreate.ContainerConfig can be of type uvnConfig or hcsschema.HostedSystem
 	var uvmConfig uvmConfig
 	var hostedSystemConfig hcsschema.HostedSystem
+	var jobContainerConfig gcs.JobContainerConfig
 	if err = json.Unmarshal(containerConfig, &uvmConfig); err == nil {
 		systemType := uvmConfig.SystemType
 		timeZoneInformation := uvmConfig.TimeZoneInformation
@@ -63,6 +66,23 @@ func (b *Bridge) createContainer(req *request) error {
 		return fmt.Errorf("createContainer: invalid containerConfig type. Request: %v", r)
 	}
 
+	if err = json.Unmarshal(containerConfig, &jobContainerConfig); err == nil && jobContainerConfig.Spec != nil {
+		// If this request is to create a job container, then we process it in the side-car gcs without
+		// forwarding it to the inbox gcs.
+		log.Printf("harshrawat Job Container Config inside is: %+v\n", jobContainerConfig.Spec)
+		if !oci.IsJobContainer(jobContainerConfig.Spec) {
+			return fmt.Errorf("expected job container configuration")
+		}
+
+		err = b.hostState.CreateContainer(context.Background(), r.ContainerID, jobContainerConfig.Spec)
+		if err != nil {
+			return fmt.Errorf("failed to create container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcCreate, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return err
 }
@@ -73,6 +93,18 @@ func (b *Bridge) startContainer(req *request) error {
 		return fmt.Errorf("failed to unmarshal rpcStart: %v", req)
 	}
 	log.Printf("rpcStart: \n requestBase: %v", r)
+
+	// Check if the container id is that of a job container. If so then no-op.
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		if err := b.hostState.StartContainer(context.Background(), r.ContainerID); err != nil {
+			return fmt.Errorf("failed to start container: %w", err)
+		}
+
+		log.Printf("rawahars Started container: %v", r.ContainerID)
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcStart, req.header.ID)
+	}
 
 	b.forwardRequestToGcs(req)
 	return nil
@@ -95,6 +127,15 @@ func (b *Bridge) shutdownGraceful(req *request) error {
 		}
 	}
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		if err := b.hostState.ShutdownContainer(context.Background(), r.ContainerID); err != nil {
+			return fmt.Errorf("failed to shutdown container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcShutdownGraceful, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -105,6 +146,15 @@ func (b *Bridge) shutdownForced(req *request) error {
 		return fmt.Errorf("failed to unmarshal rpcShutdownForced: %v", req)
 	}
 	log.Printf("rpcShutdownForced: \n requestBase: %v", r)
+
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		if err := b.hostState.TerminateContainer(context.Background(), r.ContainerID); err != nil {
+			return fmt.Errorf("failed to terminate container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcShutdownForced, req.header.ID)
+	}
 
 	b.forwardRequestToGcs(req)
 	return nil
@@ -253,6 +303,16 @@ func (b *Bridge) modifySettings(req *request) error {
 	guestResourceType := modifyGuestSettingsRequest.ResourceType
 	guestRequestType := modifyGuestSettingsRequest.RequestType // add, remove, preadd, update
 	log.Printf("rpcModifySettings: guestRequest.ModificationRequest { resourceType: %v \n, requestType: %v", guestResourceType, guestRequestType)
+
+	containerID := modifyRequest.ContainerID
+	if containerID != nullContainerID && b.hostState.IsManagedContainer(containerID) {
+		if err = b.hostState.ModifyContainer(context.Background(), containerID, modifyGuestSettingsRequest); err != nil {
+			return fmt.Errorf("failed to modify container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcModifySettings, req.header.ID)
+	}
 
 	// TODO: Do we need to validate request types?
 	switch guestRequestType {
