@@ -278,9 +278,8 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 	log.G(ctx).Debug("hcsshim::CreateContainer creating compute system")
 	if gcsDocument != nil {
 		if oci.IsJobContainer(coi.Spec) {
-
+			gcsDocument = &gcs.JobContainerConfig{Spec: coi.Spec}
 		}
-		gcsDocument = &gcs.JobContainerConfig{Spec: coi.Spec}
 		c, err := coi.HostingSystem.CreateContainer(ctx, coi.actualID, gcsDocument)
 		if err != nil {
 			return nil, r, err

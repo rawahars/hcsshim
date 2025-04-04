@@ -25,7 +25,7 @@ const (
 
 	msgTypeRequest  msgType = 0x10100000
 	msgTypeResponse msgType = 0x20100000
-	msgTypeNotify   msgType = 0x30100000
+	msgTypeNotify   msgType = 0x30100101
 	msgTypeMask     msgType = 0xfff00000
 
 	notifyContainer = 1<<8 | 1
@@ -277,6 +277,11 @@ type executeProcessVsockStdioRelaySettings struct {
 	StdErr uint32 `json:",omitempty"`
 }
 
+type containerExecuteProcessResponse struct {
+	responseBase
+	ProcessID uint32 `json:"ProcessId"`
+}
+
 type containerResizeConsole struct {
 	requestBase
 	ProcessID uint32 `json:"ProcessId"`
@@ -289,10 +294,19 @@ type containerModifySettings struct {
 	Request interface{}
 }
 
+// InfiniteWaitTimeout is the value for ContainerWaitForProcess.TimeoutInMs that
+// indicates that no timeout should be in effect.
+const InfiniteWaitTimeout = 0xffffffff
+
 type containerWaitForProcess struct {
 	requestBase
 	ProcessID   uint32 `json:"ProcessId"`
 	TimeoutInMs uint32
+}
+
+type containerWaitForProcessResponse struct {
+	responseBase
+	ExitCode uint32
 }
 
 type containerSignalProcess struct {

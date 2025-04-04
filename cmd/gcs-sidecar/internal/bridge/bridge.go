@@ -219,6 +219,24 @@ func (b *Bridge) sendResponseToShim(rpcProcType rpcProc, id SequenceID, response
 	return nil
 }
 
+func (b *Bridge) sendNotificationToShim(response interface{}) error {
+	msgb, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+
+	resp := bridgeResponse{
+		header: MessageHeader{
+			Type: msgTypeNotify,
+			Size: uint32(len(msgb) + hdrSize),
+			ID:   0,
+		},
+		response: msgb,
+	}
+	b.sendToShimCh <- resp
+	return nil
+}
+
 // ListenAndServeShimRequests listens to messages on the hcsshim
 // and inbox GCS connections and schedules them for processing.
 // After processing, messages are forwarded to inbox GCS on success

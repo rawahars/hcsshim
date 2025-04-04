@@ -74,10 +74,27 @@ func (b *Bridge) createContainer(req *request) error {
 			return fmt.Errorf("expected job container configuration")
 		}
 
-		err = b.hostState.CreateContainer(context.Background(), r.ContainerID, jobContainerConfig.Spec)
+		container, err := b.hostState.CreateContainer(context.Background(), r.ContainerID, jobContainerConfig.Spec)
 		if err != nil {
 			return fmt.Errorf("failed to create container: %w", err)
 		}
+
+		go func() {
+			_ = container.Wait()
+
+			log.Printf("harshrawat: container exited: %s", container.ID())
+
+			notification := &containerNotification{
+				requestBase: requestBase{
+					ContainerID: r.ContainerID,
+					ActivityID:  r.ActivityID,
+				},
+				Operation:  "None",
+				Result:     0,
+				ResultInfo: anyInString{Value: ""},
+			}
+			_ = b.sendNotificationToShim(notification)
+		}()
 
 		// Send response back to shim
 		return b.sendSuccessMessageToShim(req.activityID, rpcCreate, req.header.ID)
@@ -178,6 +195,26 @@ func (b *Bridge) executeProcess(req *request) error {
 	}
 	log.Printf("rpcExecProcess: \n containerID: %v, schema1.ProcessParameters{ params: %v, stdioRelaySettings: %v, vsockStdioRelaySettings: %v }", containerID, processParams, stdioRelaySettings, vsockStdioRelaySettings)
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		process, err := b.hostState.StartProcess(context.Background(), containerID, &processParams)
+		if err != nil {
+			return fmt.Errorf("rpcExecProcess: failed to start process: %w", err)
+		}
+
+		resp := &containerExecuteProcessResponse{
+			responseBase: responseBase{
+				Result:     0,
+				ActivityID: r.ActivityID,
+			},
+			ProcessID: uint32(process.Pid()),
+		}
+		err = b.sendResponseToShim(rpcExecuteProcess, req.header.ID, resp)
+		if err != nil {
+			return fmt.Errorf("error sending reply to hcsshim: %w", err)
+		}
+		return nil
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -188,6 +225,26 @@ func (b *Bridge) waitForProcess(req *request) error {
 		return fmt.Errorf("failed to unmarshal waitForProcess: %v", req)
 	}
 	log.Printf("rpcWaitForProcess: \n containerWaitForProcess{ requestBase: %v, processID: %v, timeoutInMs: %v }", r.requestBase, r.ProcessID, r.TimeoutInMs)
+
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		exitCode, err := b.hostState.WaitOnProcess(r.ContainerID, r.ProcessID, r.TimeoutInMs)
+		if err != nil {
+			return err
+		}
+
+		resp := &containerWaitForProcessResponse{
+			responseBase: responseBase{
+				Result:     0,
+				ActivityID: r.ActivityID,
+			},
+			ExitCode: exitCode,
+		}
+		err = b.sendResponseToShim(rpcWaitForProcess, req.header.ID, resp)
+		if err != nil {
+			return fmt.Errorf("error sending reply to hcsshim: %w", err)
+		}
+		return nil
+	}
 
 	b.forwardRequestToGcs(req)
 	return nil
@@ -212,6 +269,16 @@ func (b *Bridge) signalProcess(req *request) error {
 	}
 	log.Printf("rpcSignalProcess: \n containerSignalProcess{ requestBase: %v, processID: %v, Options: %v }", r.requestBase, r.ProcessID, wcowOptions)
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		err := b.hostState.SignalContainerProcess(context.Background(), r.ContainerID, r.ProcessID, wcowOptions)
+		if err != nil {
+			return fmt.Errorf("error signalling process: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcSignalProcess, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -222,6 +289,16 @@ func (b *Bridge) resizeConsole(req *request) error {
 		return fmt.Errorf("failed to unmarshal rpcSignalProcess: %v", req)
 	}
 	log.Printf("rpcResizeConsole: \n containerResizeConsole{ requestBase: %v, processID: %v, height: %v, width: %v }", r.requestBase, r.ProcessID, r.Height, r.Width)
+
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		err := b.hostState.ResizeConsole(context.Background(), r.ContainerID, r.ProcessID, r.Width, r.Height)
+		if err != nil {
+			return fmt.Errorf("error resizing console: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcResizeConsole, req.header.ID)
+	}
 
 	b.forwardRequestToGcs(req)
 	return nil
