@@ -93,9 +93,6 @@ type HandlerFunc func(*request) error
 
 // ServeMsg serves request by calling appropriate handler functions.
 func (b *Bridge) ServeMsg(r *request) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if r == nil {
 		panic("bridge: nil request to handler")
 	}

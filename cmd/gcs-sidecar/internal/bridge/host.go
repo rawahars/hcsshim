@@ -145,13 +145,18 @@ func (h *Host) ModifyContainer(ctx context.Context, containerID string, config i
 	return c.Modify(ctx, config)
 }
 
-func (h *Host) StartProcess(ctx context.Context, containerID string, params *hcsschema.ProcessParameters) (cow.Process, error) {
+func (h *Host) StartProcess(
+	ctx context.Context,
+	containerID string,
+	params *hcsschema.ProcessParameters,
+	stdio *executeProcessStdioRelaySettings,
+) (cow.Process, error) {
 	c, err := h.GetCreatedContainer(containerID)
 	if err != nil {
 		return nil, err
 	}
 
-	process, err := c.CreateProcess(ctx, params)
+	process, err := c.CreateProcess(ctx, params, stdio)
 	if err != nil {
 		return nil, err
 	}

@@ -196,7 +196,7 @@ func (b *Bridge) executeProcess(req *request) error {
 	log.Printf("rpcExecProcess: \n containerID: %v, schema1.ProcessParameters{ params: %v, stdioRelaySettings: %v, vsockStdioRelaySettings: %v }", containerID, processParams, stdioRelaySettings, vsockStdioRelaySettings)
 
 	if b.hostState.IsManagedContainer(r.ContainerID) {
-		process, err := b.hostState.StartProcess(context.Background(), containerID, &processParams)
+		process, err := b.hostState.StartProcess(context.Background(), containerID, &processParams, stdioRelaySettings)
 		if err != nil {
 			return fmt.Errorf("rpcExecProcess: failed to start process: %w", err)
 		}

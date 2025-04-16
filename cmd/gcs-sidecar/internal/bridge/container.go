@@ -3,7 +3,10 @@ package bridge
 import (
 	"context"
 	"fmt"
+	"github.com/Microsoft/go-winio"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"io"
+	"log"
 	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/cow"
@@ -12,9 +15,11 @@ import (
 )
 
 type Container struct {
-	id          string
-	spec        *oci.Spec
-	container   cow.Container
+	id        string
+	spec      *oci.Spec
+	container cow.Container
+
+	initDoOnce  sync.Once
 	initProcess cow.Process
 
 	processesMutex sync.Mutex
@@ -65,10 +70,97 @@ func (c *Container) Wait() error {
 	return c.container.Wait()
 }
 
-func (c *Container) CreateProcess(ctx context.Context, params *hcsschema.ProcessParameters) (cow.Process, error) {
+func (c *Container) CreateProcess(
+	ctx context.Context,
+	params *hcsschema.ProcessParameters,
+	stdioConfig *executeProcessStdioRelaySettings,
+) (cow.Process, error) {
 	p, err := c.container.CreateProcess(ctx, params)
 	if err != nil {
 		return nil, fmt.Errorf("failed to create process: %w", err)
+	}
+
+	// Assign the first process made as the init process of the container.
+	c.initDoOnce.Do(func() {
+		c.initProcess = p
+	})
+
+	// Start relaying process IO.
+	log.Printf("Creating stdio connection with hvsockets from host: %+v", stdioConfig)
+	stdin, stdout, stderr := p.Stdio()
+	if params.CreateStdInPipe {
+		go func() {
+			addr := &winio.HvsockAddr{
+				VMID:      winio.HvsockGUIDParent(),
+				ServiceID: *stdioConfig.StdIn,
+			}
+			conn, err := winio.Dial(ctx, addr)
+			if err != nil {
+				log.Printf("failed to connect to stdin pipe: %v", err)
+				return
+			}
+
+			_, err = io.Copy(stdin, conn)
+			if err != nil {
+				log.Printf("failed to copy stdin pipe: %v", err)
+			}
+
+			// Notify the process that there is no more input.
+			if err := p.CloseStdin(context.TODO()); err != nil {
+				log.Printf("failed to close stdin pipe: %v", err)
+				return
+			}
+		}()
+	}
+
+	if params.CreateStdOutPipe {
+		go func() {
+			addr := &winio.HvsockAddr{
+				VMID:      winio.HvsockGUIDParent(),
+				ServiceID: *stdioConfig.StdOut,
+			}
+			conn, err := winio.Dial(ctx, addr)
+			if err != nil {
+				log.Printf("failed to connect to stdout pipe: %v", err)
+				return
+			}
+
+			_, err = io.Copy(conn, stdout)
+			if err != nil {
+				log.Printf("failed to copy stdout pipe: %v", err)
+			}
+
+			// Notify the process that there is no more input.
+			if err := p.CloseStdout(context.TODO()); err != nil {
+				log.Printf("failed to close stdout pipe: %v", err)
+				return
+			}
+		}()
+	}
+
+	if params.CreateStdErrPipe {
+		go func() {
+			addr := &winio.HvsockAddr{
+				VMID:      winio.HvsockGUIDParent(),
+				ServiceID: *stdioConfig.StdErr,
+			}
+			conn, err := winio.Dial(ctx, addr)
+			if err != nil {
+				log.Printf("failed to connect to stderr pipe: %v", err)
+				return
+			}
+
+			_, err = io.Copy(conn, stderr)
+			if err != nil {
+				log.Printf("failed to copy stderr pipe: %v", err)
+			}
+
+			// Notify the process that there is no more input.
+			if err := p.CloseStderr(context.TODO()); err != nil {
+				log.Printf("failed to close stderr pipe: %v", err)
+				return
+			}
+		}()
 	}
 
 	c.processesMutex.Lock()
