@@ -195,6 +195,7 @@ func (h *Host) WaitOnProcess(containerID string, processID uint32, timeoutInMS u
 		if err != nil {
 			return 1, err
 		}
+		c.RemoveProcessState(processID)
 		return uint32(exitCode), nil
 	case <-tc:
 		return 1, NewHresultError(HvVmcomputeTimeout)
@@ -268,6 +269,19 @@ func (h *Host) TerminateContainer(ctx context.Context, containerID string) error
 //
 //	c.PropertiesV2(ctx)
 //}
+
+func (h *Host) RemoveContainerState(containerID string) error {
+	h.containersMutex.Lock()
+	defer h.containersMutex.Unlock()
+
+	_, ok := h.containers[containerID]
+	if !ok {
+		return NewHresultError(HrVmcomputeSystemNotFound)
+	}
+
+	delete(h.containers, containerID)
+	return nil
+}
 
 func (h *Host) GetCreatedContainer(containerID string) (*Container, error) {
 	h.containersMutex.Lock()

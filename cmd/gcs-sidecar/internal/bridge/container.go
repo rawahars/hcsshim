@@ -170,6 +170,12 @@ func (c *Container) CreateProcess(
 	return p, nil
 }
 
+func (c *Container) RemoveProcessState(pid uint32) {
+	c.processesMutex.Lock()
+	defer c.processesMutex.Unlock()
+	delete(c.processes, pid)
+}
+
 func (c *Container) GetProcess(pid uint32) (cow.Process, error) {
 	c.processesMutex.Lock()
 	defer c.processesMutex.Unlock()

@@ -354,6 +354,16 @@ func (b *Bridge) deleteContainerState(req *request) error {
 	}
 	log.Printf("rpcDeleteContainerRequest: \n requestBase: %v", r.requestBase)
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		err := b.hostState.RemoveContainerState(r.ContainerID)
+		if err != nil {
+			return fmt.Errorf("error removing container state: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.activityID, rpcDeleteContainerState, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
