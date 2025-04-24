@@ -277,7 +277,7 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 
 	log.G(ctx).Debug("hcsshim::CreateContainer creating compute system")
 	if gcsDocument != nil {
-		if oci.IsJobContainer(coi.Spec) {
+		if oci.IsIsolatedJobContainer(coi.Spec) {
 			gcsDocument = &gcs.JobContainerConfig{Spec: coi.Spec}
 		}
 		c, err := coi.HostingSystem.CreateContainer(ctx, coi.actualID, gcsDocument)
@@ -285,7 +285,7 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 			return nil, r, err
 		}
 
-		if coi.HostingSystem.OS() == "windows" && !oci.IsJobContainer(coi.Spec) {
+		if coi.HostingSystem.OS() == "windows" && !oci.IsIsolatedJobContainer(coi.Spec) {
 			log.G(ctx).Debug("redirecting container HvSocket for WCOW")
 			props, err := c.PropertiesV2(ctx, hcsschema.PTSystemGUID)
 			if err != nil {

@@ -70,7 +70,7 @@ func (b *Bridge) createContainer(req *request) error {
 		// If this request is to create a job container, then we process it in the side-car gcs without
 		// forwarding it to the inbox gcs.
 		log.Printf("harshrawat Job Container Config inside is: %+v\n", jobContainerConfig.Spec)
-		if !oci.IsJobContainer(jobContainerConfig.Spec) {
+		if !oci.IsIsolatedJobContainer(jobContainerConfig.Spec) {
 			return fmt.Errorf("expected job container configuration")
 		}
 

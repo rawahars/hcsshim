@@ -24,3 +24,7 @@ func IsIsolated(s *specs.Spec) bool {
 func IsJobContainer(s *specs.Spec) bool {
 	return s.Annotations[annotations.HostProcessContainer] == "true"
 }
+
+func IsIsolatedJobContainer(s *specs.Spec) bool {
+	return s.Annotations[annotations.IsolatedHostProcessContainer] == "true"
+}
