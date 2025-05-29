@@ -24,3 +24,8 @@ func IsIsolated(s *specs.Spec) bool {
 func IsJobContainer(s *specs.Spec) bool {
 	return s.Annotations[annotations.HostProcessContainer] == "true"
 }
+
+// IsIsolatedJobContainer checks if `s` is asking for a Windows job container with hypervisor isolation.
+func IsIsolatedJobContainer(s *specs.Spec) bool {
+	return s.Annotations[annotations.IsolatedHostProcessContainer] == "true"
+}

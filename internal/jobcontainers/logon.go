@@ -5,6 +5,7 @@ package jobcontainers
 import (
 	"context"
 	"fmt"
+	"github.com/Microsoft/hcsshim/internal/oci"
 	"strings"
 	"unsafe"
 
@@ -109,7 +110,7 @@ func (c *JobContainer) processToken(ctx context.Context, userOrGroup string) (wi
 		return 0, errors.New("empty username or group name passed")
 	}
 
-	if groupExists(userOrGroup) {
+	if !oci.IsIsolatedJobContainer(c.spec) && groupExists(userOrGroup) {
 		userName = c.id[:winapi.UserNameCharLimit]
 		pswd, err := makeLocalAccount(ctx, userName, userOrGroup)
 		if err != nil {

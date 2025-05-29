@@ -30,7 +30,6 @@ const (
 	protocolVersion = 4
 
 	firstIoChannelVsockPort = prot.LinuxGcsVsockPort + 1
-	nullContainerID         = "00000000-0000-0000-0000-000000000000"
 )
 
 // IoListenFunc is a type for a function that creates a listener for a VM for
@@ -149,7 +148,7 @@ func (gc *GuestConnection) connect(ctx context.Context, isColdStart bool, initGu
 			conf.TimeZoneInformation = initGuestState.Timezone
 		}
 		createReq := prot.ContainerCreate{
-			RequestBase:     makeRequest(ctx, nullContainerID),
+			RequestBase:     makeRequest(ctx, prot.NullContainerID),
 			ContainerConfig: prot.AnyInString{Value: conf},
 		}
 		var createResp prot.ResponseBase
@@ -158,7 +157,7 @@ func (gc *GuestConnection) connect(ctx context.Context, isColdStart bool, initGu
 			return err
 		}
 		if resp.Capabilities.SendHostStartMessage {
-			startReq := makeRequest(ctx, nullContainerID)
+			startReq := makeRequest(ctx, prot.NullContainerID)
 			var startResp prot.ResponseBase
 			err = gc.brdg.RPC(ctx, prot.RPCStart, &startReq, &startResp, true)
 			if err != nil {
@@ -177,7 +176,7 @@ func (gc *GuestConnection) Modify(ctx context.Context, settings interface{}) (er
 	defer func() { oc.SetSpanStatus(span, err) }()
 
 	req := prot.ContainerModifySettings{
-		RequestBase: makeRequest(ctx, nullContainerID),
+		RequestBase: makeRequest(ctx, prot.NullContainerID),
 		Request:     settings,
 	}
 	var resp prot.ResponseBase
@@ -190,7 +189,7 @@ func (gc *GuestConnection) DumpStacks(ctx context.Context) (response string, err
 	defer func() { oc.SetSpanStatus(span, err) }()
 
 	req := prot.DumpStacksRequest{
-		RequestBase: makeRequest(ctx, nullContainerID),
+		RequestBase: makeRequest(ctx, prot.NullContainerID),
 	}
 	var resp prot.DumpStacksResponse
 	err = gc.brdg.RPC(ctx, prot.RPCDumpStacks, &req, &resp, false)
@@ -225,7 +224,7 @@ func (gc *GuestConnection) CreateProcess(ctx context.Context, settings interface
 	defer span.End()
 	defer func() { oc.SetSpanStatus(span, err) }()
 
-	return gc.exec(ctx, nullContainerID, settings)
+	return gc.exec(ctx, prot.NullContainerID, settings)
 }
 
 // OS returns the operating system of the container's host, "windows" or "linux".

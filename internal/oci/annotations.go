@@ -58,7 +58,8 @@ func ProcessAnnotations(ctx context.Context, s *specs.Spec) error {
 
 	// validate host process containers annotations are not conflicting
 	disableHPC := ParseAnnotationsBool(ctx, s.Annotations, annotations.DisableHostProcessContainer, false)
-	enableHPC := ParseAnnotationsBool(ctx, s.Annotations, annotations.HostProcessContainer, false)
+	enableHPC := ParseAnnotationsBool(ctx, s.Annotations, annotations.HostProcessContainer, false) ||
+		ParseAnnotationsBool(ctx, s.Annotations, annotations.IsolatedHostProcessContainer, false)
 	if disableHPC && enableHPC {
 		err := fmt.Errorf("%w: host process container annotations %q = %q and %q = %q",
 			ErrGenericAnnotationConflict,

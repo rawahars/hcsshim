@@ -437,6 +437,38 @@ func (b *Bridge) prepareResponseMessage(header messageHeader, message []byte) (b
 	return buf, nil
 }
 
+func (b *Bridge) sendSuccessMessageToShim(ctx context.Context, activityID guid.GUID, rpcProc prot.RPCProc, id sequenceID) error {
+	resp := &prot.ResponseBase{
+		Result:     0, // 0 means success
+		ActivityID: activityID,
+	}
+	err := b.sendResponseToShim(ctx, rpcProc, id, resp)
+	if err != nil {
+		logrus.Errorf("failed to send response to shim: %v", err)
+		return fmt.Errorf("error sending reply back to hcsshim")
+	}
+
+	return nil
+}
+
+func (b *Bridge) sendNotificationToShim(response interface{}) error {
+	msgb, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+
+	resp := bridgeResponse{
+		header: messageHeader{
+			Type: (prot.MsgTypeNotify & prot.MsgTypeMask) | prot.NotifyContainer,
+			Size: uint32(len(msgb) + prot.HdrSize),
+			ID:   0,
+		},
+		response: msgb,
+	}
+	b.sendToShimCh <- resp
+	return nil
+}
+
 // setErrorForResponseBase modifies the passed-in ResponseBase to
 // contain information pertaining to the given error.
 func setErrorForResponseBase(response *prot.ResponseBase, errForResponse error, moduleName string) {

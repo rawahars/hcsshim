@@ -17,6 +17,7 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oc"
+	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 	"github.com/Microsoft/hcsshim/internal/windevice"
@@ -53,6 +54,7 @@ func (b *Bridge) createContainer(req *request) (err error) {
 	var (
 		uvmConfig          prot.UvmConfig
 		hostedSystemConfig hcsschema.HostedSystem
+		jobContainerConfig prot.JobContainerConfig
 	)
 	if err = commonutils.UnmarshalJSONWithHresult(containerConfig, &uvmConfig); err == nil &&
 		uvmConfig.SystemType != "" {
@@ -64,6 +66,36 @@ func (b *Bridge) createContainer(req *request) (err error) {
 		schemaVersion := hostedSystemConfig.SchemaVersion
 		container := hostedSystemConfig.Container
 		log.G(ctx).Tracef("createContainer: HostedSystemConfig: {schemaVersion: %v, container: %v}}", schemaVersion, container)
+	} else if err = json.Unmarshal(containerConfig, &jobContainerConfig); err == nil && jobContainerConfig.Spec != nil {
+		// If this request is to create a job container, then we process it in the side-car gcs without
+		// forwarding it to the inbox gcs.
+		log.G(ctx).Tracef("harshrawat Job Container Config inside is: %+v", jobContainerConfig.Spec)
+		if !oci.IsIsolatedJobContainer(jobContainerConfig.Spec) {
+			return fmt.Errorf("expected job container configuration")
+		}
+
+		container, err := b.hostState.CreateContainer(req.ctx, r.ContainerID, jobContainerConfig.Spec)
+		if err != nil {
+			return fmt.Errorf("failed to create container: %w", err)
+		}
+
+		go func() {
+			_ = container.Wait()
+
+			notification := &prot.ContainerNotification{
+				RequestBase: prot.RequestBase{
+					ContainerID: r.ContainerID,
+					ActivityID:  r.ActivityID,
+				},
+				Operation:  "None",
+				Result:     0,
+				ResultInfo: prot.AnyInString{Value: ""},
+			}
+			_ = b.sendNotificationToShim(notification)
+		}()
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCCreate, req.header.ID)
 	} else {
 		return fmt.Errorf("invalid request to createContainer")
 	}
@@ -80,6 +112,17 @@ func (b *Bridge) startContainer(req *request) (err error) {
 	var r prot.RequestBase
 	if err := commonutils.UnmarshalJSONWithHresult(req.message, &r); err != nil {
 		return errors.Wrapf(err, "failed to unmarshal startContainer")
+	}
+
+	// Check if the container id is that of a job container. If so then no-op.
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		if err := b.hostState.StartContainer(req.ctx, r.ContainerID); err != nil {
+			return fmt.Errorf("failed to start container: %w", err)
+		}
+
+		log.G(req.ctx).Tracef("Started container: %v", r.ContainerID)
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCStart, req.header.ID)
 	}
 
 	b.forwardRequestToGcs(req)
@@ -100,6 +143,15 @@ func (b *Bridge) shutdownGraceful(req *request) (err error) {
 	// containers, it is important to check if we want to
 	// enforce policy or not.
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		if err := b.hostState.ShutdownContainer(req.ctx, r.ContainerID); err != nil {
+			return fmt.Errorf("failed to shutdown container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCShutdownGraceful, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -112,6 +164,15 @@ func (b *Bridge) shutdownForced(req *request) (err error) {
 	var r prot.RequestBase
 	if err := commonutils.UnmarshalJSONWithHresult(req.message, &r); err != nil {
 		return errors.Wrap(err, "failed to unmarshal shutdownForced")
+	}
+
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		if err := b.hostState.TerminateContainer(req.ctx, r.ContainerID); err != nil {
+			return fmt.Errorf("failed to terminate container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCShutdownForced, req.header.ID)
 	}
 
 	b.forwardRequestToGcs(req)
@@ -135,6 +196,26 @@ func (b *Bridge) executeProcess(req *request) (err error) {
 		return errors.Wrap(err, "executeProcess: invalid params type for request")
 	}
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		process, err := b.hostState.StartProcess(req.ctx, r.ContainerID, &processParams, r.Settings.StdioRelaySettings)
+		if err != nil {
+			return fmt.Errorf("rpcExecProcess: failed to start process: %w", err)
+		}
+
+		resp := &prot.ContainerExecuteProcessResponse{
+			ResponseBase: prot.ResponseBase{
+				Result:     0,
+				ActivityID: r.ActivityID,
+			},
+			ProcessID: uint32(process.Pid()),
+		}
+		err = b.sendResponseToShim(req.ctx, prot.RPCExecuteProcess, req.header.ID, resp)
+		if err != nil {
+			return fmt.Errorf("error sending reply to hcsshim: %w", err)
+		}
+		return nil
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -147,6 +228,26 @@ func (b *Bridge) waitForProcess(req *request) (err error) {
 	var r prot.ContainerWaitForProcess
 	if err := commonutils.UnmarshalJSONWithHresult(req.message, &r); err != nil {
 		return errors.Wrap(err, "failed to unmarshal waitForProcess")
+	}
+
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		exitCode, err := b.hostState.WaitOnProcess(r.ContainerID, r.ProcessID, r.TimeoutInMs)
+		if err != nil {
+			return err
+		}
+
+		resp := &prot.ContainerWaitForProcessResponse{
+			ResponseBase: prot.ResponseBase{
+				Result:     0,
+				ActivityID: r.ActivityID,
+			},
+			ExitCode: exitCode,
+		}
+		err = b.sendResponseToShim(req.ctx, prot.RPCWaitForProcess, req.header.ID, resp)
+		if err != nil {
+			return fmt.Errorf("error sending reply to hcsshim: %w", err)
+		}
+		return nil
 	}
 
 	b.forwardRequestToGcs(req)
@@ -172,6 +273,16 @@ func (b *Bridge) signalProcess(req *request) (err error) {
 		}
 	}
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		err := b.hostState.SignalContainerProcess(req.ctx, r.ContainerID, r.ProcessID, wcowOptions)
+		if err != nil {
+			return fmt.Errorf("error signalling process: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCSignalProcess, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -184,6 +295,16 @@ func (b *Bridge) resizeConsole(req *request) (err error) {
 	var r prot.ContainerResizeConsole
 	if err := commonutils.UnmarshalJSONWithHresult(req.message, &r); err != nil {
 		return fmt.Errorf("failed to unmarshal resizeConsole: %v", req)
+	}
+
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		err := b.hostState.ResizeConsole(req.ctx, r.ContainerID, r.ProcessID, r.Width, r.Height)
+		if err != nil {
+			return fmt.Errorf("error resizing console: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCResizeConsole, req.header.ID)
 	}
 
 	b.forwardRequestToGcs(req)
@@ -200,6 +321,31 @@ func (b *Bridge) getProperties(req *request) (err error) {
 		return errors.Wrapf(err, "failed to unmarshal getProperties: %v", string(req.message))
 	}
 	log.G(req.ctx).Tracef("getProperties query: %v", getPropReqV2.Query.PropertyTypes)
+
+	if b.hostState.IsManagedContainer(getPropReqV2.ContainerID) {
+		properties, err := b.hostState.GetProperties(req.ctx, getPropReqV2.ContainerID, getPropReqV2.Query.PropertyTypes...)
+		if err != nil {
+			return err
+		}
+
+		if properties == nil {
+			properties = &hcsschema.Properties{}
+		}
+
+		resp := &prot.ContainerGetPropertiesResponseV2{
+			ResponseBase: prot.ResponseBase{
+				Result:     0,
+				ActivityID: getPropReqV2.ActivityID,
+			},
+			Properties: prot.ContainerPropertiesV2(*properties),
+		}
+
+		err = b.sendResponseToShim(req.ctx, prot.RPCGetProperties, req.header.ID, resp)
+		if err != nil {
+			return fmt.Errorf("error sending reply to hcsshim: %w", err)
+		}
+		return nil
+	}
 
 	b.forwardRequestToGcs(req)
 	return nil
@@ -243,6 +389,16 @@ func (b *Bridge) deleteContainerState(req *request) (err error) {
 		return errors.Wrap(err, "failed to unmarshal deleteContainerState")
 	}
 
+	if b.hostState.IsManagedContainer(r.ContainerID) {
+		err := b.hostState.RemoveContainerState(r.ContainerID)
+		if err != nil {
+			return fmt.Errorf("error removing container state: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCDeleteContainerState, req.header.ID)
+	}
+
 	b.forwardRequestToGcs(req)
 	return nil
 }
@@ -284,6 +440,16 @@ func (b *Bridge) modifySettings(req *request) (err error) {
 
 	if guestRequestType == "" {
 		guestRequestType = guestrequest.RequestTypeAdd
+	}
+
+	containerID := modifyRequest.ContainerID
+	if containerID != prot.NullContainerID && b.hostState.IsManagedContainer(containerID) {
+		if err = b.hostState.ModifyContainer(req.ctx, containerID, modifyGuestSettingsRequest); err != nil {
+			return fmt.Errorf("failed to modify container: %w", err)
+		}
+
+		// Send response back to shim
+		return b.sendSuccessMessageToShim(req.ctx, req.activityID, prot.RPCModifySettings, req.header.ID)
 	}
 
 	switch guestRequestType {

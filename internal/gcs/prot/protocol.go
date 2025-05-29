@@ -11,6 +11,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/bridgeutils/commonutils"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 const (
@@ -27,6 +28,14 @@ const (
 	// LinuxGcsVsockPort is the vsock port number that the Linux GCS will
 	// connect to.
 	LinuxGcsVsockPort = 0x40000000
+
+	// NullContainerID is the ContainerID that will be sent on any prot.MessageBase
+	// for V2 where the specific message is targeted at the UVM itself.
+	NullContainerID = "00000000-0000-0000-0000-000000000000"
+
+	// InfiniteWaitTimeout is the value for ContainerWaitForProcess.TimeoutInMs that
+	// indicates that no timeout should be in effect.
+	InfiniteWaitTimeout = 0xffffffff
 )
 
 // e0e16197-dd56-4a10-9195-5ee7a155a838
@@ -396,4 +405,9 @@ type ContainerGetPropertiesResponse struct {
 type ContainerGetPropertiesResponseV2 struct {
 	ResponseBase
 	Properties ContainerPropertiesV2
+}
+
+type JobContainerConfig struct {
+	Id   string      `json:"id,omitempty"`
+	Spec *specs.Spec `json:"spec"`
 }

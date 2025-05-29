@@ -273,7 +273,8 @@ func signalProcess(pid uint32, signal int) error {
 		_ = windows.FreeLibrary(k32)
 	}()
 
-	proc, err := windows.GetProcAddress(k32, "CtrlRoutine")
+	kbase, err := windows.LoadLibrary("KernelBase.dll")
+	proc, err := windows.GetProcAddress(kbase, "CtrlRoutine")
 	if err != nil {
 		return errors.Wrap(err, "failed to load CtrlRoutine")
 	}

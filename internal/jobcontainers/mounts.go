@@ -5,6 +5,7 @@ package jobcontainers
 import (
 	"context"
 	"fmt"
+	"github.com/Microsoft/hcsshim/internal/oci"
 	"os"
 	"path/filepath"
 	"strings"
@@ -84,8 +85,10 @@ func (c *JobContainer) setupMounts(ctx context.Context, spec *specs.Spec) error 
 	//
 	// and then it will pass that to Mkdir and bail. So to avoid rolling our own
 	// mkdirall, just mount the volume somewhere and do the links and then dismount.
-	if err := layers.MountSandboxVolume(ctx, mountedDirPath, c.spec.Root.Path); err != nil {
-		return err
+	if !oci.IsIsolatedJobContainer(spec) {
+		if err := layers.MountSandboxVolume(ctx, mountedDirPath, c.spec.Root.Path); err != nil {
+			return err
+		}
 	}
 
 	for _, mount := range spec.Mounts {
@@ -134,5 +137,8 @@ func (c *JobContainer) setupMounts(ctx context.Context, spec *specs.Spec) error 
 		}
 	}
 
-	return layers.RemoveSandboxMountPoint(ctx, mountedDirPath)
+	if !oci.IsIsolatedJobContainer(spec) {
+		err = layers.RemoveSandboxMountPoint(ctx, mountedDirPath)
+	}
+	return err
 }
