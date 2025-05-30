@@ -148,7 +148,7 @@ func createContainer(
 		return nil, nil, err
 	}
 
-	if oci.IsJobContainer(s) {
+	if oci.IsJobContainer(s) && !oci.IsIsolated(s) {
 		opts := jobcontainers.CreateOptions{WCOWLayers: wcowLayers}
 		container, resources, err = jobcontainers.Create(ctx, id, s, opts)
 		if err != nil {

@@ -96,6 +96,10 @@ const (
 	// HostProcessContainer indicates to launch a host process container (job container in this repository).
 	HostProcessContainer = "microsoft.com/hostprocess-container"
 
+	// IsolatedHostProcessContainer indicates to launch a host process container (job container in this repository)
+	// with hypervisor isolation.
+	IsolatedHostProcessContainer = "microsoft.com/isolated-hostprocess-container"
+
 	// DisableHostProcessContainer disables the ability to start a host process container (job container in this repository).
 	DisableHostProcessContainer = "microsoft.com/disable-hostprocess-container"
 

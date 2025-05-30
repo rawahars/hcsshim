@@ -15,6 +15,10 @@ import (
 	"github.com/pkg/errors"
 )
 
+// nullContainerID is the ContainerID that will be sent on any prot.MessageBase
+// for V2 where the specific message is targeted at the UVM itself.
+const nullContainerID = "00000000-0000-0000-0000-000000000000"
+
 func modifyCombinedLayers(
 	ctx context.Context,
 	containerID string,

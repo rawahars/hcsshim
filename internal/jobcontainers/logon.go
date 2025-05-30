@@ -10,6 +10,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/log"
+	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/internal/winapi"
 	"github.com/pkg/errors"
 	"golang.org/x/sys/windows"
@@ -109,7 +110,7 @@ func (c *JobContainer) processToken(ctx context.Context, userOrGroup string) (wi
 		return 0, errors.New("empty username or group name passed")
 	}
 
-	if groupExists(userOrGroup) {
+	if !oci.IsIsolated(c.spec) && groupExists(userOrGroup) {
 		userName = c.id[:winapi.UserNameCharLimit]
 		pswd, err := makeLocalAccount(ctx, userName, userOrGroup)
 		if err != nil {

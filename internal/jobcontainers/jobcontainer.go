@@ -23,6 +23,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/jobobject"
 	"github.com/Microsoft/hcsshim/internal/layers"
 	"github.com/Microsoft/hcsshim/internal/log"
+	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/internal/queue"
 	"github.com/Microsoft/hcsshim/internal/resources"
 	"github.com/Microsoft/hcsshim/internal/winapi"
@@ -192,9 +193,11 @@ func Create(ctx context.Context, id string, s *specs.Spec, createOpts CreateOpti
 	}
 	r.SetLayers(closer)
 
-	volumeGUIDRegex := `^\\\\\?\\(Volume)\{{0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}\}(|\\)$`
-	if matched, err := regexp.MatchString(volumeGUIDRegex, s.Root.Path); !matched || err != nil {
-		return nil, nil, fmt.Errorf(`invalid container spec - Root.Path '%s' must be a volume GUID path in the format '\\?\Volume{GUID}\'`, s.Root.Path)
+	if !oci.IsIsolated(s) {
+		volumeGUIDRegex := `^\\\\\?\\(Volume)\{{0,1}[0-9a-fA-F]{8}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{4}\-[0-9a-fA-F]{12}(\}){0,1}\}(|\\)$`
+		if matched, err := regexp.MatchString(volumeGUIDRegex, s.Root.Path); !matched || err != nil {
+			return nil, nil, fmt.Errorf(`invalid container spec - Root.Path '%s' must be a volume GUID path in the format '\\?\Volume{GUID}\'`, s.Root.Path)
+		}
 	}
 
 	limits, err := specToLimits(ctx, id, s)
@@ -763,16 +766,20 @@ func (c *JobContainer) bindSetup(ctx context.Context, s *specs.Spec, opts Create
 	if err := c.job.PromoteToSilo(); err != nil {
 		return nil, err
 	}
-	// Union the container layers.
-	closer, err := c.mountLayers(ctx, c.id, s, opts.WCOWLayers, "")
-	if err != nil {
-		return nil, fmt.Errorf("failed to mount container layers: %w", err)
-	}
-	defer func() {
+
+	var closer resources.ResourceCloser
+	if !oci.IsIsolated(s) {
+		// Union the container layers.
+		closer, err := c.mountLayers(ctx, c.id, s, opts.WCOWLayers, "")
 		if err != nil {
-			_ = closer.Release(ctx)
+			return nil, fmt.Errorf("failed to mount container layers: %w", err)
 		}
-	}()
+		defer func() {
+			if err != nil {
+				_ = closer.Release(ctx)
+			}
+		}()
+	}
 
 	rootfsLocation := defaultSiloRootfsLocation
 	if loc := customRootfsLocation(s.Annotations); loc != "" {
@@ -796,15 +803,20 @@ func (c *JobContainer) fallbackSetup(ctx context.Context, s *specs.Spec, opts Cr
 	if loc := customRootfsLocation(s.Annotations); loc != "" {
 		rootfsLocation = filepath.Join(loc, c.id)
 	}
-	closer, err := c.mountLayers(ctx, c.id, s, opts.WCOWLayers, rootfsLocation)
-	if err != nil {
-		return nil, fmt.Errorf("failed to mount container layers: %w", err)
-	}
-	defer func() {
+
+	var closer resources.ResourceCloser
+	if !oci.IsIsolated(s) {
+		closer, err := c.mountLayers(ctx, c.id, s, opts.WCOWLayers, rootfsLocation)
 		if err != nil {
-			_ = closer.Release(ctx)
+			return nil, fmt.Errorf("failed to mount container layers: %w", err)
 		}
-	}()
+		defer func() {
+			if err != nil {
+				_ = closer.Release(ctx)
+			}
+		}()
+	}
+	
 	c.rootfsLocation = rootfsLocation
 	if err := fallbackMountSetup(s, c.rootfsLocation); err != nil {
 		return nil, err

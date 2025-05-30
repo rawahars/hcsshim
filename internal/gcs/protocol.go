@@ -10,6 +10,7 @@ import (
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
 // e0e16197-dd56-4a10-9195-5ee7a155a838
@@ -393,4 +394,9 @@ type containerGetPropertiesResponse struct {
 type containerGetPropertiesResponseV2 struct {
 	responseBase
 	Properties containerPropertiesV2
+}
+
+type JobContainerConfig struct {
+	Id   string      `json:"id,omitempty"`
+	Spec *specs.Spec `json:"spec"`
 }

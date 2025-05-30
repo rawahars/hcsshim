@@ -16,6 +16,7 @@ import (
 	"github.com/sirupsen/logrus"
 
 	"github.com/Microsoft/hcsshim/internal/cow"
+	"github.com/Microsoft/hcsshim/internal/gcs"
 	"github.com/Microsoft/hcsshim/internal/guestpath"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
@@ -276,12 +277,15 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 
 	log.G(ctx).Debug("hcsshim::CreateContainer creating compute system")
 	if gcsDocument != nil {
+		if oci.IsIsolatedJobContainer(coi.Spec) {
+			gcsDocument = &gcs.JobContainerConfig{Spec: coi.Spec}
+		}
 		c, err := coi.HostingSystem.CreateContainer(ctx, coi.actualID, gcsDocument)
 		if err != nil {
 			return nil, r, err
 		}
 
-		if coi.HostingSystem.OS() == "windows" {
+		if coi.HostingSystem.OS() == "windows" && !oci.IsIsolatedJobContainer(coi.Spec) {
 			log.G(ctx).Debug("redirecting container HvSocket for WCOW")
 			props, err := c.PropertiesV2(ctx, hcsschema.PTSystemGUID)
 			if err != nil {

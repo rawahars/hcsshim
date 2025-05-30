@@ -93,9 +93,6 @@ type HandlerFunc func(*request) error
 
 // ServeMsg serves request by calling appropriate handler functions.
 func (b *Bridge) ServeMsg(r *request) error {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-
 	if r == nil {
 		panic("bridge: nil request to handler")
 	}
@@ -216,6 +213,24 @@ func (b *Bridge) sendResponseToShim(rpcProcType rpcProc, id SequenceID, response
 		header:   msgHeader,
 		response: msgb,
 	}
+	return nil
+}
+
+func (b *Bridge) sendNotificationToShim(response interface{}) error {
+	msgb, err := json.Marshal(response)
+	if err != nil {
+		return err
+	}
+
+	resp := bridgeResponse{
+		header: MessageHeader{
+			Type: msgTypeNotify,
+			Size: uint32(len(msgb) + hdrSize),
+			ID:   0,
+		},
+		response: msgb,
+	}
+	b.sendToShimCh <- resp
 	return nil
 }
 
@@ -358,4 +373,18 @@ func (b *Bridge) prepareResponseMessage(header MessageHeader, message []byte) by
 	buf.Write(headerBuf.Bytes())
 	buf.Write(message[:])
 	return buf
+}
+
+func (b *Bridge) sendSuccessMessageToShim(activityID guid.GUID, rpcProc rpcProc, id SequenceID) error {
+	resp := &responseBase{
+		Result:     0, // 0 means success
+		ActivityID: activityID,
+	}
+	err := b.sendResponseToShim(rpcProc, id, resp)
+	if err != nil {
+		log.Printf("error sending response to hcsshim: %v", err)
+		return fmt.Errorf("error sending reply back to hcsshim")
+	}
+
+	return nil
 }
