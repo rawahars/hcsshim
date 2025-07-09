@@ -80,7 +80,7 @@ func (uvm *UtilityVM) startExternalGcsListener(ctx context.Context, gcsServiceID
 	log.G(ctx).WithFields(logrus.Fields{
 		"vmID":         uvm.runtimeID,
 		"gcsServiceID": gcsServiceID.String(),
-	}).Debug("Using external GCS bridge")
+	}).Info("Using external GCS bridge")
 
 	l, err := winio.ListenHvsock(&winio.HvsockAddr{
 		VMID:      uvm.runtimeID,
@@ -158,6 +158,63 @@ func prepareCommonConfigDoc(ctx context.Context, uvm *UtilityVM, opts *OptionsWC
 	}
 
 	registryChanges.AddValues = append(registryChanges.AddValues, opts.AdditionalRegistryKeys...)
+
+	registryChanges.AddValues = append(registryChanges.AddValues,
+		hcsschema.RegistryValue{
+			Key: &hcsschema.RegistryKey{
+				Hive: "System",
+				Name: "CurrentControlSet\\Services\\gcs-sidecar",
+			},
+			Name:        "DisplayName",
+			StringValue: "gcs-sidecar",
+			Type_:       "String",
+		},
+		hcsschema.RegistryValue{
+			Key: &hcsschema.RegistryKey{
+				Hive: "System",
+				Name: "CurrentControlSet\\Services\\gcs-sidecar",
+			},
+			Name:       "ErrorControl",
+			DWordValue: 1,
+			Type_:      "DWord",
+		},
+		hcsschema.RegistryValue{
+			Key: &hcsschema.RegistryKey{
+				Hive: "System",
+				Name: "CurrentControlSet\\Services\\gcs-sidecar",
+			},
+			Name:        "ImagePath",
+			StringValue: "C:\\Windows\\System32\\gcs-sidecar.exe",
+			Type_:       "String",
+		},
+		hcsschema.RegistryValue{
+			Key: &hcsschema.RegistryKey{
+				Hive: "System",
+				Name: "CurrentControlSet\\Services\\gcs-sidecar",
+			},
+			Name:        "ObjectName",
+			StringValue: "LocalSystem",
+			Type_:       "String",
+		},
+		hcsschema.RegistryValue{
+			Key: &hcsschema.RegistryKey{
+				Hive: "System",
+				Name: "CurrentControlSet\\Services\\gcs-sidecar",
+			},
+			Name:       "Start",
+			DWordValue: 2,
+			Type_:      "DWord",
+		},
+		hcsschema.RegistryValue{
+			Key: &hcsschema.RegistryKey{
+				Hive: "System",
+				Name: "CurrentControlSet\\Services\\gcs-sidecar",
+			},
+			Name:       "Type",
+			DWordValue: 16,
+			Type_:      "DWord",
+		},
+	)
 
 	processor := &hcsschema.VirtualMachineProcessor{
 		Count:  uint32(uvm.processorCount),
@@ -493,10 +550,7 @@ func CreateWCOW(ctx context.Context, opts *OptionsWCOW) (_ *UtilityVM, err error
 		return nil, fmt.Errorf("error while creating the compute system: %w", err)
 	}
 
-	gcsServiceID := prot.WindowsGcsHvsockServiceID
-	if opts.SecurityPolicyEnabled {
-		gcsServiceID = prot.WindowsSidecarGcsHvsockServiceID
-	}
+	gcsServiceID := prot.WindowsSidecarGcsHvsockServiceID
 
 	if err = uvm.startExternalGcsListener(ctx, gcsServiceID); err != nil {
 		return nil, err
