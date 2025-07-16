@@ -184,6 +184,11 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	if s.migState.c == 0 {
 		return fmt.Errorf("must set up channel before transferring")
 	}
+	defer func() {
+		if s.migState.c != 0 {
+			windows.Closesocket(s.migState.c)
+		}
+	}()
 	start := time.Now()
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
 		MessageId:  1,
