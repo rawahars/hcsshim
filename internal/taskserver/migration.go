@@ -1,12 +1,16 @@
 package taskserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
+	"unsafe"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/internal/cmd"
@@ -73,6 +77,7 @@ func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandbo
 		migratable: s.sandbox.Sandbox.(core.Migratable),
 		migrator:   s.sandbox.Sandbox.(core.Migratable),
 	}
+	s.mCond = sync.NewCond(&s.m)
 	return &lmproto.PrepareSandboxResponse{
 		Config:    stateAny,
 		Resources: &lmproto.SourceResources{TaskRootfs: outResources},
@@ -161,6 +166,7 @@ func (s *service) DialChannel(ctx context.Context, req *lmproto.DialChannelReque
 	if err != nil {
 		return nil, err
 	}
+
 	c, err := dial(netip.AddrPortFrom(addr, uint16(req.Port)))
 	if err != nil {
 		return nil, err
@@ -410,4 +416,97 @@ func getRestoreContainerSpec(ctx context.Context, bundle string) (*lmproto.Conta
 		return nil, err
 	}
 	return &spec, nil
+}
+func (s *service) WaitForChannelReady(ctx context.Context, req *lmproto.WaitForChannelReadyRequest) (*lmproto.WaitForChannelReadyResponse, error) {
+	logrus.Info("WaitForChannelReady called")
+	if s.mCond == nil {
+		s.mCond = sync.NewCond(&s.m)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.m.Lock()
+		defer s.m.Unlock()
+
+		for s.migState == nil || s.migState.c == 0 {
+			s.mCond.Wait()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		logrus.Warn("WaitForChannelReady: context canceled or timed out")
+		return nil, ctx.Err()
+
+	case <-done:
+		logrus.Infof("WaitForChannelReady: Channel is ready %v", s.migState.c)
+
+		return &lmproto.WaitForChannelReadyResponse{}, nil
+	}
+}
+
+var wsasocket = windows.WSASocket
+var getsockopt = windows.Getsockopt
+
+func (s *service) CreateDuplicateSocket(ctx context.Context, req *lmproto.CreateDuplicateSocketRequest) (*lmproto.CreateDuplicateSocketResponse, error) {
+	if s.migState.c != 0 {
+		logrus.Error("duplicate socket already exists")
+		return nil, fmt.Errorf("duplicate socket already exists")
+	}
+	if req.ProtocolInfo == nil {
+		logrus.Error("no protocol info provided")
+		return nil, fmt.Errorf("no protocol info provided")
+	}
+	var info windows.WSAProtocolInfo
+	bytesRead := len(req.ProtocolInfo)
+	if bytesRead < int(binary.Size(info)) {
+		logrus.Error("protocol info too short")
+		return nil, fmt.Errorf("protocol info too short, expected at least %d bytes, got %d", binary.Size(info), bytesRead)
+	}
+	reader := bytes.NewReader(req.ProtocolInfo)
+	err := binary.Read(reader, binary.LittleEndian, &info)
+	if err != nil {
+		logrus.WithError(err).Error("error deserializing WSAProtocolInfo")
+		return nil, fmt.Errorf("error deserializing WSAProtocolInfo: %w", err)
+	}
+	logrus.Info("WSAProtocolInfo deserialized successfully")
+	logrus.Infof("read %d bytes from named pipe\n", bytesRead)
+	logrus.Info("WSAProtocolInfo:", info)
+	var wsaData windows.WSAData
+	err = windows.WSAStartup(uint32(0x0202), &wsaData)
+	if err != nil {
+		logrus.WithError(err).Error("WSAStartup failed")
+		return nil, fmt.Errorf("WSAStartup failed: %w", err)
+	}
+	defer windows.WSACleanup()
+	newSock, err := wsasocket(info.AddressFamily, info.SocketType, info.Protocol, &info, 0, 0)
+	if err != nil {
+		logrus.WithError(err).Error("WSASocket failed")
+		return nil, fmt.Errorf("WSASocket failed: %w", err)
+	}
+	logrus.Infof("new socket created successfully with handle: %v", newSock)
+	var connectTime uint32
+	optLen := int32(4)
+	err = getsockopt(newSock, windows.SOL_SOCKET, 0x700C, (*byte)(unsafe.Pointer(&connectTime)), &optLen)
+	if err != nil {
+		logrus.WithError(err).Error("getsockopt SO_CONNECT_TIME failed")
+		windows.Closesocket(newSock)
+		return nil, fmt.Errorf("getsockopt SO_CONNECT_TIME failed: %w", err)
+	}
+	if connectTime == 0xFFFFFFFF {
+		logrus.Error("Socket is not connected")
+		windows.Closesocket(newSock)
+		return nil, fmt.Errorf("duplicated socket is not connected")
+	}
+	s.m.Lock()
+	defer s.m.Unlock()
+
+	if s.mCond == nil {
+		s.mCond = sync.NewCond(&s.m)
+	}
+	s.migState.c = newSock
+	logrus.Infof("new socket handle set in migration state: %v", s.migState.c)
+	s.mCond.Broadcast()
+
+	return &lmproto.CreateDuplicateSocketResponse{}, nil
 }

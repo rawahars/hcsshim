@@ -32,6 +32,7 @@ type service struct {
 	closeOnce sync.Once
 	publisher *ctrdpub.Publisher
 	migState  *migrationState
+	mCond     *sync.Cond
 }
 
 func NewService(shimID string, closeCh chan<- struct{}, publisher *ctrdpub.Publisher) *service {

@@ -1,8 +1,10 @@
 syntax = "proto3";
 
 package runhcs.lm;
+option go_package = "/internal/lm/proto;lmproto";
 
-import "github.com/containerd/containerd/api/types/mount.proto";
+
+import "vendor/github.com/containerd/containerd/api/types/mount.proto";
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -50,6 +52,10 @@ service Migration {
     rpc FinalizeSandbox(FinalizeSandboxRequest) returns (FinalizeSandboxResponse);
     // Called on SOURCE AND DESTINATION. Cancels an in-progress LM.
     rpc Cancel(CancelRequest) returns (CancelResponse);
+    rpc CreateDuplicateSocket(CreateDuplicateSocketRequest) returns (CreateDuplicateSocketResponse);
+    rpc WaitForChannelReady(WaitForChannelReadyRequest) returns (WaitForChannelReadyResponse);
+
+
 }
 
 message PrepareSandboxRequest {}
@@ -133,3 +139,13 @@ message FinalizeSandboxRequest {
 }
 
 message FinalizeSandboxResponse {}
+
+message CreateDuplicateSocketRequest {
+  bytes protocol_info = 1; // Serialized WSAProtocolInfo struct
+}
+
+message CreateDuplicateSocketResponse {}
+
+message WaitForChannelReadyRequest {}
+
+message WaitForChannelReadyResponse {}
