@@ -5,18 +5,21 @@ import (
 	"fmt"
 	"reflect"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 type AttachManager struct {
 	m                    sync.Mutex
 	attacher             attacher
 	unplugger            unplugger
+	mountManager         *MountManager
 	numControllers       int
 	numLUNsPerController int
 	slots                [][]*attachment
 }
 
-func NewAttachManager(attacher attacher, unplugger unplugger, numControllers, numLUNsPerController int, reservedSlots []Slot) *AttachManager {
+func NewAttachManager(attacher attacher, unplugger unplugger, numControllers, numLUNsPerController int, reservedSlots []Slot, mountManager *MountManager) *AttachManager {
 	slots := make([][]*attachment, numControllers)
 	for i := range slots {
 		slots[i] = make([]*attachment, numLUNsPerController)
@@ -31,6 +34,7 @@ func NewAttachManager(attacher attacher, unplugger unplugger, numControllers, nu
 	return &AttachManager{
 		attacher:             attacher,
 		unplugger:            unplugger,
+		mountManager:         mountManager,
 		numControllers:       numControllers,
 		numLUNsPerController: numLUNsPerController,
 		slots:                slots,
@@ -91,25 +95,43 @@ func (am *AttachManager) Detach(ctx context.Context, controller, lun uint) (bool
 	am.m.Lock()
 	defer am.m.Unlock()
 
+	logrus.Info("Detach: detaching controller %d lun %d", controller, lun)
 	if controller >= uint(am.numControllers) || lun >= uint(am.numLUNsPerController) {
 		return false, fmt.Errorf("controller %d lun %d out of range", controller, lun)
 	}
 
+	// First, try to unmount if we have a mount manager
+	if am.mountManager != nil {
+		// Find and unmount any mounts for this controller/lun
+		logrus.Info("Detach: unmounting controller %d lun %d", controller, lun)
+		if err := am.mountManager.UnmountByControllerLun(ctx, controller, lun); err != nil {
+			logrus.Errorf("Detach: failed to unmount controller %d lun %d: %v", controller, lun, err)
+			// Continue with unplug even if unmount fails
+		}
+	}
+	logrus.Info("Detach: unmounted controller %d lun %d", controller, lun)
 	att := am.slots[controller][lun]
 	att.refCount--
 	if att.refCount > 0 {
 		return false, nil
 	}
 
-	if err := am.unplugger.unplug(ctx, controller, lun); err != nil {
-		return false, fmt.Errorf("unplug controller %d lun %d: %w", controller, lun, err)
+	logrus.Infof("Detach: attach manager %+v", am)
+	logrus.Infof("Detach: unplugger %+v", am.unplugger)
+	if am.unplugger != nil {
+		if err := am.unplugger.unplug(ctx, controller, lun); err != nil {
+			return false, fmt.Errorf("unplug controller %d lun %d: %w", controller, lun, err)
+		}
 	}
+	logrus.Infof("Detach: unplugged controller %d lun %d", controller, lun)
+	logrus.Infof("Detach: attacher %+v", am.attacher)
 	if err := am.attacher.detach(ctx, controller, lun); err != nil {
 		return false, fmt.Errorf("detach controller %d lun %d: %w", controller, lun, err)
 	}
-
+	logrus.Infof("Detach: detached controller %d lun %d", controller, lun)
+	// Untrack the attachment.
 	am.untrackAttachment(att)
-
+	logrus.Infof("Detach: untracked attachment for controller %d lun %d", controller, lun)
 	return true, nil
 }
 
