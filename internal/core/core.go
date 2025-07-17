@@ -61,6 +61,7 @@ type Sandbox interface {
 	CreateLinuxContainer(ctx context.Context, c *LinuxCtrConfig) (_ Ctr, err error)
 	CreateProcess(ctx context.Context, c *ProcessConfig) (Process, error)
 	Terminate(ctx context.Context) error
+	RemoveLinuxContainer(ctx context.Context, cid string) error
 }
 
 type Process interface {

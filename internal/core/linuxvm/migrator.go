@@ -2,9 +2,11 @@ package linuxvm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"syscall"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
@@ -14,6 +16,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/hns"
 	"github.com/Microsoft/hcsshim/internal/layers"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
+	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
 	vm "github.com/Microsoft/hcsshim/internal/vm2"
 	vmpkg "github.com/Microsoft/hcsshim/internal/vm2"
 	"github.com/Microsoft/hcsshim/internal/wclayer"
@@ -108,7 +111,13 @@ func (m *migrated) LMComplete(ctx context.Context) (core.Sandbox, error) {
 		for _, att := range controller {
 			if att.Type == vm.SCSIAttachmentTypeVHD || att.Type == vm.SCSIAttachmentTypePassThru {
 				if err := wclayer.GrantVmAccess(ctx, m.vm.ID(), att.Path); err != nil {
-					return nil, fmt.Errorf("grant vm access to %s: %w", att.Path, err)
+					if errors.Is(err, syscall.ERROR_PATH_NOT_FOUND) {
+						logrus.Warnf("path not found for GrantVmAccess (%s), continuing", att.Path)
+						continue
+					}
+					logrus.Warnf("Still fail to grant vm access to %s: %v", att.Path, err)
+					continue
+					//return nil, fmt.Errorf("grant vm access to %s: %w", att.Path, err)
 				}
 			}
 		}
@@ -197,6 +206,7 @@ func (m *migrator) LMTransfer(ctx context.Context, socket uintptr) (core.Migrate
 }
 
 func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContainer *statepkg.Container, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface) (core.Sandbox, error) {
+	vmConfig := vm.Config()
 	gm, err := guestmanager.NewLinuxManagerFromState(
 		func(port uint32) (net.Listener, error) { return vm.ListenHVSocket(winio.VsockServiceID(port)) },
 		agentConfig)
@@ -247,7 +257,20 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContain
 	}
 
 	waitCtx, waitCancel := context.WithCancel(context.Background())
-	gt := newGuestThing(gm)
+
+	gb := scsi.NewLinuxGuestManagerBackend(gm)
+	mountManager := scsi.NewMountManager(gb, "/run/mounts/scsi/m%d") // Create mount manager
+	sa := scsi.NewAttachManager(
+		scsi.NewVMHostBackend(vm), // attacher
+		gb,                        // unplugger
+		len(vmConfig.SCSI),        // controller count
+		64,                        // slot count
+		nil,                       // slots slice
+		mountManager,              // mount manager
+	)
+	// CHANGE: Pass the same mountManager to guestThing instead of creating a new one
+	gt := newGuestThingWithMountManager(gm, mountManager)
+
 	pauseCtr, err := restoreContainer(ctx, gt, waitCtx, sandboxID, sandboxContainer.InitPid, nil)
 	if err != nil {
 		return nil, err
@@ -259,7 +282,7 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContain
 		gt: gt,
 		translator: &translator{
 			vm:             vm,
-			scsiAttacher:   nil,
+			scsiAttacher:   sa,
 			allowMigration: true,
 			resources:      make(map[string]resourceUseLayers),
 		},

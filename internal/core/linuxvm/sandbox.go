@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"slices"
 	"strconv"
@@ -27,6 +28,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/wclayer"
 	"github.com/Microsoft/hcsshim/pkg/annotations"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sirupsen/logrus"
 )
 
 var (
@@ -201,8 +203,16 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 			ifaces = append(ifaces, &statepkg.GuestInterface{Nsid: guestNamespaceID.String(), Id: g.String()})
 		}
 	}
-
-	sa := scsi.NewAttachManager(scsi.NewVMHostBackend(vm), nil, len(vmConfig.SCSI), 64, nil)
+	gb := scsi.NewLinuxGuestManagerBackend(gm)
+	mountManager := scsi.NewMountManager(gb, "/run/mounts/scsi/m%d") // Create mount manager
+	sa := scsi.NewAttachManager(
+		scsi.NewVMHostBackend(vm), // attacher
+		gb,                        // unplugger
+		len(vmConfig.SCSI),        // controller count
+		64,                        // slot count
+		nil,                       // slots slice
+		mountManager,              // mount manager
+	)
 
 	newSpec, err := convertSpec(spec)
 	if err != nil {
@@ -214,7 +224,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		Spec:   newSpec,
 	}
 
-	gt := newGuestThing(gm)
+	gt := newGuestThingWithMountManager(gm, mountManager)
 
 	translator := &translator{
 		vm:             vm,
@@ -296,6 +306,39 @@ func (s *Sandbox) CreateLinuxContainer(ctx context.Context, c *core.LinuxCtrConf
 	s.ctrs[c.ID] = ctr
 	s.ctrsLock.Unlock()
 	return ctr, nil
+}
+
+func (s *Sandbox) RemoveLinuxContainer(ctx context.Context, cid string) (err error) {
+	log.Printf("removing linux container: cid=%s", cid)
+	// log messages so that those can be viewed by etl tracing
+	logrus.Info("removing linux container: cid=%s", cid)
+	resources, ok := s.translator.resources[cid]
+	if !ok {
+		logrus.Info("no resources found for container ID: %s", cid)
+		return fmt.Errorf("no resources found for container ID: %s", cid)
+	}
+
+	logrus.Info("releasing resources for container ID: %s, resources=%+v", cid, resources)
+	if _, err := s.translator.scsiAttacher.Detach(ctx, resources.scratchLayer.controller, resources.scratchLayer.lun); err != nil {
+		return fmt.Errorf("failed to detach scratch layer: %w", err)
+	}
+	logrus.Info("detached scratch layer: cid=%s, controller=%d, lun=%d",
+		cid, resources.scratchLayer.controller, resources.scratchLayer.lun)
+	// Detach read-only layers
+	for _, layer := range resources.readOnlyLayers {
+		logrus.Info("detaching read-only layer: cid=%s, controller=%d, lun=%d", cid, layer.controller, layer.lun)
+		if _, err := s.translator.scsiAttacher.Detach(ctx, layer.controller, layer.lun); err != nil {
+			return fmt.Errorf("failed to detach read-only layer (controller: %d, lun: %d): %w", layer.controller, layer.lun, err)
+		}
+		logrus.Info("detached read-only layer: cid=%s, controller=%d, lun=%d", cid, layer.controller, layer.lun)
+	}
+	delete(s.translator.resources, cid)
+	//delete(s.state.Containers, cid)
+	s.ctrsLock.Lock()
+	delete(s.ctrs, cid)
+	s.ctrsLock.Unlock()
+
+	return nil
 }
 
 type cleanupSet []resources.ResourceCloser

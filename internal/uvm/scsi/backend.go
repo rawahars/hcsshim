@@ -13,6 +13,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 	vm "github.com/Microsoft/hcsshim/internal/vm2"
+	"github.com/sirupsen/logrus"
 )
 
 // The concrete types here (not the HostBackend/GuestBackend interfaces) would be a good option
@@ -78,6 +79,7 @@ func (hhb *hcsHostBackend) detach(ctx context.Context, controller, lun uint) err
 		RequestType:  guestrequest.RequestTypeRemove,
 		ResourcePath: fmt.Sprintf(resourcepaths.SCSIResourceFormat, guestrequest.ScsiControllerGuids[controller], lun),
 	}
+	logrus.Infof("Detach backend: detaching controller %d lun %d, req %+v", controller, lun, req)
 	return hhb.system.Modify(ctx, req)
 }
 
@@ -117,6 +119,7 @@ func (bgb *bridgeGuestBackend) unplug(ctx context.Context, controller, lun uint)
 	if err != nil {
 		return err
 	}
+	logrus.Infof("Unplug backend: unplugging controller %d lun %d, req %+v", controller, lun, req)
 	if req.RequestType == "" {
 		return nil
 	}
