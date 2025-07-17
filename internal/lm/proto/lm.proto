@@ -1,8 +1,10 @@
 syntax = "proto3";
 
 package runhcs.lm;
+option go_package = "/internal/lm/proto;lmproto";
 
-import "github.com/containerd/containerd/api/types/mount.proto";
+
+import "vendor/github.com/containerd/containerd/api/types/mount.proto";
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
 
@@ -38,18 +40,16 @@ message ContainerRestoreSpec {
 service Migration {
     // Called on SOURCE. Prepares the sandbox for LM.
     rpc PrepareSandbox(PrepareSandboxRequest) returns (PrepareSandboxResponse);
-    // Called on SOURCE OR DESTINATION. Instructs the shim to begin listening for a connection.
-    rpc ListenChannel(ListenChannelRequest) returns (ListenChannelResponse);
-    // Called on SOURCE OR DESTINATION. Instructs the shim to accept an incoming connection. Must be called after ListenChannel.
-    rpc AcceptChannel(AcceptChannelRequest) returns (AcceptChannelResponse);
-    // Called on SOURCE OR DESTINATION. Instructs the shim to connect to another instance that called ListenChannel+AcceptChannel.
-    rpc DialChannel(DialChannelRequest) returns (DialChannelResponse);
     // Called on SOURCE AND DESTINATION. Initiates memory transfer, and returns a stream of status updates.
     rpc TransferSandbox(TransferSandboxRequest) returns (stream TransferSandboxResponse);
     // Called on SOURCE AND DESTINATION. Finalizes LM and starts or deletes the sandbox.
     rpc FinalizeSandbox(FinalizeSandboxRequest) returns (FinalizeSandboxResponse);
     // Called on SOURCE AND DESTINATION. Cancels an in-progress LM.
     rpc Cancel(CancelRequest) returns (CancelResponse);
+    rpc CreateDuplicateSocket(CreateDuplicateSocketRequest) returns (CreateDuplicateSocketResponse);
+    rpc WaitForChannelReady(WaitForChannelReadyRequest) returns (WaitForChannelReadyResponse);
+
+
 }
 
 message PrepareSandboxRequest {}
@@ -71,26 +71,6 @@ message SourceRootFS {
     // The task ID that this rootfs was provided for.
     string task_id = 2;
 }
-
-message ListenChannelRequest {
-    string ip = 1;
-    uint32 port = 2;
-}
-
-message ListenChannelResponse {
-    uint32 port = 1;
-}
-
-message AcceptChannelRequest {}
-
-message AcceptChannelResponse {}
-
-message DialChannelRequest {
-    string ip = 1;
-    uint32 port = 2;
-}
-
-message DialChannelResponse {}
 
 message TransferSandboxRequest {}
 
@@ -133,3 +113,13 @@ message FinalizeSandboxRequest {
 }
 
 message FinalizeSandboxResponse {}
+
+message CreateDuplicateSocketRequest {
+  bytes protocol_info = 1; // Serialized WSAProtocolInfo struct
+}
+
+message CreateDuplicateSocketResponse {}
+
+message WaitForChannelReadyRequest {}
+
+message WaitForChannelReadyResponse {}
