@@ -3,9 +3,11 @@ package taskserver
 import (
 	"context"
 	"fmt"
+	"net"
 	"net/netip"
 	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
@@ -157,11 +159,18 @@ func (s *service) AcceptChannel(ctx context.Context, req *lmproto.AcceptChannelR
 }
 
 func (s *service) DialChannel(ctx context.Context, req *lmproto.DialChannelRequest) (*lmproto.DialChannelResponse, error) {
-	addr, err := netip.ParseAddr(req.Ip)
+	addrPort := net.JoinHostPort(req.Ip, strconv.Itoa(int(req.Port)))
+	tcpAddr, err := net.ResolveTCPAddr("tcp", addrPort)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to resolve address %s: %w", addrPort, err)
 	}
-	c, err := dial(netip.AddrPortFrom(addr, uint16(req.Port)))
+
+	ip, ok := netip.AddrFromSlice(tcpAddr.IP)
+	if !ok {
+		return nil, fmt.Errorf("resolved IP is invalid: %v", tcpAddr.IP)
+	}
+
+	c, err := dial(netip.AddrPortFrom(ip, uint16(tcpAddr.Port)))
 	if err != nil {
 		return nil, err
 	}

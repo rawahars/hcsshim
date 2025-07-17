@@ -152,6 +152,14 @@ func (s *service) Delete(ctx context.Context, req *task.DeleteRequest) (*task.De
 	}); err != nil {
 		log.G(ctx).WithError(err).Info("PublishEvent failed")
 	}
+	if state.ExecID == "" {
+		// Call code to cleanup LM resources for the Task
+		err = s.sandbox.Sandbox.RemoveLinuxContainer(ctx, req.ID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to remove container %s: %w", req.ID, err)
+		}
+		delete(s.sandbox.Tasks, req.ID)
+	}
 	return &task.DeleteResponse{
 		Pid:        state.Pid,
 		ExitStatus: state.ExitStatus,

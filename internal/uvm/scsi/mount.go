@@ -6,6 +6,8 @@ import (
 	"reflect"
 	"sort"
 	"sync"
+
+	"github.com/sirupsen/logrus"
 )
 
 type MountManager struct {
@@ -42,6 +44,33 @@ type MountConfig struct {
 	Options         []string
 	EnsureFileystem bool
 	Filesystem      string
+}
+
+func (mm *MountManager) UnmountByControllerLun(ctx context.Context, controller, lun uint) error {
+	mm.m.Lock()
+	defer mm.m.Unlock()
+	logrus.Infof("UnmountByControllerLun: unmounting controller %d lun %d", controller, lun)
+
+	for _, mount := range mm.mounts {
+		logrus.Infof("UnmountByControllerLun: current mounts: %+v", mm.mounts)
+		if mount != nil && mount.controller == controller && mount.lun == lun {
+			logrus.Infof("UnmountByControllerLun: current controller: %d, lun: %d", mount.controller, mount.lun)
+			mount.refCount--
+			if mount.refCount > 0 {
+				logrus.Infof("UnmountByControllerLun: refCount for controller %d lun %d is still %d, not unmounting", controller, lun, mount.refCount)
+				return nil
+			}
+			logrus.Infof("UnmountByControllerLun: unmounting controller %d lun %d at path %s", controller, lun, mount.path)
+			if err := mm.mounter.unmount(ctx, mount.controller, mount.lun, mount.path, mount.config); err != nil {
+				logrus.Errorf("UnmountByControllerLun: error unmounting controller %d lun %d at path %s: %v", mount.controller, mount.lun, mount.path, err)
+				return fmt.Errorf("unmount scsi controller %d lun %d at path %s: %w", mount.controller, mount.lun, mount.path, err)
+			}
+			mm.untrackMount(mount)
+			return nil
+		}
+	}
+	// No mount found for this controller/lun - this is okay
+	return nil
 }
 
 func (mm *MountManager) Mount(ctx context.Context, controller, lun uint, c *MountConfig) (_ string, err error) {
