@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 
 	"github.com/Microsoft/go-winio"
@@ -106,108 +105,6 @@ func getUnmarshalerByExtension(path string) (unmarshaler, error) {
 	}
 }
 
-var listenCommand = cli.Command{
-	Name:      "listen",
-	ArgsUsage: "[flags] <pipe> <ip>",
-	Flags: []cli.Flag{
-		cli.IntFlag{
-			Name: "port",
-		},
-	},
-	SkipArgReorder: true,
-	Before:         appargs.Validate(appargs.String, appargs.String),
-	Action: func(clictx *cli.Context) error {
-		args := clictx.Args()
-		address := args[0]
-
-		conn, err := winio.DialPipe(address, nil)
-		if err != nil {
-			return fmt.Errorf("dial %s: %w", address, err)
-		}
-
-		client := ttrpc.NewClient(conn)
-		svc := lmproto.NewMigrationClient(client)
-
-		ctx := context.Background()
-
-		var port uint32
-		if clictx.IsSet("port") {
-			port = uint32(clictx.Int("port"))
-		}
-
-		resp, err := svc.ListenChannel(ctx, &lmproto.ListenChannelRequest{
-			Ip:   args[1],
-			Port: port,
-		})
-		if err != nil {
-			return err
-		}
-		fmt.Printf("listening on %s:%d\n", args[1], resp.Port)
-		return nil
-	},
-}
-
-var acceptCommand = cli.Command{
-	Name:           "accept",
-	ArgsUsage:      "[flags] <pipe>",
-	SkipArgReorder: true,
-	Before:         appargs.Validate(appargs.String),
-	Action: func(clictx *cli.Context) error {
-		args := clictx.Args()
-
-		address := args[0]
-
-		conn, err := winio.DialPipe(address, nil)
-		if err != nil {
-			return fmt.Errorf("dial %s: %w", address, err)
-		}
-
-		client := ttrpc.NewClient(conn)
-		svc := lmproto.NewMigrationClient(client)
-
-		ctx := context.Background()
-
-		if _, err := svc.AcceptChannel(ctx, &lmproto.AcceptChannelRequest{}); err != nil {
-			return err
-		}
-		return nil
-	},
-}
-
-var dialCommand = cli.Command{
-	Name:           "dial",
-	ArgsUsage:      "[flags] <pipe> <ip> <port>",
-	SkipArgReorder: true,
-	Before:         appargs.Validate(appargs.String, appargs.String, appargs.String),
-	Action: func(clictx *cli.Context) error {
-		args := clictx.Args()
-		address := args[0]
-
-		conn, err := winio.DialPipe(address, nil)
-		if err != nil {
-			return fmt.Errorf("dial %s: %w", address, err)
-		}
-
-		client := ttrpc.NewClient(conn)
-		svc := lmproto.NewMigrationClient(client)
-
-		ctx := context.Background()
-
-		port, err := strconv.Atoi(args[2])
-		if err != nil {
-			return fmt.Errorf("failed parsing port: %w", err)
-		}
-
-		if _, err := svc.DialChannel(ctx, &lmproto.DialChannelRequest{
-			Ip:   args[1],
-			Port: uint32(port),
-		}); err != nil {
-			return err
-		}
-		return nil
-	},
-}
-
 var transferCommand = cli.Command{
 	Name:           "transfer",
 	ArgsUsage:      "[flags] <pipe>",
@@ -247,6 +144,7 @@ var transferCommand = cli.Command{
 	},
 }
 
+// TODO: Replacement CLI should be implement (DeletedlistenCommand, acceptCommand, and dialCommand).
 var finalizeCommand = cli.Command{
 	Name:           "finalize",
 	ArgsUsage:      "[flags] <pipe> resume|stop",

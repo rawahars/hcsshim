@@ -9,9 +9,6 @@ import (
 
 type MigrationService interface {
 	PrepareSandbox(context.Context, *PrepareSandboxRequest) (*PrepareSandboxResponse, error)
-	ListenChannel(context.Context, *ListenChannelRequest) (*ListenChannelResponse, error)
-	AcceptChannel(context.Context, *AcceptChannelRequest) (*AcceptChannelResponse, error)
-	DialChannel(context.Context, *DialChannelRequest) (*DialChannelResponse, error)
 	TransferSandbox(context.Context, *TransferSandboxRequest, Migration_TransferSandboxServer) error
 	FinalizeSandbox(context.Context, *FinalizeSandboxRequest) (*FinalizeSandboxResponse, error)
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
@@ -41,27 +38,6 @@ func RegisterMigrationService(srv *ttrpc.Server, svc MigrationService) {
 					return nil, err
 				}
 				return svc.PrepareSandbox(ctx, &req)
-			},
-			"ListenChannel": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
-				var req ListenChannelRequest
-				if err := unmarshal(&req); err != nil {
-					return nil, err
-				}
-				return svc.ListenChannel(ctx, &req)
-			},
-			"AcceptChannel": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
-				var req AcceptChannelRequest
-				if err := unmarshal(&req); err != nil {
-					return nil, err
-				}
-				return svc.AcceptChannel(ctx, &req)
-			},
-			"DialChannel": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
-				var req DialChannelRequest
-				if err := unmarshal(&req); err != nil {
-					return nil, err
-				}
-				return svc.DialChannel(ctx, &req)
 			},
 			"FinalizeSandbox": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
 				var req FinalizeSandboxRequest
@@ -110,9 +86,6 @@ func RegisterMigrationService(srv *ttrpc.Server, svc MigrationService) {
 
 type MigrationClient interface {
 	PrepareSandbox(context.Context, *PrepareSandboxRequest) (*PrepareSandboxResponse, error)
-	ListenChannel(context.Context, *ListenChannelRequest) (*ListenChannelResponse, error)
-	AcceptChannel(context.Context, *AcceptChannelRequest) (*AcceptChannelResponse, error)
-	DialChannel(context.Context, *DialChannelRequest) (*DialChannelResponse, error)
 	TransferSandbox(context.Context, *TransferSandboxRequest) (Migration_TransferSandboxClient, error)
 	FinalizeSandbox(context.Context, *FinalizeSandboxRequest) (*FinalizeSandboxResponse, error)
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
@@ -133,30 +106,6 @@ func NewMigrationClient(client *ttrpc.Client) MigrationClient {
 func (c *migrationClient) PrepareSandbox(ctx context.Context, req *PrepareSandboxRequest) (*PrepareSandboxResponse, error) {
 	var resp PrepareSandboxResponse
 	if err := c.client.Call(ctx, "runhcs.lm.Migration", "PrepareSandbox", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-func (c *migrationClient) ListenChannel(ctx context.Context, req *ListenChannelRequest) (*ListenChannelResponse, error) {
-	var resp ListenChannelResponse
-	if err := c.client.Call(ctx, "runhcs.lm.Migration", "ListenChannel", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-func (c *migrationClient) AcceptChannel(ctx context.Context, req *AcceptChannelRequest) (*AcceptChannelResponse, error) {
-	var resp AcceptChannelResponse
-	if err := c.client.Call(ctx, "runhcs.lm.Migration", "AcceptChannel", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-func (c *migrationClient) DialChannel(ctx context.Context, req *DialChannelRequest) (*DialChannelResponse, error) {
-	var resp DialChannelResponse
-	if err := c.client.Call(ctx, "runhcs.lm.Migration", "DialChannel", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

@@ -17,9 +17,6 @@ func main() {
 	app.Usage = "Interact with runhcs shim live migration interface"
 	app.Commands = []cli.Command{
 		prepareCommand,
-		listenCommand,
-		acceptCommand,
-		dialCommand,
 		transferCommand,
 		finalizeCommand,
 		json2pbCommand,
