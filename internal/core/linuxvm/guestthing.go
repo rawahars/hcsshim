@@ -34,6 +34,14 @@ func newGuestThing(gm *guestmanager.LinuxManager) *guestThing {
 	}
 }
 
+func newGuestThingWithMountManager(gm *guestmanager.LinuxManager, mountManager *scsi.MountManager) *guestThing {
+	return &guestThing{
+		gm:          gm,
+		scsiMounter: mountManager, // Use the provided MountManager
+		bundleFmt:   "/run/gcs/c/%d",
+	}
+}
+
 func (gt *guestThing) ctrBundle() string {
 	index := atomic.AddUint32(&gt.ctrCounter, 1)
 	return fmt.Sprintf(gt.bundleFmt, index)

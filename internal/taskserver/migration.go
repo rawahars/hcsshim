@@ -1,12 +1,17 @@
 package taskserver
 
 import (
+	"bytes"
 	"context"
+	"encoding/binary"
 	"fmt"
-	"net/netip"
 	"os"
 	"path/filepath"
+
+	"sync"
+
 	"time"
+	"unsafe"
 
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/internal/cmd"
@@ -73,6 +78,7 @@ func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandbo
 		migratable: s.sandbox.Sandbox.(core.Migratable),
 		migrator:   s.sandbox.Sandbox.(core.Migratable),
 	}
+	s.mCond = sync.NewCond(&s.m)
 	return &lmproto.PrepareSandboxResponse{
 		Config:    stateAny,
 		Resources: &lmproto.SourceResources{TaskRootfs: outResources},
@@ -127,48 +133,6 @@ func getSandboxLMSpec(ctx context.Context, bundle string) (*lmproto.SandboxLMSpe
 	return &spec, nil
 }
 
-func (s *service) ListenChannel(ctx context.Context, req *lmproto.ListenChannelRequest) (*lmproto.ListenChannelResponse, error) {
-	addr, err := netip.ParseAddr(req.Ip)
-	if err != nil {
-		return nil, err
-	}
-	l, port, err := listen(addr, req.Port)
-	if err != nil {
-		return nil, err
-	}
-	s.migState.l = l
-	return &lmproto.ListenChannelResponse{
-		Port: uint32(port),
-	}, nil
-}
-
-func (s *service) AcceptChannel(ctx context.Context, req *lmproto.AcceptChannelRequest) (*lmproto.AcceptChannelResponse, error) {
-	if s.migState.l == 0 {
-		return nil, fmt.Errorf("channel must be listening before you can accept a connection")
-	}
-	c, err := accept(s.migState.l)
-	if err != nil {
-		return nil, err
-	}
-	windows.Closesocket(s.migState.l)
-	s.migState.l = 0
-	s.migState.c = c
-	return &lmproto.AcceptChannelResponse{}, nil
-}
-
-func (s *service) DialChannel(ctx context.Context, req *lmproto.DialChannelRequest) (*lmproto.DialChannelResponse, error) {
-	addr, err := netip.ParseAddr(req.Ip)
-	if err != nil {
-		return nil, err
-	}
-	c, err := dial(netip.AddrPortFrom(addr, uint16(req.Port)))
-	if err != nil {
-		return nil, err
-	}
-	s.migState.c = c
-	return &lmproto.DialChannelResponse{}, nil
-}
-
 func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSandboxRequest, stream lmproto.Migration_TransferSandboxServer) error {
 	if s.sandbox != nil {
 		logrus.Info("aborting task waits")
@@ -178,6 +142,11 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	if s.migState.c == 0 {
 		return fmt.Errorf("must set up channel before transferring")
 	}
+	defer func() {
+		if s.migState.c != 0 {
+			windows.Closesocket(s.migState.c)
+		}
+	}()
 	start := time.Now()
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
 		MessageId:  1,
@@ -297,73 +266,6 @@ func (s *service) Cancel(ctx context.Context, req *lmproto.CancelRequest) (*lmpr
 	return &lmproto.CancelResponse{}, nil
 }
 
-func dial(addrPort netip.AddrPort) (_ windows.Handle, err error) {
-	conn, err := windows.Socket(windows.AF_INET, windows.SOCK_STREAM, windows.IPPROTO_TCP)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err != nil {
-			windows.Closesocket(conn)
-		}
-	}()
-	if err := windows.Connect(conn, &windows.SockaddrInet4{Port: int(addrPort.Port()), Addr: addrPort.Addr().As4()}); err != nil {
-		return 0, err
-	}
-	return conn, nil
-}
-
-func listen(addr netip.Addr, port uint32) (_ windows.Handle, _ uint16, err error) {
-	l, err := windows.Socket(windows.AF_INET, windows.SOCK_STREAM, windows.IPPROTO_TCP)
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := windows.Bind(l, &windows.SockaddrInet4{Port: int(port), Addr: addr.As4()}); err != nil {
-		return 0, 0, err
-	}
-	defer func() {
-		if err != nil {
-			windows.Closesocket(l)
-		}
-	}()
-	boundAddr, err := windows.Getsockname(l)
-	if err != nil {
-		return 0, 0, err
-	}
-
-	return l, uint16(boundAddr.(*windows.SockaddrInet4).Port), nil
-}
-
-func accept(l windows.Handle) (_ windows.Handle, err error) {
-	conn, err := windows.Socket(windows.AF_INET, windows.SOCK_STREAM, windows.IPPROTO_TCP)
-	if err != nil {
-		return 0, err
-	}
-	defer func() {
-		if err != nil {
-			windows.Closesocket(conn)
-		}
-	}()
-	if err := windows.Listen(l, 1); err != nil {
-		return 0, err
-	}
-	var buf [64]byte
-	var recvd uint32
-	event, err := windows.CreateEvent(nil, 1, 0, nil)
-	if err != nil {
-		return 0, err
-	}
-	defer windows.CloseHandle(event)
-	overlapped := windows.Overlapped{HEvent: event}
-	if err := windows.AcceptEx(l, conn, &buf[0], 0, 32, 32, &recvd, &overlapped); err != nil && err != windows.ERROR_IO_PENDING {
-		return 0, err
-	}
-	if _, err := windows.WaitForSingleObject(event, windows.INFINITE); err != nil {
-		return 0, err
-	}
-	return conn, nil
-}
-
 func (s *service) newRestoreContainer(ctx context.Context, shimOpts *runhcsopts.Options, req *task.CreateTaskRequest) (err error) {
 	spec, err := getRestoreContainerSpec(ctx, req.Bundle)
 	if err != nil {
@@ -410,4 +312,97 @@ func getRestoreContainerSpec(ctx context.Context, bundle string) (*lmproto.Conta
 		return nil, err
 	}
 	return &spec, nil
+}
+func (s *service) WaitForChannelReady(ctx context.Context, req *lmproto.WaitForChannelReadyRequest) (*lmproto.WaitForChannelReadyResponse, error) {
+	logrus.Info("WaitForChannelReady called")
+	if s.mCond == nil {
+		s.mCond = sync.NewCond(&s.m)
+	}
+	done := make(chan struct{})
+	go func() {
+		s.m.Lock()
+		defer s.m.Unlock()
+
+		for s.migState == nil || s.migState.c == 0 {
+			s.mCond.Wait()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-ctx.Done():
+		logrus.Warn("WaitForChannelReady: context canceled or timed out")
+		return nil, ctx.Err()
+
+	case <-done:
+		logrus.Infof("WaitForChannelReady: Channel is ready %v", s.migState.c)
+
+		return &lmproto.WaitForChannelReadyResponse{}, nil
+	}
+}
+
+var wsasocket = windows.WSASocket
+var getsockopt = windows.Getsockopt
+
+func (s *service) CreateDuplicateSocket(ctx context.Context, req *lmproto.CreateDuplicateSocketRequest) (*lmproto.CreateDuplicateSocketResponse, error) {
+	if s.migState.c != 0 {
+		logrus.Error("duplicate socket already exists")
+		return nil, fmt.Errorf("duplicate socket already exists")
+	}
+	if req.ProtocolInfo == nil {
+		logrus.Error("no protocol info provided")
+		return nil, fmt.Errorf("no protocol info provided")
+	}
+	var info windows.WSAProtocolInfo
+	bytesRead := len(req.ProtocolInfo)
+	if bytesRead < int(binary.Size(info)) {
+		logrus.Error("protocol info too short")
+		return nil, fmt.Errorf("protocol info too short, expected at least %d bytes, got %d", binary.Size(info), bytesRead)
+	}
+	reader := bytes.NewReader(req.ProtocolInfo)
+	err := binary.Read(reader, binary.LittleEndian, &info)
+	if err != nil {
+		logrus.WithError(err).Error("error deserializing WSAProtocolInfo")
+		return nil, fmt.Errorf("error deserializing WSAProtocolInfo: %w", err)
+	}
+	logrus.Info("WSAProtocolInfo deserialized successfully")
+	logrus.Infof("read %d bytes from named pipe\n", bytesRead)
+	logrus.Info("WSAProtocolInfo:", info)
+	var wsaData windows.WSAData
+	err = windows.WSAStartup(uint32(0x0202), &wsaData)
+	if err != nil {
+		logrus.WithError(err).Error("WSAStartup failed")
+		return nil, fmt.Errorf("WSAStartup failed: %w", err)
+	}
+	defer windows.WSACleanup()
+	newSock, err := wsasocket(info.AddressFamily, info.SocketType, info.Protocol, &info, 0, 0)
+	if err != nil {
+		logrus.WithError(err).Error("WSASocket failed")
+		return nil, fmt.Errorf("WSASocket failed: %w", err)
+	}
+	logrus.Infof("new socket created successfully with handle: %v", newSock)
+	var connectTime uint32
+	optLen := int32(4)
+	err = getsockopt(newSock, windows.SOL_SOCKET, 0x700C, (*byte)(unsafe.Pointer(&connectTime)), &optLen)
+	if err != nil {
+		logrus.WithError(err).Error("getsockopt SO_CONNECT_TIME failed")
+		windows.Closesocket(newSock)
+		return nil, fmt.Errorf("getsockopt SO_CONNECT_TIME failed: %w", err)
+	}
+	if connectTime == 0xFFFFFFFF {
+		logrus.Error("Socket is not connected")
+		windows.Closesocket(newSock)
+		return nil, fmt.Errorf("duplicated socket is not connected")
+	}
+	s.m.Lock()
+	defer s.m.Unlock()
+
+	if s.mCond == nil {
+		s.mCond = sync.NewCond(&s.m)
+	}
+	s.migState.c = newSock
+	logrus.Infof("new socket handle set in migration state: %v", s.migState.c)
+	s.mCond.Broadcast()
+
+	return &lmproto.CreateDuplicateSocketResponse{}, nil
 }

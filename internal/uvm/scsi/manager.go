@@ -57,8 +57,8 @@ func NewManager(
 	if hb == nil || gb == nil {
 		return nil, errors.New("host and guest backend must not be nil")
 	}
-	am := NewAttachManager(hb, gb, numControllers, numLUNsPerController, reservedSlots)
 	mm := NewMountManager(gb, guestMountFmt)
+	am := NewAttachManager(hb, gb, numControllers, numLUNsPerController, reservedSlots, mm)
 	return &Manager{am, mm}, nil
 }
 
