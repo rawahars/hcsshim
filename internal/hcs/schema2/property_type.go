@@ -23,4 +23,17 @@ const (
 	PTICHeartbeatStatus           PropertyType = "ICHeartbeatStatus"
 	PTProcessorTopology           PropertyType = "ProcessorTopology"
 	PTCPUGroup                    PropertyType = "CpuGroup"
+	PTCompatibilityInfo           PropertyType = "CompatibilityInfo"
 )
+
+type PropertyResults struct {
+	Responses *PropertyResponses `json:"PropertyResponses,omitempty"`
+}
+
+type PropertyResponses struct {
+	CompatibilityInfo struct {
+		Response struct {
+			Data []byte
+		}
+	}
+}

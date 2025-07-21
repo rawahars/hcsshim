@@ -90,7 +90,7 @@ func allocateLinuxResources(ctx context.Context, coi *createOptionsInternal, r *
 					hostPath,
 					readOnly,
 					coi.HostingSystem.ID(),
-					&scsi.MountConfig{Options: mount.Options},
+					&scsi.DeviceConfig{Options: mount.Options},
 				)
 				if err != nil {
 					return errors.Wrapf(err, "adding SCSI physical disk mount %+v", mount)
@@ -109,7 +109,7 @@ func allocateLinuxResources(ctx context.Context, coi *createOptionsInternal, r *
 					hostPath,
 					readOnly,
 					coi.HostingSystem.ID(),
-					&scsi.MountConfig{Options: mount.Options},
+					&scsi.DeviceConfig{Options: mount.Options},
 				)
 				if err != nil {
 					return errors.Wrapf(err, "adding SCSI virtual disk mount %+v", mount)

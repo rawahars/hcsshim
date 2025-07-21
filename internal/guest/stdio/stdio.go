@@ -4,12 +4,12 @@
 package stdio
 
 import (
+	"fmt"
 	"io"
 	"os"
 	"strings"
 	"sync"
 
-	"github.com/Microsoft/hcsshim/internal/guest/transport"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
@@ -17,7 +17,7 @@ import (
 // ConnectionSet is a structure defining the readers and writers the Core
 // implementation should forward a process's stdio through.
 type ConnectionSet struct {
-	In, Out, Err transport.Connection
+	In, Out, Err Conn
 }
 
 // Close closes each stdio connection.
@@ -84,19 +84,31 @@ func (s *ConnectionSet) Files() (_ *FileSet, err error) {
 		}
 	}()
 	if s.In != nil {
-		fs.In, err = s.In.File()
+		filer, ok := s.In.(interface{ File() (*os.File, error) })
+		if !ok {
+			return nil, fmt.Errorf("stdin does not support File")
+		}
+		fs.In, err = filer.File()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to dup stdin socket for command")
 		}
 	}
 	if s.Out != nil {
-		fs.Out, err = s.Out.File()
+		filer, ok := s.Out.(interface{ File() (*os.File, error) })
+		if !ok {
+			return nil, fmt.Errorf("stdout does not support File")
+		}
+		fs.Out, err = filer.File()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to dup stdout socket for command")
 		}
 	}
 	if s.Err != nil {
-		fs.Err, err = s.Err.File()
+		filer, ok := s.Err.(interface{ File() (*os.File, error) })
+		if !ok {
+			return nil, fmt.Errorf("stderr does not support File")
+		}
+		fs.Err, err = filer.File()
 		if err != nil {
 			return nil, errors.Wrap(err, "failed to dup stderr socket for command")
 		}
@@ -166,7 +178,8 @@ func (pr *PipeRelay) Files() (*FileSet, error) {
 	return fs, nil
 }
 
-func copyAndCleanClose(c transport.Connection, r io.Reader, name string) {
+func copyAndCleanClose(c Conn, r io.Reader, name string) {
+	l := logrus.WithField("file", name)
 	if n, err := io.Copy(c, r); err != nil {
 		logrus.WithFields(logrus.Fields{
 			logrus.ErrorKey: err,
@@ -177,8 +190,10 @@ func copyAndCleanClose(c transport.Connection, r io.Reader, name string) {
 	// Shut down the write end of the socket, then read a byte (which should
 	// yield EOF) to wait for the other endpoint to finish reading and close
 	// the connection.
+	l.Info("copyAndCleanClose CloseWrite")
 	if err := c.CloseWrite(); err == nil {
 		var b [1]byte
+		l.Info("copyAndCleanClose Read")
 		_, err = c.Read(b[:])
 		if err == nil {
 			err = errors.New("unexpected data in socket")
@@ -195,12 +210,14 @@ func copyAndCleanClose(c transport.Connection, r io.Reader, name string) {
 			"file":          name,
 		}).Error("opengcs::PipeRelay::copyAndCleanClose - error shutting down socket")
 	}
+	l.Info("copyAndCleanClose Close")
 	if err := c.Close(); err != nil {
 		logrus.WithFields(logrus.Fields{
 			logrus.ErrorKey: err,
 			"file":          name,
 		}).Error("opengcs::PipeRelay::copyAndCleanClose - error closing socket")
 	}
+	l.Info("copyAndCleanClose done")
 }
 
 // Start starts the relay operation. The caller must call Wait to wait
@@ -243,6 +260,7 @@ func (pr *PipeRelay) Start() {
 // Wait waits for the relaying to finish and closes the associated
 // pipes and connections.
 func (pr *PipeRelay) Wait() {
+	logrus.Info("PipeRelay Wait start")
 	// Close stdin so that the copying goroutine is safely unblocked; this is necessary
 	// because the host expects stdin to be closed before it will report process
 	// exit back to the client, and the client expects the process notification before
@@ -252,7 +270,9 @@ func (pr *PipeRelay) Wait() {
 	}
 
 	pr.wg.Wait()
+	logrus.Info("PipeRelay Wait wg.Wait completed")
 	pr.closePipes()
+	logrus.Info("PipeRelay Wait closePipes completed")
 	if pr.s != nil {
 		pr.s.Close()
 	}

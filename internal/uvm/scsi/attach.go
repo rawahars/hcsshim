@@ -7,7 +7,7 @@ import (
 	"sync"
 )
 
-type attachManager struct {
+type AttachManager struct {
 	m                    sync.Mutex
 	attacher             attacher
 	unplugger            unplugger
@@ -16,7 +16,7 @@ type attachManager struct {
 	slots                [][]*attachment
 }
 
-func newAttachManager(attacher attacher, unplugger unplugger, numControllers, numLUNsPerController int, reservedSlots []Slot) *attachManager {
+func NewAttachManager(attacher attacher, unplugger unplugger, numControllers, numLUNsPerController int, reservedSlots []Slot) *AttachManager {
 	slots := make([][]*attachment, numControllers)
 	for i := range slots {
 		slots[i] = make([]*attachment, numLUNsPerController)
@@ -28,7 +28,7 @@ func newAttachManager(attacher attacher, unplugger unplugger, numControllers, nu
 		// remove call for this slot, but is done for added safety.
 		slots[reservedSlot.Controller][reservedSlot.LUN] = &attachment{refCount: 1}
 	}
-	return &attachManager{
+	return &AttachManager{
 		attacher:             attacher,
 		unplugger:            unplugger,
 		numControllers:       numControllers,
@@ -40,20 +40,20 @@ func newAttachManager(attacher attacher, unplugger unplugger, numControllers, nu
 type attachment struct {
 	controller uint
 	lun        uint
-	config     *attachConfig
+	config     *AttachConfig
 	waitErr    error
 	waitCh     chan struct{}
 	refCount   uint
 }
 
-type attachConfig struct {
-	path     string
-	readOnly bool
-	typ      string
-	evdType  string
+type AttachConfig struct {
+	Path     string
+	ReadOnly bool
+	Type     string
+	EVDType  string
 }
 
-func (am *attachManager) attach(ctx context.Context, c *attachConfig) (controller uint, lun uint, err error) {
+func (am *AttachManager) Attach(ctx context.Context, c *AttachConfig) (controller uint, lun uint, err error) {
 	att, existed, err := am.trackAttachment(c)
 	if err != nil {
 		return 0, 0, err
@@ -82,12 +82,12 @@ func (am *attachManager) attach(ctx context.Context, c *attachConfig) (controlle
 	}()
 
 	if err := am.attacher.attach(ctx, att.controller, att.lun, att.config); err != nil {
-		return 0, 0, fmt.Errorf("attach %s/%s at controller %d lun %d: %w", att.config.typ, att.config.path, att.controller, att.lun, err)
+		return 0, 0, fmt.Errorf("attach %s/%s at controller %d lun %d: %w", att.config.Type, att.config.Path, att.controller, att.lun, err)
 	}
 	return att.controller, att.lun, nil
 }
 
-func (am *attachManager) detach(ctx context.Context, controller, lun uint) (bool, error) {
+func (am *AttachManager) Detach(ctx context.Context, controller, lun uint) (bool, error) {
 	am.m.Lock()
 	defer am.m.Unlock()
 
@@ -113,7 +113,7 @@ func (am *attachManager) detach(ctx context.Context, controller, lun uint) (bool
 	return true, nil
 }
 
-func (am *attachManager) trackAttachment(c *attachConfig) (*attachment, bool, error) {
+func (am *AttachManager) trackAttachment(c *AttachConfig) (*attachment, bool, error) {
 	am.m.Lock()
 	defer am.m.Unlock()
 
@@ -155,6 +155,6 @@ func (am *attachManager) trackAttachment(c *attachConfig) (*attachment, bool, er
 }
 
 // Caller must be holding am.m.
-func (am *attachManager) untrackAttachment(attachment *attachment) {
+func (am *AttachManager) untrackAttachment(attachment *attachment) {
 	am.slots[attachment.controller][attachment.lun] = nil
 }

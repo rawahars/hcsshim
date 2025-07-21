@@ -87,6 +87,10 @@ var (
 	_ cow.Container   = &JobContainer{}
 )
 
+func (c *JobContainer) OpenProcess2(ctx context.Context, pid uint32) (cow.Process, error) {
+	panic("not implemented")
+}
+
 func newJobContainer(id string, s *specs.Spec) *JobContainer {
 	return &JobContainer{
 		id:        id,

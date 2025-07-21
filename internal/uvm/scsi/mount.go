@@ -8,7 +8,7 @@ import (
 	"sync"
 )
 
-type mountManager struct {
+type MountManager struct {
 	m       sync.Mutex
 	mounter mounter
 	// Tracks current mounts. Entries will be nil if the mount was unmounted, meaning the index is
@@ -17,8 +17,8 @@ type mountManager struct {
 	mountFmt string
 }
 
-func newMountManager(mounter mounter, mountFmt string) *mountManager {
-	return &mountManager{
+func NewMountManager(mounter mounter, mountFmt string) *MountManager {
+	return &MountManager{
 		mounter:  mounter,
 		mountFmt: mountFmt,
 	}
@@ -29,27 +29,27 @@ type mount struct {
 	index      int
 	controller uint
 	lun        uint
-	config     *mountConfig
+	config     *MountConfig
 	waitErr    error
 	waitCh     chan struct{}
 	refCount   uint
 }
 
-type mountConfig struct {
-	partition        uint64
-	readOnly         bool
-	encrypted        bool
-	options          []string
-	ensureFilesystem bool
-	filesystem       string
+type MountConfig struct {
+	Partition       uint64
+	ReadOnly        bool
+	Encrypted       bool
+	Options         []string
+	EnsureFileystem bool
+	Filesystem      string
 }
 
-func (mm *mountManager) mount(ctx context.Context, controller, lun uint, c *mountConfig) (_ string, err error) {
+func (mm *MountManager) Mount(ctx context.Context, controller, lun uint, c *MountConfig) (_ string, err error) {
 	// Normalize the mount config for comparison.
 	// Config equality relies on the options slices being compared element-wise. Sort the options
 	// slice first so that two slices with different ordering compare as equal. We assume that
 	// order will never matter for mount options.
-	sort.Strings(c.options)
+	sort.Strings(c.Options)
 
 	mount, existed := mm.trackMount(controller, lun, c)
 	if existed {
@@ -81,7 +81,7 @@ func (mm *mountManager) mount(ctx context.Context, controller, lun uint, c *moun
 	return mount.path, nil
 }
 
-func (mm *mountManager) unmount(ctx context.Context, path string) (bool, error) {
+func (mm *MountManager) Unmount(ctx context.Context, path string) (bool, error) {
 	mm.m.Lock()
 	defer mm.m.Unlock()
 
@@ -105,7 +105,7 @@ func (mm *mountManager) unmount(ctx context.Context, path string) (bool, error) 
 	return true, nil
 }
 
-func (mm *mountManager) trackMount(controller, lun uint, c *mountConfig) (*mount, bool) {
+func (mm *MountManager) trackMount(controller, lun uint, c *MountConfig) (*mount, bool) {
 	mm.m.Lock()
 	defer mm.m.Unlock()
 
@@ -145,6 +145,6 @@ func (mm *mountManager) trackMount(controller, lun uint, c *mountConfig) (*mount
 }
 
 // Caller must be holding mm.m.
-func (mm *mountManager) untrackMount(mount *mount) {
+func (mm *MountManager) untrackMount(mount *mount) {
 	mm.mounts[mount.index] = nil
 }

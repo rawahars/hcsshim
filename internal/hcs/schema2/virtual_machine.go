@@ -33,4 +33,6 @@ type VirtualMachine struct {
 	SecuritySettings *SecuritySettings `json:"SecuritySettings,omitempty"`
 
 	DebugOptions *DebugOptions `json:"DebugOptions,omitempty"`
+
+	MigrationOptions *MigrationInitializeOptions `json:"MigrationOptions,omitempty"`
 }

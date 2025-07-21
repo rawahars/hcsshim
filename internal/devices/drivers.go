@@ -59,7 +59,7 @@ func InstallDrivers(ctx context.Context, vm *uvm.UtilityVM, share string) (close
 		share,
 		true,
 		vm.ID(),
-		&scsi.MountConfig{},
+		&scsi.DeviceConfig{},
 	)
 	if err != nil {
 		return closer, fmt.Errorf("failed to add SCSI disk to utility VM for path %+v: %s", share, err)

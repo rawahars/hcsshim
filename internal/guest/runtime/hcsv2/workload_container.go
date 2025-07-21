@@ -115,10 +115,12 @@ func setupWorkloadContainerSpec(ctx context.Context, sbid, id string, spec *oci.
 		return errors.Wrapf(err, "failed to update hugepages mounts for container %v in sandbox %v", id, sbid)
 	}
 
-	// Add default mounts for container networking (e.g. /etc/hostname, /etc/hosts),
-	// if spec didn't override them explicitly.
-	networkingMounts := specInternal.GenerateWorkloadContainerNetworkMounts(sbid, spec)
-	spec.Mounts = append(spec.Mounts, networkingMounts...)
+	if getNetworkNamespaceID(spec) != "" {
+		// Add default mounts for container networking (e.g. /etc/hostname, /etc/hosts),
+		// if spec didn't override them explicitly.
+		networkingMounts := specInternal.GenerateWorkloadContainerNetworkMounts(sbid, spec)
+		spec.Mounts = append(spec.Mounts, networkingMounts...)
+	}
 
 	// TODO: JTERRY75 /dev/shm is not properly setup for LCOW I believe. CRI
 	// also has a concept of a sandbox/shm file when the IPC NamespaceMode !=

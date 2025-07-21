@@ -296,6 +296,49 @@ func SpecToUVMCreateOpts(ctx context.Context, s *specs.Spec, id, owner string) (
 	return nil, errors.New("cannot create UVM opts spec is not LCOW or WCOW")
 }
 
+func LCOWSpecToUVMCreateOpts(ctx context.Context, s *specs.Spec, id, owner string) (*uvm.OptionsLCOW, error) {
+	lopts := uvm.NewDefaultOptionsLCOW(id, owner)
+	specToUVMCreateOptionsCommon(ctx, lopts.Options, s)
+
+	/*
+		WARNING!!!!!!!!!!
+
+		When adding an option here which must match some security policy by default, make sure that the correct default (ie matches
+		a default security policy) is applied in handleSecurityPolicy. Inadvertently adding an "option" which defaults to false but MUST be
+		true for a default security	policy to work will force the annotation to have be set by the team that owns the box. That will
+		be practically difficult and we	might not find out until a little late in the process.
+	*/
+
+	lopts.EnableColdDiscardHint = ParseAnnotationsBool(ctx, s.Annotations, annotations.EnableColdDiscardHint, lopts.EnableColdDiscardHint)
+	lopts.VPMemDeviceCount = parseAnnotationsUint32(ctx, s.Annotations, annotations.VPMemCount, lopts.VPMemDeviceCount)
+	lopts.VPMemSizeBytes = parseAnnotationsUint64(ctx, s.Annotations, annotations.VPMemSize, lopts.VPMemSizeBytes)
+	lopts.VPMemNoMultiMapping = ParseAnnotationsBool(ctx, s.Annotations, annotations.VPMemNoMultiMapping, lopts.VPMemNoMultiMapping)
+	lopts.VPCIEnabled = ParseAnnotationsBool(ctx, s.Annotations, annotations.VPCIEnabled, lopts.VPCIEnabled)
+	handleAnnotationBootFilesPath(ctx, s.Annotations, lopts)
+	lopts.EnableScratchEncryption = ParseAnnotationsBool(ctx, s.Annotations, annotations.EncryptedScratchDisk, lopts.EnableScratchEncryption)
+	lopts.SecurityPolicy = parseAnnotationsString(s.Annotations, annotations.SecurityPolicy, lopts.SecurityPolicy)
+	lopts.SecurityPolicyEnforcer = parseAnnotationsString(s.Annotations, annotations.SecurityPolicyEnforcer, lopts.SecurityPolicyEnforcer)
+	lopts.UVMReferenceInfoFile = parseAnnotationsString(s.Annotations, annotations.UVMReferenceInfoFile, lopts.UVMReferenceInfoFile)
+	lopts.KernelBootOptions = parseAnnotationsString(s.Annotations, annotations.KernelBootOptions, lopts.KernelBootOptions)
+	lopts.DisableTimeSyncService = ParseAnnotationsBool(ctx, s.Annotations, annotations.DisableLCOWTimeSyncService, lopts.DisableTimeSyncService)
+	handleAnnotationPreferredRootFSType(ctx, s.Annotations, lopts)
+	handleAnnotationKernelDirectBoot(ctx, s.Annotations, lopts)
+
+	// parsing of FullyPhysicallyBacked needs to go after handling kernel direct boot and
+	// preferred rootfs type since it may overwrite settings created by those
+	handleAnnotationFullyPhysicallyBacked(ctx, s.Annotations, lopts)
+
+	// SecurityPolicy is very sensitive to other settings and will silently change those that are incompatible.
+	// Eg VMPem device count, overridden kernel option cannot be respected.
+	handleSecurityPolicy(ctx, s.Annotations, lopts)
+
+	// override the default GuestState filename if specified
+	lopts.GuestStateFile = parseAnnotationsString(s.Annotations, annotations.GuestStateFile, lopts.GuestStateFile)
+	// Set HclEnabled if specified. Else default to a null pointer, which is omitted from the resulting JSON.
+	lopts.HclEnabled = ParseAnnotationsNullableBool(ctx, s.Annotations, annotations.HclEnabled)
+	return lopts, nil
+}
+
 // UpdateSpecFromOptions sets extra annotations on the OCI spec based on the
 // `opts` struct.
 func UpdateSpecFromOptions(s specs.Spec, opts *runhcsopts.Options) specs.Spec {

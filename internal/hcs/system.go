@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/Microsoft/hcsshim/internal/computecore"
 	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
@@ -23,6 +24,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/vmcompute"
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
+	"golang.org/x/sys/windows"
 )
 
 type System struct {
@@ -190,8 +192,17 @@ func GetComputeSystems(ctx context.Context, q schema1.ComputeSystemQuery) ([]sch
 	return computeSystems, nil
 }
 
+func (computeSystem *System) Start(ctx context.Context) error {
+	return computeSystem.StartWithOpts(ctx)
+}
+
 // Start synchronously starts the computeSystem.
-func (computeSystem *System) Start(ctx context.Context) (err error) {
+func (computeSystem *System) StartWithOpts(ctx context.Context, opts ...StartOpt) (err error) {
+	var c startConfig
+	for _, opt := range opts {
+		opt(&c)
+	}
+
 	operation := "hcs::System::Start"
 
 	// hcsStartComputeSystemContext is an async operation. Start the outer span
@@ -210,14 +221,48 @@ func (computeSystem *System) Start(ctx context.Context) (err error) {
 		return makeSystemError(computeSystem, operation, ErrAlreadyClosed, nil)
 	}
 
-	resultJSON, err := vmcompute.HcsStartComputeSystem(ctx, computeSystem.handle, "")
-	events, err := processAsyncHcsResult(ctx, err, resultJSON, computeSystem.callbackNumber,
-		hcsNotificationSystemStartCompleted, &timeout.SystemStart)
-	if err != nil {
-		return makeSystemError(computeSystem, operation, err, events)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	var optionsRaw []byte
+	if c.lmSocket != 0 {
+		if err := computecore.HcsAddResourceToOperation(op, computecore.HcsResourceTypeSocket, "hcs:/VirtualMachine/LiveMigrationSocket", c.lmSocket); err != nil {
+			return err
+		}
+		options := hcsschema.StartOptions{
+			DestinationMigrationOptions: &hcsschema.MigrationStartOptions{
+				NetworkSettings: &hcsschema.MigrationNetworkSettings{
+					SessionID: c.lmSessionID,
+				},
+			},
+		}
+		optionsRaw, err = json.Marshal(options)
+		if err != nil {
+			return err
+		}
 	}
+	if err := computecore.HcsStartComputeSystem(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+		return err
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return err
+	}
+
 	computeSystem.startTime = time.Now()
 	return nil
+}
+
+type startConfig struct {
+	lmSocket    uintptr
+	lmSessionID uint32
+}
+
+type StartOpt func(*startConfig)
+
+func WithLM(lmSocket uintptr, sessionID uint32) StartOpt {
+	return func(c *startConfig) {
+		c.lmSocket = lmSocket
+		c.lmSessionID = sessionID
+	}
 }
 
 // ID returns the compute system's identifier.
@@ -517,6 +562,38 @@ func (computeSystem *System) hcsPropertiesV2Query(ctx context.Context, types []h
 	return props, nil
 }
 
+func (computeSystem *System) PropertiesV3(ctx context.Context, query *hcsschema.PropertyQuery) (*hcsschema.PropertyResults, error) {
+	computeSystem.handleLock.RLock()
+	defer computeSystem.handleLock.RUnlock()
+
+	operation := "hcs::System::PropertiesV3"
+
+	if computeSystem.handle == 0 {
+		return nil, makeSystemError(computeSystem, operation, ErrAlreadyClosed, nil)
+	}
+
+	queryBytes, err := json.Marshal(query)
+	if err != nil {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+
+	propertiesJSON, resultJSON, err := vmcompute.HcsGetComputeSystemProperties(ctx, computeSystem.handle, string(queryBytes))
+	events := processHcsResult(ctx, resultJSON)
+	if err != nil {
+		return nil, makeSystemError(computeSystem, operation, err, events)
+	}
+
+	if propertiesJSON == "" {
+		return nil, ErrUnexpectedValue
+	}
+	props := &hcsschema.PropertyResults{}
+	if err := json.Unmarshal([]byte(propertiesJSON), props); err != nil {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+
+	return props, nil
+}
+
 // PropertiesV2 returns the requested compute systems properties targeting a V2 schema compute system.
 func (computeSystem *System) PropertiesV2(ctx context.Context, types ...hcsschema.PropertyType) (_ *hcsschema.Properties, err error) {
 	computeSystem.handleLock.RLock()
@@ -719,6 +796,10 @@ func (computeSystem *System) CreateProcess(ctx context.Context, c interface{}) (
 	return process, nil
 }
 
+func (computeSystem *System) OpenProcess2(ctx context.Context, pid uint32) (cow.Process, error) {
+	panic("not implemented")
+}
+
 // OpenProcess gets an interface to an existing process within the computeSystem.
 func (computeSystem *System) OpenProcess(ctx context.Context, pid int) (*Process, error) {
 	computeSystem.handleLock.RLock()
@@ -868,5 +949,95 @@ func (computeSystem *System) Modify(ctx context.Context, config interface{}) err
 		return makeSystemError(computeSystem, operation, err, events)
 	}
 
+	return nil
+}
+
+func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Context) error {
+	computeSystem.handleLock.RLock()
+	defer computeSystem.handleLock.RUnlock()
+
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	options := hcsschema.MigrationInitializeOptions{}
+	optionsRaw, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+	if err := computecore.HcsInitializeLiveMigrationOnSource(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+		return err
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (computeSystem *System) HcsStartLiveMigrationOnSource(ctx context.Context, socket uintptr, sessionID uint32) error {
+	computeSystem.handleLock.RLock()
+	defer computeSystem.handleLock.RUnlock()
+
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsAddResourceToOperation(op, computecore.HcsResourceTypeSocket, "hcs:/VirtualMachine/LiveMigrationSocket", socket); err != nil {
+		return err
+	}
+	options := hcsschema.MigrationStartOptions{
+		NetworkSettings: &hcsschema.MigrationNetworkSettings{
+			SessionID: sessionID,
+		},
+	}
+	optionsRaw, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+	if err := computecore.HcsStartLiveMigrationOnSource(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+		return err
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (computeSystem *System) HcsStartLiveMigrationTransfer(ctx context.Context) error {
+	computeSystem.handleLock.RLock()
+	defer computeSystem.handleLock.RUnlock()
+
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	options := hcsschema.MigrationTransferOptions{}
+	optionsRaw, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+	if err := computecore.HcsStartLiveMigrationTransfer(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+		return err
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (computeSystem *System) HcsFinalizeLiveMigation(ctx context.Context, resume bool) error {
+	computeSystem.handleLock.RLock()
+	defer computeSystem.handleLock.RUnlock()
+
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	options := hcsschema.MigrationFinalizedOptions{FinalizedOperation: hcsschema.MigrationFinalOperationStop}
+	if resume {
+		options.FinalizedOperation = hcsschema.MigrationFinalOperationResume
+	}
+	optionsRaw, err := json.Marshal(options)
+	if err != nil {
+		return err
+	}
+	if err := computecore.HcsFinalizeLiveMigration(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+		return err
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return err
+	}
 	return nil
 }

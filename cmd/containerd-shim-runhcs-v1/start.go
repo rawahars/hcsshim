@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bytes"
 	gocontext "context"
 	"encoding/json"
 	"fmt"
@@ -12,6 +13,8 @@ import (
 	"path/filepath"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
+	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/pkg/annotations"
 	task "github.com/containerd/containerd/api/runtime/task/v2"
@@ -20,6 +23,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli"
+	"google.golang.org/protobuf/proto"
 )
 
 var startCommand = cli.Command{
@@ -66,7 +70,15 @@ The start command can either start a new shim or return an address to an existin
 			return err
 		}
 
-		a, err := getSpecAnnotations(cwd)
+		stdin, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fmt.Errorf("read stdin: %w", err)
+		}
+		opts, err := readOptions(bytes.NewBuffer(stdin))
+		if err != nil {
+			return fmt.Errorf("parse options: %w", err)
+		}
+		a, err := getSpecAnnotations(cwd, opts.BundleType)
 		if err != nil {
 			return err
 		}
@@ -145,7 +157,7 @@ The start command can either start a new shim or return an address to an existin
 				Args:   args,
 				Env:    os.Environ(),
 				Dir:    cwd,
-				Stdin:  os.Stdin,
+				Stdin:  bytes.NewBuffer(stdin),
 				Stdout: w,
 				Stderr: f,
 			}
@@ -183,21 +195,33 @@ The start command can either start a new shim or return an address to an existin
 	},
 }
 
-func getSpecAnnotations(bundlePath string) (map[string]string, error) {
-	// specAnnotations is a minimal representation for oci.Spec that we need
-	// to serve a shim.
-	type specAnnotations struct {
-		// Annotations contains arbitrary metadata for the container.
-		Annotations map[string]string `json:"annotations,omitempty"`
-	}
-	f, err := os.OpenFile(filepath.Join(bundlePath, "config.json"), os.O_RDONLY, 0)
+func getSpecAnnotations(bundlePath string, bundleType options.BundleType) (map[string]string, error) {
+	raw, err := os.ReadFile(filepath.Join(bundlePath, "config.json"))
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-	var spec specAnnotations
-	if err := json.NewDecoder(f).Decode(&spec); err != nil {
-		return nil, errors.Wrap(err, "failed to deserialize valid OCI spec")
+	switch bundleType {
+	case options.BundleType_BUNDLE_OCI:
+		var spec struct {
+			Annotations map[string]string `json:"annotations,omitempty"`
+		}
+		if err := json.Unmarshal(raw, &spec); err != nil {
+			return nil, fmt.Errorf("deserialize OCI spec: %w", err)
+		}
+		return spec.Annotations, nil
+	case options.BundleType_BUNDLE_POD_LM:
+		var spec lmproto.SandboxLMSpec
+		if err := (proto.UnmarshalOptions{}).Unmarshal(raw, &spec); err != nil {
+			return nil, err
+		}
+		return spec.Annotations, nil
+	case options.BundleType_BUNDLE_CONTAINER_RESTORE:
+		var spec lmproto.ContainerRestoreSpec
+		if err := (proto.UnmarshalOptions{}).Unmarshal(raw, &spec); err != nil {
+			return nil, err
+		}
+		return spec.Annotations, nil
+	default:
+		return nil, fmt.Errorf("unrecognized bundle type: %v", bundleType)
 	}
-	return spec.Annotations, nil
 }

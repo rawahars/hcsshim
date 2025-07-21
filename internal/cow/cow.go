@@ -54,6 +54,7 @@ type ProcessHost interface {
 	// CreateProcess creates a process. The configuration is host specific
 	// (either hcsschema.ProcessParameters or lcow.ProcessParameters).
 	CreateProcess(ctx context.Context, config interface{}) (Process, error)
+	OpenProcess2(ctx context.Context, pid uint32) (Process, error)
 	// OS returns the host's operating system, "linux" or "windows".
 	OS() string
 	// IsOCI specifies whether this is an OCI-compliant process host. If true,

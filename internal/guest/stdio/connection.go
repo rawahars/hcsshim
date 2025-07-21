@@ -4,12 +4,20 @@
 package stdio
 
 import (
+	"fmt"
+	"io"
 	"os"
 
 	"github.com/Microsoft/hcsshim/internal/guest/transport"
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 )
+
+type Conn interface {
+	io.ReadWriteCloser
+	CloseRead() error
+	CloseWrite() error
+}
 
 // ConnectionSettings describe the stdin, stdout, stderr ports to connect the
 // transport to. A nil port specifies no connection.
@@ -20,8 +28,16 @@ type ConnectionSettings struct {
 }
 
 type logConnection struct {
-	con  transport.Connection
+	con  Conn
 	port uint32
+}
+
+func (lc *logConnection) File() (*os.File, error) {
+	filer, ok := lc.con.(interface{ File() (*os.File, error) })
+	if !ok {
+		return nil, fmt.Errorf("con does not support File")
+	}
+	return filer.File()
 }
 
 func (lc *logConnection) Read(b []byte) (int, error) {
@@ -56,11 +72,7 @@ func (lc *logConnection) CloseWrite() error {
 	return lc.con.CloseWrite()
 }
 
-func (lc *logConnection) File() (*os.File, error) {
-	return lc.con.File()
-}
-
-var _ = (transport.Connection)(&logConnection{})
+var _ = (Conn)(&logConnection{})
 
 // Connect returns new transport.Connection instances, one for each stdio pipe
 // to be used. If CreateStd*Pipe for a given pipe is false, the given Connection
@@ -73,7 +85,8 @@ func Connect(tport transport.Transport, settings ConnectionSettings) (_ *Connect
 		}
 	}()
 	if settings.StdIn != nil {
-		c, err := tport.Dial(*settings.StdIn)
+		logrus.WithField("port", *settings.StdIn).Info("connecting to stdin port")
+		c, err := tport.DialReconn(*settings.StdIn)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed creating stdin Connection")
 		}
@@ -83,7 +96,8 @@ func Connect(tport transport.Transport, settings ConnectionSettings) (_ *Connect
 		}
 	}
 	if settings.StdOut != nil {
-		c, err := tport.Dial(*settings.StdOut)
+		logrus.WithField("port", *settings.StdOut).Info("connecting to stdout port")
+		c, err := tport.DialReconn(*settings.StdOut)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed creating stdout Connection")
 		}
@@ -93,10 +107,12 @@ func Connect(tport transport.Transport, settings ConnectionSettings) (_ *Connect
 		}
 	}
 	if settings.StdErr != nil {
-		c, err := tport.Dial(*settings.StdErr)
+		logrus.WithField("port", *settings.StdErr).Info("connecting to stderr port")
+		c, err := tport.DialReconn(*settings.StdErr)
 		if err != nil {
 			return nil, errors.Wrap(err, "failed creating stderr Connection")
 		}
+
 		connSet.Err = &logConnection{
 			con:  c,
 			port: *settings.StdErr,

@@ -110,7 +110,9 @@ func ServerInterceptor(opts ...Option) ttrpc.UnaryServerInterceptor {
 			ctx, span = oc.StartSpan(ctx, name, opts...)
 		}
 		defer span.End()
-		defer setSpanStatus(span, err)
+		defer func() {
+			setSpanStatus(span, err)
+		}()
 
 		return method(ctx, unmarshal)
 	}

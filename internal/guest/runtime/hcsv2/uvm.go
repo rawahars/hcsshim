@@ -79,6 +79,7 @@ type Host struct {
 	// hostMounts keeps the state of currently mounted devices and file systems,
 	// which is used for GCS hardening.
 	hostMounts *hostMounts
+	sandboxID  string
 }
 
 func NewHost(rtime runtime.Runtime, vsock transport.Transport, initialEnforcer securitypolicy.SecurityPolicyEnforcer, logWriter io.Writer) *Host {
@@ -125,17 +126,17 @@ func (h *Host) SetConfidentialUVMOptions(ctx context.Context, r *guestresource.L
 		return err
 	}
 
-	// This is one of two points at which we might change our logging.
-	// At this time, we now have a policy and can determine what the policy
-	// author put as policy around runtime logging.
-	// The other point is on startup where we take a flag to set the default
-	// policy enforcer to use before a policy arrives. After that flag is set,
-	// we use the enforcer in question to set up logging as well.
-	if err = p.EnforceRuntimeLoggingPolicy(ctx); err == nil {
-		logrus.SetOutput(h.logWriter)
-	} else {
-		logrus.SetOutput(io.Discard)
-	}
+	// // This is one of two points at which we might change our logging.
+	// // At this time, we now have a policy and can determine what the policy
+	// // author put as policy around runtime logging.
+	// // The other point is on startup where we take a flag to set the default
+	// // policy enforcer to use before a policy arrives. After that flag is set,
+	// // we use the enforcer in question to set up logging as well.
+	// if err = p.EnforceRuntimeLoggingPolicy(ctx); err == nil {
+	// 	logrus.SetOutput(h.logWriter)
+	// } else {
+	// 	logrus.SetOutput(io.Discard)
+	// }
 
 	hostData, err := securitypolicy.NewSecurityPolicyDigest(r.EncodedSecurityPolicy)
 	if err != nil {
@@ -334,6 +335,7 @@ func (h *Host) CreateContainer(ctx context.Context, id string, settings *prot.VM
 	if isCRI {
 		switch criType {
 		case "sandbox":
+			h.sandboxID = sandboxID
 			// Capture namespaceID if any because setupSandboxContainerSpec clears the Windows section.
 			namespaceID = getNetworkNamespaceID(settings.OCISpecification)
 			err = setupSandboxContainerSpec(ctx, id, settings.OCISpecification)
@@ -360,6 +362,8 @@ func (h *Host) CreateContainer(ctx context.Context, id string, settings *prot.VM
 		case "container":
 			sid, ok := settings.OCISpecification.Annotations[annotations.KubernetesSandboxID]
 			sandboxID = sid
+			sid = h.sandboxID
+			sandboxID = h.sandboxID
 			if !ok || sid == "" {
 				return nil, errors.Errorf("unsupported 'io.kubernetes.cri.sandbox-id': '%s'", sid)
 			}
@@ -523,7 +527,7 @@ func (h *Host) CreateContainer(ctx context.Context, id string, settings *prot.VM
 	c.initProcess = newProcess(c, settings.OCISpecification.Process, init, uint32(c.container.Pid()), true)
 
 	// Sandbox or standalone, move the networks to the container namespace
-	if criType == "sandbox" || !isCRI {
+	if (criType == "sandbox" || !isCRI) && namespaceID != "" {
 		ns, err := getNetworkNamespace(namespaceID)
 		if isCRI && err != nil {
 			return nil, err
@@ -913,7 +917,7 @@ func (h *Host) runExternalProcess(
 			Ctty:    syscall.Stdin,
 		}
 	} else {
-		var fileSet *stdio.FileSet
+		var fileSet *stdio.FileSet = &stdio.FileSet{}
 		fileSet, err = stdioSet.Files()
 		if err != nil {
 			return -1, errors.Wrap(err, "failed to set cmd stdio")
@@ -1162,7 +1166,7 @@ func modifyNetwork(ctx context.Context, rt guestrequest.RequestType, na *guestre
 		// container or not so it must always call `Sync`.
 		return ns.Sync(ctx)
 	case guestrequest.RequestTypeRemove:
-		ns := GetOrAddNetworkNamespace(na.ID)
+		ns := GetOrAddNetworkNamespace(na.NamespaceID)
 		if err := ns.RemoveAdapter(ctx, na.ID); err != nil {
 			return err
 		}

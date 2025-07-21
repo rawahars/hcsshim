@@ -156,7 +156,7 @@ func setupMounts(ctx context.Context, coi *createOptionsInternal, r *resources.R
 			l := log.G(ctx).WithField("mount", fmt.Sprintf("%+v", mount))
 			if mount.Type == MountTypePhysicalDisk || mount.Type == MountTypeVirtualDisk || mount.Type == MountTypeExtensibleVirtualDisk {
 				var (
-					scsiMount *scsi.Mount
+					scsiMount *scsi.Device
 					err       error
 				)
 				switch mount.Type {
@@ -167,7 +167,7 @@ func setupMounts(ctx context.Context, coi *createOptionsInternal, r *resources.R
 						mount.Source,
 						readOnly,
 						coi.HostingSystem.ID(),
-						&scsi.MountConfig{},
+						&scsi.DeviceConfig{},
 					)
 				case MountTypeVirtualDisk:
 					l.Debug("hcsshim::allocateWindowsResources Hot-adding SCSI virtual disk for OCI mount")
@@ -176,7 +176,7 @@ func setupMounts(ctx context.Context, coi *createOptionsInternal, r *resources.R
 						mount.Source,
 						readOnly,
 						coi.HostingSystem.ID(),
-						&scsi.MountConfig{},
+						&scsi.DeviceConfig{},
 					)
 				case MountTypeExtensibleVirtualDisk:
 					l.Debug("hcsshim::allocateWindowsResource Hot-adding ExtensibleVirtualDisk")
@@ -184,7 +184,7 @@ func setupMounts(ctx context.Context, coi *createOptionsInternal, r *resources.R
 						ctx,
 						mount.Source,
 						readOnly,
-						&scsi.MountConfig{},
+						&scsi.DeviceConfig{},
 					)
 				}
 				if err != nil {

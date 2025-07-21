@@ -189,6 +189,25 @@ type Bridge struct {
 	hasQuitPending uint32
 
 	protVer prot.ProtocolVersion
+
+	Publisher *Publisher
+}
+
+type Publisher struct {
+	b *Bridge
+	m sync.Mutex
+}
+
+func (p *Publisher) SetBridge(b *Bridge) {
+	p.m.Lock()
+	defer p.m.Unlock()
+	p.b = b
+}
+
+func (p *Publisher) PublishNotification(n *prot.ContainerNotification) {
+	p.m.Lock()
+	defer p.m.Unlock()
+	p.b.PublishNotification(n)
 }
 
 // AssignHandlers creates and assigns the appropriate bridge
@@ -224,24 +243,32 @@ func (b *Bridge) AssignHandlers(mux *Mux, host *hcsv2.Host) {
 // messages and dispatches the appropriate handlers to handle each
 // event in an asynchronous manner.
 func (b *Bridge) ListenAndServe(bridgeIn io.ReadCloser, bridgeOut io.WriteCloser) error {
+	b.protVer = 0
+
 	requestChan := make(chan *Request)
-	requestErrChan := make(chan error)
+	requestErrChan := make(chan error, 1)
 	b.responseChan = make(chan bridgeResponse)
-	responseErrChan := make(chan error)
+	responseErrChan := make(chan error, 1)
 	b.quitChan = make(chan bool)
 
-	defer close(b.quitChan)
 	defer bridgeOut.Close()
-	defer close(responseErrChan)
+	// defer close(responseErrChan)
 	defer close(b.responseChan)
-	defer close(requestChan)
-	defer close(requestErrChan)
+	// defer close(requestChan)
+	// defer close(requestErrChan)
+	defer close(b.quitChan)
 	defer bridgeIn.Close()
 
 	// Receive bridge requests and schedule them to be processed.
 	go func() {
 		var recverr error
+	loop:
 		for {
+			select {
+			case <-b.quitChan:
+				break loop
+			default:
+			}
 			if atomic.LoadUint32(&b.hasQuitPending) == 0 {
 				header := &prot.MessageHeader{}
 				if err := binary.Read(bridgeIn, binary.LittleEndian, header); err != nil {
@@ -335,30 +362,44 @@ func (b *Bridge) ListenAndServe(bridgeIn io.ReadCloser, bridgeOut io.WriteCloser
 	}()
 	// Process each bridge request async and create the response writer.
 	go func() {
-		for req := range requestChan {
-			go func(r *Request) {
-				br := bridgeResponse{
-					ctx: r.Context,
-					header: &prot.MessageHeader{
-						Type: prot.GetResponseIdentifier(r.Header.Type),
-						ID:   r.Header.ID,
-					},
-				}
-				resp, err := b.Handler.ServeMsg(r)
-				if resp == nil {
-					resp = &prot.MessageResponseBase{}
-				}
-				resp.Base().ActivityID = r.ActivityID
-				if err != nil {
-					span := trace.FromContext(r.Context)
-					if span != nil {
-						oc.SetSpanStatus(span, err)
+		for {
+			select {
+			case req := <-requestChan:
+				go func(r *Request) {
+					br := bridgeResponse{
+						ctx: r.Context,
+						header: &prot.MessageHeader{
+							Type: prot.GetResponseIdentifier(r.Header.Type),
+							ID:   r.Header.ID,
+						},
 					}
-					setErrorForResponseBase(resp.Base(), err)
-				}
-				br.response = resp
-				b.responseChan <- br
-			}(req)
+					resp, err := b.Handler.ServeMsg(r)
+					if resp == nil {
+						resp = &prot.MessageResponseBase{}
+					}
+					resp.Base().ActivityID = r.ActivityID
+					if err != nil {
+						span := trace.FromContext(r.Context)
+						if span != nil {
+							oc.SetSpanStatus(span, err)
+						}
+						setErrorForResponseBase(resp.Base(), err)
+					}
+					br.response = resp
+					select {
+					case <-b.quitChan:
+						return
+					default:
+					}
+					select {
+					case b.responseChan <- br:
+					case <-b.quitChan:
+						return
+					}
+				}(req)
+			case <-b.quitChan:
+				return
+			}
 		}
 	}()
 	// Process each bridge response sync. This channel is for request/response and publish workflows.

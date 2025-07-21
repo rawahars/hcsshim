@@ -3,11 +3,9 @@ generators = ["go", "go-grpc"]
 
 # Control protoc include paths.
 [includes]
-  before = ["./protobuf"]
-
   # defaults are "/usr/local/include" and "/usr/include", which don't exist on Windows.
   # override defaults to supress errors about non-existant directories.
-  after = []
+  # after = []
 
 # This section maps protobuf imports to Go packages.
 [packages]
@@ -21,5 +19,20 @@ prefixes = [
   "github.com/Microsoft/hcsshim/internal/computeagent",
   "github.com/Microsoft/hcsshim/internal/ncproxyttrpc",
   "github.com/Microsoft/hcsshim/internal/vmservice",
+  "github.com/Microsoft/hcsshim/internal/save",
 ]
 generators = ["go", "go-ttrpc"]
+
+[[overrides]]
+prefixes = [
+  "github.com/Microsoft/hcsshim/internal/lm/proto",
+]
+generators = ["go", "go-ttrpc"]
+# Override the go package path for the generated code. This allows us to not need a go_package
+# directive in the proto file itself, which is nice so we can share it with other projects easily.
+parameters.go."Mgithub.com/Microsoft/hcsshim/internal/lm/proto/lm.proto" = '"github.com/Microsoft/hcsshim/internal/lm/proto;lmproto"'
+parameters.go-ttrpc."Mgithub.com/Microsoft/hcsshim/internal/lm/proto/lm.proto" = '"github.com/Microsoft/hcsshim/internal/lm/proto;lmproto"'
+
+[[overrides]]
+prefixes = ["github.com/Microsoft/hcsshim/internal/state"]
+generators = ["go"]

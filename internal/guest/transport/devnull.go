@@ -27,6 +27,12 @@ func (t *DevNullTransport) Dial(fd uint32) (Connection, error) {
 	return newDevNullConnection(), nil
 }
 
+func (t *DevNullTransport) DialReconn(fd uint32) (NewConnection, error) {
+	return newDevNullConnection(), nil
+}
+
+func (t *DevNullTransport) DisconnectReconns() {}
+
 // devNullConnection is the heart of our new transport. A devNullConnection
 // contains two file descriptors. One for read, and one for write. We need to
 // file descriptors as the code using a transport is written with the

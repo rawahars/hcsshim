@@ -57,7 +57,7 @@ func Create(ctx context.Context, id string, logicalProcessors []uint32) error {
 
 // GetCPUGroupConfig finds the cpugroup config information for group with `id`
 func GetCPUGroupConfig(ctx context.Context, id string) (*hcsschema.CpuGroupConfig, error) {
-	query := hcsschema.PropertyQuery{
+	query := hcsschema.ServicePropertyQuery{
 		PropertyTypes: []hcsschema.PropertyType{hcsschema.PTCPUGroup},
 	}
 	cpuGroupsPresent, err := hcs.GetServiceProperties(ctx, query)

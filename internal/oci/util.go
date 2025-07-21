@@ -24,3 +24,10 @@ func IsIsolated(s *specs.Spec) bool {
 func IsJobContainer(s *specs.Spec) bool {
 	return s.Annotations[annotations.HostProcessContainer] == "true"
 }
+
+func GetNetNS(s *specs.Spec) string {
+	if s.Windows != nil && s.Windows.Network != nil {
+		return s.Windows.Network.NetworkNamespace
+	}
+	return ""
+}
