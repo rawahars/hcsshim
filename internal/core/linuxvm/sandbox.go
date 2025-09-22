@@ -7,10 +7,13 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"os"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/go-winio/pkg/guid"
@@ -18,6 +21,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/Microsoft/hcsshim/internal/hcsoci"
 	"github.com/Microsoft/hcsshim/internal/hns"
 	"github.com/Microsoft/hcsshim/internal/layers"
 	"github.com/Microsoft/hcsshim/internal/oci"
@@ -60,6 +64,9 @@ type translator struct {
 	allowMigration bool
 	// resources      map[ResourceKey]resourceUse
 	resources map[string]resourceUseLayers
+	// Plan9 are directories mapped into a Linux utility VM
+	plan9Counter   uint64 // Each newly-added plan9 share has a counter used as its ID in the ResourceURI and for the name
+	plan9resources map[string][]*core.Plan9Config
 }
 
 type linuxHostedSystem struct {
@@ -231,6 +238,7 @@ func NewSandbox(ctx context.Context, id string, l *layers.LCOWLayers2, spec *spe
 		scsiAttacher:   sa,
 		allowMigration: allowMigration,
 		resources:      make(map[string]resourceUseLayers),
+		plan9resources: make(map[string][]*core.Plan9Config),
 	}
 	waitCtx, waitCancel := context.WithCancel(context.Background())
 	pauseCtr, err := createCtr(ctx, ctrConfig, translator, gt, waitCtx)
@@ -332,6 +340,22 @@ func (s *Sandbox) RemoveLinuxContainer(ctx context.Context, cid string) (err err
 		}
 		logrus.Info("detached read-only layer: cid=%s, controller=%d, lun=%d", cid, layer.controller, layer.lun)
 	}
+
+	err = s.gt.RemoveContainerResources(ctx, cid)
+	if err != nil {
+		return fmt.Errorf("failed to remove container resources: %w", err)
+	}
+
+	plan9s, ok := s.translator.plan9resources[cid]
+	if ok {
+		for _, conf := range plan9s {
+			err = s.vm.DetachMappedDirectory(ctx, conf.Name)
+			if err != nil {
+				return fmt.Errorf("failed to detach mapped directory: %w", err)
+			}
+		}
+	}
+
 	delete(s.translator.resources, cid)
 	//delete(s.state.Containers, cid)
 	s.ctrsLock.Lock()
@@ -420,11 +444,89 @@ func (t *translator) translate(ctx context.Context, c *core.LinuxCtrConfig) (_ *
 		if t.allowMigration && !strings.HasPrefix(mount.Source, "sandbox://") {
 			return nil, nil, fmt.Errorf("non-sandbox mount disallowed with migration: %s", mount.Source)
 		}
+
+		logrus.Infof("harsh-Mount: %+v", mount)
+
+		if mount.Type == hcsoci.MountTypeBind {
+
+			cnf, err := t.addPlan9Share(ctx, mount)
+			if err != nil {
+				return nil, nil, err
+			}
+
+			gc.plan9s = append(gc.plan9s, cnf)
+			t.plan9resources[c.ID] = append(t.plan9resources[c.ID], cnf)
+		}
 	}
+	logrus.Infof("Plan9: %+v", gc.plan9s)
 
 	t.resources[c.ID] = resources
 
 	return gc, cleanup, nil
+}
+
+func (t *translator) getPlan9Index() string {
+	index := atomic.AddUint64(&t.plan9Counter, 1)
+	return strconv.FormatUint(index, 10)
+}
+
+func (t *translator) addPlan9Share(ctx context.Context, mount specs.Mount) (*core.Plan9Config, error) {
+	hostPath := mount.Source
+	st, err := os.Stat(hostPath)
+	if err != nil {
+		return nil, fmt.Errorf("could not open bind mount target: %w", err)
+	}
+
+	readOnly := false
+	for _, o := range mount.Options {
+		if strings.ToLower(o) == "ro" {
+			readOnly = true
+			break
+		}
+	}
+
+	restrictAccess := false
+	var allowedNames []string
+	if !st.IsDir() {
+		// Map the containing directory in, but restrict the share to a single
+		// file.
+		var fileName string
+		hostPath, fileName = filepath.Split(hostPath)
+		allowedNames = append(allowedNames, fileName)
+		restrictAccess = true
+	}
+
+	// but when there are public variants we need to switch to them.
+	const (
+		shareFlagsReadOnly           int32 = 0x00000001
+		shareFlagsLinuxMetadata      int32 = 0x00000004
+		shareFlagsCaseSensitive      int32 = 0x00000008
+		shareFlagsRestrictFileAccess int32 = 0x00000080
+	)
+
+	// TODO: JTERRY75 - `shareFlagsCaseSensitive` only works if the Windows
+	// `hostPath` supports case sensitivity. We need to detect this case before
+	// forwarding this flag in all cases.
+	flags := shareFlagsLinuxMetadata // | shareFlagsCaseSensitive
+	if readOnly {
+		flags |= shareFlagsReadOnly
+	}
+	if restrictAccess {
+		flags |= shareFlagsRestrictFileAccess
+	}
+
+	name := t.getPlan9Index()
+	err = t.vm.AttachMappedDirectory(ctx, name, hostPath, flags, allowedNames)
+	if err != nil {
+		return nil, fmt.Errorf("could not attach mapped directory: %w", err)
+	}
+	return &core.Plan9Config{
+		Name:         name,
+		HostPath:     hostPath,
+		Flags:        flags,
+		AllowedFiles: allowedNames,
+		ReadOnly:     false,
+	}, nil
 }
 
 func convertSpec(oldSpec *specs.Spec) (*specs.Spec, error) {

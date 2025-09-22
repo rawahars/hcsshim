@@ -90,3 +90,12 @@ type LayersReplacement struct {
 	ResourceID string
 	Layers     *layers.LCOWLayers2
 }
+
+type Plan9Config struct {
+	Name         string
+	HostPath     string
+	UvmPath      string
+	Flags        int32
+	AllowedFiles []string
+	ReadOnly     bool
+}

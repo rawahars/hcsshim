@@ -103,6 +103,47 @@ func (vm *VM) AttachSCSI(ctx context.Context, controller, lun uint, att *SCSIAtt
 	return nil
 }
 
+func (vm *VM) AttachMappedDirectory(ctx context.Context, name string, hostPath string, flags int32, allowedNames []string) error {
+	req := &hcsschema.ModifySettingRequest{
+		RequestType: guestrequest.RequestTypeAdd,
+		Settings: hcsschema.Plan9Share{
+			Name:         name,
+			AccessName:   name,
+			Path:         hostPath,
+			Port:         564,
+			Flags:        flags,
+			AllowedFiles: allowedNames,
+		},
+		ResourcePath: resourcepaths.Plan9ShareResourcePath,
+	}
+	if err := vm.hcsSystem.Modify(ctx, req); err != nil {
+		return err
+	}
+	if vm.config.Plan9s == nil {
+		vm.config.Plan9s = make(map[string]string)
+	}
+	vm.config.Plan9s[name] = hostPath
+	return nil
+}
+
+func (vm *VM) DetachMappedDirectory(ctx context.Context, name string) error {
+	req := &hcsschema.ModifySettingRequest{
+		RequestType: guestrequest.RequestTypeRemove,
+		Settings: hcsschema.Plan9Share{
+			Name:       name,
+			AccessName: name,
+			Port:       564,
+		},
+		ResourcePath: resourcepaths.Plan9ShareResourcePath,
+	}
+	if err := vm.hcsSystem.Modify(ctx, req); err != nil {
+		return err
+	}
+	delete(vm.config.Plan9s, name)
+
+	return nil
+}
+
 func (vm *VM) DetachSCSI(ctx context.Context, controller, lun uint) error {
 	req := &hcsschema.ModifySettingRequest{
 		RequestType:  guestrequest.RequestTypeRemove,
@@ -271,6 +312,7 @@ func convertConfig(config *Config) (*hcsschema.ComputeSystem, error) {
 						},
 					},
 				},
+				Plan9: &hcsschema.Plan9{},
 			},
 		},
 	}
@@ -346,6 +388,7 @@ type Config struct {
 	NICs           map[string]NIC
 	CompatData     []byte
 	Serial         string
+	Plan9s         map[string]string
 }
 
 type SCSIController map[uint]SCSIAttachment

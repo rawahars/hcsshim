@@ -3,20 +3,27 @@ package linuxvm
 import (
 	"context"
 	"fmt"
+	"path"
+	"strings"
 	"sync/atomic"
 
+	"github.com/Microsoft/hcsshim/internal/core"
 	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
+	"github.com/Microsoft/hcsshim/internal/guestpath"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/Microsoft/hcsshim/internal/hcsoci"
 	"github.com/Microsoft/hcsshim/internal/layers"
 	"github.com/Microsoft/hcsshim/internal/ospath"
 	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
 	"github.com/opencontainers/runtime-spec/specs-go"
+	log "github.com/sirupsen/logrus"
 )
 
 type guestConfig struct {
 	doc    *specs.Spec
 	layers *layers.LCOWLayers2
+	plan9s []*core.Plan9Config
 }
 
 type guestThing struct {
@@ -24,6 +31,7 @@ type guestThing struct {
 	scsiMounter *scsi.MountManager
 	ctrCounter  uint32
 	bundleFmt   string
+	plan9Config map[string][]*core.Plan9Config
 }
 
 func newGuestThing(gm *guestmanager.LinuxManager) *guestThing {
@@ -39,6 +47,7 @@ func newGuestThingWithMountManager(gm *guestmanager.LinuxManager, mountManager *
 		gm:          gm,
 		scsiMounter: mountManager, // Use the provided MountManager
 		bundleFmt:   "/run/gcs/c/%d",
+		plan9Config: make(map[string][]*core.Plan9Config),
 	}
 }
 
@@ -102,10 +111,53 @@ func (gt *guestThing) CreateContainer(ctx context.Context, id string, gc *guestC
 		OciSpecification: gc.doc,
 	}
 
+	for i, plan9Conf := range gc.plan9s {
+		uvmPathForShare := path.Join(rootfs, fmt.Sprintf(guestpath.LCOWMountPathPrefixFmt, i))
+		uvmPathForFile := uvmPathForShare
+
+		log.Infof("UVMPathForFile: %s", uvmPathForFile)
+
+		if len(plan9Conf.AllowedFiles) > 0 {
+			uvmPathForFile = path.Join(uvmPathForShare, plan9Conf.AllowedFiles[0])
+		}
+
+		err := gt.gm.MountPlan9Share(ctx, plan9Conf.Name, uvmPathForFile, plan9Conf.ReadOnly)
+		if err != nil {
+			return nil, err
+		}
+		log.Infof("Previous Container doc: %+v", doc.OciSpecification.Mounts)
+		for idx, mount := range doc.OciSpecification.Mounts {
+			log.Infof("harsh-debug: %s ---- %s", mount.Source, plan9Conf.HostPath)
+			if mount.Type == hcsoci.MountTypeBind &&
+				strings.EqualFold(mount.Source, plan9Conf.HostPath) {
+				doc.OciSpecification.Mounts[idx].Source = uvmPathForFile
+				gc.plan9s[i].UvmPath = uvmPathForFile
+			}
+		}
+		log.Printf("UVM Path for File is: %s", uvmPathForFile)
+	}
+	gt.plan9Config[id] = gc.plan9s
+
+	log.Infof("Container doc: %+v", doc.OciSpecification.Mounts)
+
 	ctr, err := gt.gm.CreateContainer(ctx, id, doc)
 	if err != nil {
 		return nil, err
 	}
 
 	return ctr, nil
+}
+
+func (gt *guestThing) RemoveContainerResources(ctx context.Context, cid string) (err error) {
+	plan9Configs, ok := gt.plan9Config[cid]
+	if ok {
+		for _, config := range plan9Configs {
+			err := gt.gm.UnMountPlan9Share(ctx, config.Name, config.UvmPath)
+			if err != nil {
+				return fmt.Errorf("failed to unmount plan 9 share %s: %w", config.UvmPath, err)
+			}
+		}
+	}
+
+	return nil
 }

@@ -285,6 +285,7 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContain
 			scsiAttacher:   sa,
 			allowMigration: true,
 			resources:      make(map[string]resourceUseLayers),
+			plan9resources: make(map[string][]*core.Plan9Config),
 		},
 		waitCh:     make(chan struct{}),
 		ifaces:     ifaces,

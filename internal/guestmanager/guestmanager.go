@@ -336,6 +336,41 @@ func (gm *LinuxManager) MountOverlayFS(ctx context.Context, cid string, path, sc
 	return nil
 }
 
+func (gm *LinuxManager) MountPlan9Share(ctx context.Context, name string, uvmPath string, readOnly bool) error {
+	guestRequest := &guestrequest.ModificationRequest{
+		ResourceType: guestresource.ResourceTypeMappedDirectory,
+		RequestType:  guestrequest.RequestTypeAdd,
+		Settings: guestresource.LCOWMappedDirectory{
+			MountPath: uvmPath,
+			ShareName: name,
+			Port:      564,
+			ReadOnly:  readOnly,
+		},
+	}
+
+	if err := gm.gc.Modify(ctx, guestRequest); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (gm *LinuxManager) UnMountPlan9Share(ctx context.Context, name string, uvmPath string) error {
+	guestRequest := &guestrequest.ModificationRequest{
+		ResourceType: guestresource.ResourceTypeMappedDirectory,
+		RequestType:  guestrequest.RequestTypeRemove,
+		Settings: guestresource.LCOWMappedDirectory{
+			MountPath: uvmPath,
+			ShareName: name,
+			Port:      564,
+		},
+	}
+
+	if err := gm.gc.Modify(ctx, guestRequest); err != nil {
+		return err
+	}
+	return nil
+}
+
 func (gm *LinuxManager) CreateProcess(ctx context.Context, config interface{}) (cow.Process, error) {
 	return gm.gc.CreateProcess(ctx, config)
 }
