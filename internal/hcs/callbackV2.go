@@ -23,7 +23,8 @@ var (
 )
 
 type notificationWatcherContextV2 struct {
-	systemID string
+	systemID  string
+	operation string
 }
 
 func notificationWatcherV2(eventPtr uintptr, callbackNumber uintptr) uintptr {
@@ -84,6 +85,7 @@ func notificationWatcherV2(eventPtr uintptr, callbackNumber uintptr) uintptr {
 		SystemID  string `json:"systemId"`
 		EventType string `json:"eventType"`
 		EventData string `json:"eventData"`
+		Operation string `json:"operation"`
 		//OperationType   string `json:"operationType"`
 		//ResultOperation string `json:"resultOperation"`
 		//Error           string `json:"errorOperation"`
@@ -92,6 +94,7 @@ func notificationWatcherV2(eventPtr uintptr, callbackNumber uintptr) uintptr {
 		SystemID:  context.systemID,
 		EventType: e.Type.String(),
 		EventData: windows.UTF16PtrToString(e.EventData),
+		Operation: context.operation,
 		//OperationType:   operationType.String(),
 		//ResultOperation: resultJSON,
 		//Error:           errString,

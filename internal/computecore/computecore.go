@@ -27,6 +27,7 @@ import (
 //sys HcsSetOperationCallback(op HCS_OPERATION, context uintptr, callback uintptr) (hr error) = computecore.HcsSetOperationCallback
 //sys HcsCancelOperation(op HCS_OPERATION) (hr error) = computecore.HcsCancelOperation
 //sys HcsAddResourceToOperation(op HCS_OPERATION, typ HCS_RESOURCE_TYPE, uri string, handle uintptr) (hr error) = computecore.HcsAddResourceToOperation
+//sys HcsCreateOperationWithNotifications(eventTypes HCS_OPERATION_OPTIONS, context uintptr, callback uintptr) (op HCS_OPERATION, err error) [failretval == 0] = computecore.HcsCreateOperationWithNotifications
 
 // Compute systems
 //sys HcsCreateComputeSystem(id string, config string, op HCS_OPERATION, sd *windows.SECURITY_DESCRIPTOR, cs *HCS_SYSTEM) (hr error) = computecore.HcsCreateComputeSystem
@@ -59,6 +60,8 @@ import (
 type HCS_SYSTEM uintptr
 type HCS_PROCESS uintptr
 type HCS_OPERATION uintptr
+
+type PCWSTR *uint16 // PCWSTR
 
 type HCS_PROCESS_INFORMATION struct {
 	ProcessId uint32
@@ -229,6 +232,13 @@ const (
 	HcsResourceTypeJob
 	HcsResourceTypeComObject
 	HcsResourceTypeSocket
+)
+
+type HCS_OPERATION_OPTIONS int
+
+const (
+	HcsOperationOptionNone           HCS_OPERATION_OPTIONS = 0x00000000
+	HcsOperationOptionProgressUpdate HCS_OPERATION_OPTIONS = 0x00000001
 )
 
 func NewOperation(context uintptr) HCS_OPERATION {

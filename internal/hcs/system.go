@@ -158,9 +158,9 @@ func OpenComputeSystemV2(ctx context.Context, id string) (*System, error) {
 			computeSystem.CloseV2()
 		}
 	}()
-	if err = computeSystem.registerCallbackV2(ctx); err != nil {
-		return nil, makeSystemError(computeSystem, operation, err, nil)
-	}
+	//if err = computeSystem.registerCallbackV2(ctx); err != nil {
+	//	return nil, makeSystemError(computeSystem, operation, err, nil)
+	//}
 	return computeSystem, nil
 }
 
@@ -865,20 +865,20 @@ func (computeSystem *System) Close() error {
 }
 
 func (computeSystem *System) CloseV2() (err error) {
-	operation := "hcs::System::CloseV2"
+	//operation := "hcs::System::CloseV2"
 	computeSystem.handleLock.Lock()
 	defer computeSystem.handleLock.Unlock()
 
-	ctx := context.Background()
+	//ctx := context.Background()
 
 	// Don't double free this
 	if computeSystem.v2Handle == 0 {
 		return nil
 	}
 
-	if err = computeSystem.unregisterCallbackV2(ctx); err != nil {
-		return makeSystemError(computeSystem, operation, err, nil)
-	}
+	//if err = computeSystem.unregisterCallbackV2(ctx); err != nil {
+	//	return makeSystemError(computeSystem, operation, err, nil)
+	//}
 
 	computecore.HcsCloseComputeSystem(computeSystem.v2Handle)
 
@@ -981,6 +981,23 @@ func (computeSystem *System) registerCallbackV2(ctx context.Context) error {
 	return nil
 }
 
+func (computeSystem *System) NewOperationWithNotifications(operation string) (computecore.HCS_OPERATION, error) {
+	callbackContext := &notificationWatcherContextV2{
+		systemID:  computeSystem.id,
+		operation: operation,
+	}
+
+	callbackMapLockV2.Lock()
+	callbackNumber := nextCallbackV2
+	nextCallbackV2++
+	callbackMapV2[callbackNumber] = callbackContext
+	callbackMapLockV2.Unlock()
+
+	computeSystem.callbackNumber = callbackNumber
+
+	return computecore.HcsCreateOperationWithNotifications(computecore.HcsOperationOptionProgressUpdate, callbackNumber, notificationWatcherCallbackV2)
+}
+
 func (computeSystem *System) unregisterCallback(ctx context.Context) error {
 	callbackNumber := computeSystem.callbackNumber
 
@@ -1075,7 +1092,10 @@ func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Cont
 	computeSystem.handleLock.RLock()
 	defer computeSystem.handleLock.RUnlock()
 
-	op := computecore.NewOperation(0)
+	op, err := computeSystem.NewOperationWithNotifications("HcsInitializeLiveMigrationOnSource")
+	if err != nil {
+		return err
+	}
 	defer op.Close()
 	options := hcsschema.MigrationInitializeOptions{}
 	optionsRaw, err := json.Marshal(options)
@@ -1095,7 +1115,10 @@ func (computeSystem *System) HcsStartLiveMigrationOnSource(ctx context.Context, 
 	computeSystem.handleLock.RLock()
 	defer computeSystem.handleLock.RUnlock()
 
-	op := computecore.NewOperation(0)
+	op, err := computeSystem.NewOperationWithNotifications("HcsStartLiveMigrationOnSource")
+	if err != nil {
+		return err
+	}
 	defer op.Close()
 	if err := computecore.HcsAddResourceToOperation(op, computecore.HcsResourceTypeSocket, "hcs:/VirtualMachine/LiveMigrationSocket", socket); err != nil {
 		return err
@@ -1122,7 +1145,10 @@ func (computeSystem *System) HcsStartLiveMigrationTransfer(ctx context.Context) 
 	computeSystem.handleLock.RLock()
 	defer computeSystem.handleLock.RUnlock()
 
-	op := computecore.NewOperation(0)
+	op, err := computeSystem.NewOperationWithNotifications("HcsStartLiveMigrationTransfer")
+	if err != nil {
+		return err
+	}
 	defer op.Close()
 	options := hcsschema.MigrationTransferOptions{}
 	optionsRaw, err := json.Marshal(options)
@@ -1142,7 +1168,10 @@ func (computeSystem *System) HcsFinalizeLiveMigation(ctx context.Context, resume
 	computeSystem.handleLock.RLock()
 	defer computeSystem.handleLock.RUnlock()
 
-	op := computecore.NewOperation(0)
+	op, err := computeSystem.NewOperationWithNotifications("HcsFinalizeLiveMigation")
+	if err != nil {
+		return err
+	}
 	defer op.Close()
 	options := hcsschema.MigrationFinalizedOptions{FinalizedOperation: hcsschema.MigrationFinalOperationStop}
 	if resume {
