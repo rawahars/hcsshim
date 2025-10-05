@@ -186,6 +186,12 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 		return nil, err
 	}
 
+	v2System, err := hcs.OpenComputeSystemV2(ctx, system.ID())
+	if err != nil {
+		return nil, err
+	}
+	system.SetV2Handle(v2System.GetV2Handle())
+
 	vm := &VM{
 		id:        id,
 		runtimeID: props.RuntimeID,
@@ -388,6 +394,12 @@ type NIC struct {
 }
 
 func (vm *VM) LMPrepare(ctx context.Context) ([]byte, error) {
+	v2System, err := hcs.OpenComputeSystemV2(ctx, vm.hcsSystem.ID())
+	if err != nil {
+		return nil, err
+	}
+	vm.hcsSystem.SetV2Handle(v2System.GetV2Handle())
+
 	if err := vm.hcsSystem.HcsInitializeLiveMigrationOnSource(ctx); err != nil {
 		return nil, err
 	}

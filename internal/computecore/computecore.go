@@ -1,6 +1,7 @@
 package computecore
 
 import (
+	"fmt"
 	"syscall"
 	"unsafe"
 
@@ -89,21 +90,122 @@ const (
 	HcsOperationTypeCrash
 )
 
+func (op HCS_OPERATION_TYPE) String() string {
+	switch op {
+	case HcsOperationTypeNone:
+		return "None"
+	case HcsOperationTypeEnumerate:
+		return "Enumerate"
+	case HcsOperationTypeCreate:
+		return "Create"
+	case HcsOperationTypeStart:
+		return "Start"
+	case HcsOperationTypeShutdown:
+		return "Shutdown"
+	case HcsOperationTypePause:
+		return "Pause"
+	case HcsOperationTypeResume:
+		return "Resume"
+	case HcsOperationTypeSave:
+		return "Save"
+	case HcsOperationTypeTerminate:
+		return "Terminate"
+	case HcsOperationTypeModify:
+		return "Modify"
+	case HcsOperationTypeGetProperties:
+		return "GetProperties"
+	case HcsOperationTypeCreateProcess:
+		return "CreateProcess"
+	case HcsOperationTypeSignalProcess:
+		return "SignalProcess"
+	case HcsOperationTypeGetProcessInfo:
+		return "GetProcessInfo"
+	case HcsOperationTypeGetProcessProperties:
+		return "GetProcessProperties"
+	case HcsOperationTypeModifyProcess:
+		return "ModifyProcess"
+	case HcsOperationTypeCrash:
+		return "Crash"
+	default:
+		return fmt.Sprintf("Unknown: %d", op)
+	}
+}
+
 type HCS_EVENT_TYPE int
 
 const (
-	HcsEventTypeInvalid HCS_EVENT_TYPE = iota
-	HcsEventTypeSystemExited
-	HcsEventTypeSystemCrashInitiated
-	HcsEventTypeSystemCrashReport
-	HcsEventTypeSystemRdpEnhancedModeStateChanged
-	HcsEventTypeSystemSiloJobCreated
-	HcsEventTypeSystemGuestConnectionClosed
+	// HcsEventTypeInvalid = 0x00000000
+	HcsEventTypeInvalid HCS_EVENT_TYPE = 0x00000000
 
-	HcsEventTypeProcessExited     HCS_EVENT_TYPE = 0x00010000
+	// Events for HCS_SYSTEM handles
+
+	HcsEventTypeSystemExited                      HCS_EVENT_TYPE = 0x00000001
+	HcsEventTypeSystemCrashInitiated              HCS_EVENT_TYPE = 0x00000002
+	HcsEventTypeSystemCrashReport                 HCS_EVENT_TYPE = 0x00000003
+	HcsEventTypeSystemRdpEnhancedModeStateChanged HCS_EVENT_TYPE = 0x00000004
+	HcsEventTypeSystemSiloJobCreated              HCS_EVENT_TYPE = 0x00000005
+	HcsEventTypeSystemGuestConnectionClosed       HCS_EVENT_TYPE = 0x00000006
+
+	// Events for HCS_PROCESS handles
+
+	HcsEventTypeProcessExited HCS_EVENT_TYPE = 0x00010000
+
+	// Common Events
+
 	HcsEventTypeOperationCallback HCS_EVENT_TYPE = 0x01000000
 	HcsEventTypeServiceDisconnect HCS_EVENT_TYPE = 0x02000000
+
+	// Event groups (enabled by HCS_EVENT_OPTIONS)
+
+	HcsEventTypeGroupVmLifecycle   HCS_EVENT_TYPE = 0x80000002
+	HcsEventTypeGroupLiveMigration HCS_EVENT_TYPE = 0x80000003
+
+	// Events for HCS_OPERATION
+
+	HcsEventTypeGroupOperationInfo HCS_EVENT_TYPE = 0xC0000001
 )
+
+func (hn HCS_EVENT_TYPE) String() string {
+	switch hn {
+	case HcsEventTypeInvalid:
+		return "Invalid"
+
+	// System events
+	case HcsEventTypeSystemExited:
+		return "SystemExited"
+	case HcsEventTypeSystemCrashInitiated:
+		return "SystemCrashInitiated"
+	case HcsEventTypeSystemCrashReport:
+		return "SystemCrashReport"
+	case HcsEventTypeSystemRdpEnhancedModeStateChanged:
+		return "SystemRdpEnhancedModeStateChanged"
+	case HcsEventTypeSystemSiloJobCreated:
+		return "SystemSiloJobCreated"
+	case HcsEventTypeSystemGuestConnectionClosed:
+		return "SystemGuestConnectionClosed"
+
+	// Process events
+	case HcsEventTypeProcessExited:
+		return "ProcessExited"
+
+	// Common events
+	case HcsEventTypeOperationCallback:
+		return "OperationCallback"
+	case HcsEventTypeServiceDisconnect:
+		return "ServiceDisconnect"
+
+	// Groups
+	case HcsEventTypeGroupVmLifecycle:
+		return "GroupVmLifecycle"
+	case HcsEventTypeGroupLiveMigration:
+		return "GroupLiveMigration"
+	case HcsEventTypeGroupOperationInfo:
+		return "GroupOperationInfo"
+
+	default:
+		return fmt.Sprintf("Unknown: 0x%08X", uint32(hn))
+	}
+}
 
 type Event struct {
 	Type      HCS_EVENT_TYPE
@@ -114,8 +216,9 @@ type Event struct {
 type HCS_EVENT_OPTIONS int
 
 const (
-	HcsEventOptionNone                     HCS_EVENT_OPTIONS = 0
-	HcsEventOptionEnableOperationCallbacks HCS_EVENT_OPTIONS = 1
+	HcsEventOptionNone                      HCS_EVENT_OPTIONS = 0
+	HcsEventOptionEnableOperationCallbacks  HCS_EVENT_OPTIONS = 1
+	HcsEventOptionEnableLiveMigrationEvents HCS_EVENT_OPTIONS = 4
 )
 
 type HCS_RESOURCE_TYPE int
