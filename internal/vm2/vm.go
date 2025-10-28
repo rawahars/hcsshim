@@ -25,11 +25,19 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
+type migrationState int
+
+const (
+	migrationNone migrationState = iota
+	migrationInitialized
+)
+
 type VM struct {
-	id        string
-	runtimeID guid.GUID
-	hcsSystem *hcs.System
-	config    *Config
+	id             string
+	runtimeID      guid.GUID
+	hcsSystem      *hcs.System
+	config         *Config
+	migrationState migrationState
 }
 
 func (vm *VM) ID() string {
@@ -178,7 +186,7 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 	}
 	defer func() {
 		if err != nil {
-			system.Close()
+			_ = system.Close()
 		}
 	}()
 	props, err := system.Properties(ctx)
@@ -187,10 +195,11 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 	}
 
 	vm := &VM{
-		id:        id,
-		runtimeID: props.RuntimeID,
-		hcsSystem: system,
-		config:    config,
+		id:             id,
+		runtimeID:      props.RuntimeID,
+		hcsSystem:      system,
+		config:         config,
+		migrationState: migrationNone,
 	}
 
 	return vm, nil
@@ -388,9 +397,15 @@ type NIC struct {
 }
 
 func (vm *VM) LMPrepare(ctx context.Context) ([]byte, error) {
-	if err := vm.hcsSystem.HcsInitializeLiveMigrationOnSource(ctx); err != nil {
-		return nil, err
+	if vm.migrationState == migrationNone {
+		err := vm.hcsSystem.HcsInitializeLiveMigrationOnSource(ctx)
+		if err != nil {
+			return nil, err
+		}
+
+		vm.migrationState = migrationInitialized
 	}
+
 	props, err := vm.hcsSystem.PropertiesV3(ctx, &hcsschema.PropertyQuery{
 		Queries: map[string]interface{}{
 			"CompatibilityInfo": nil,
@@ -398,6 +413,7 @@ func (vm *VM) LMPrepare(ctx context.Context) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
+
 	return []byte(props.Responses.CompatibilityInfo.Response.Data), nil
 }
 

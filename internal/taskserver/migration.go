@@ -139,9 +139,33 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 		s.sandbox.waitCancel()
 	}
 	logrus.Info("TransferSandbox called")
-	if s.migState.c == 0 {
-		return fmt.Errorf("must set up channel before transferring")
+
+	// We will wait for channel to be ready.
+	channelReadyCtx, cancel := context.WithTimeout(ctx, time.Minute*2)
+	defer cancel()
+
+	if s.mCond == nil {
+		s.mCond = sync.NewCond(&s.m)
 	}
+	done := make(chan struct{})
+	go func() {
+		s.m.Lock()
+		defer s.m.Unlock()
+
+		for s.migState == nil || s.migState.c == 0 {
+			s.mCond.Wait()
+		}
+		close(done)
+	}()
+
+	select {
+	case <-channelReadyCtx.Done():
+		logrus.Warn("ChannelReady: context canceled or timed out")
+		return fmt.Errorf("channel: context canceled or timed out")
+	case <-done:
+		logrus.Infof("ChannelReady: Channel is ready %v", s.migState.c)
+	}
+
 	defer func() {
 		if s.migState.c != 0 {
 			windows.Closesocket(s.migState.c)
@@ -314,31 +338,7 @@ func getRestoreContainerSpec(ctx context.Context, bundle string) (*lmproto.Conta
 	return &spec, nil
 }
 func (s *service) WaitForChannelReady(ctx context.Context, req *lmproto.WaitForChannelReadyRequest) (*lmproto.WaitForChannelReadyResponse, error) {
-	logrus.Info("WaitForChannelReady called")
-	if s.mCond == nil {
-		s.mCond = sync.NewCond(&s.m)
-	}
-	done := make(chan struct{})
-	go func() {
-		s.m.Lock()
-		defer s.m.Unlock()
-
-		for s.migState == nil || s.migState.c == 0 {
-			s.mCond.Wait()
-		}
-		close(done)
-	}()
-
-	select {
-	case <-ctx.Done():
-		logrus.Warn("WaitForChannelReady: context canceled or timed out")
-		return nil, ctx.Err()
-
-	case <-done:
-		logrus.Infof("WaitForChannelReady: Channel is ready %v", s.migState.c)
-
-		return &lmproto.WaitForChannelReadyResponse{}, nil
-	}
+	return &lmproto.WaitForChannelReadyResponse{}, nil
 }
 
 var wsasocket = windows.WSASocket
