@@ -135,6 +135,24 @@ func (am *AttachManager) Detach(ctx context.Context, controller, lun uint) (bool
 	return true, nil
 }
 
+func (am *AttachManager) Hydrate(c *AttachConfig, controller, lun int) {
+	attachRef := am.slots[controller][lun]
+	if attachRef != nil && reflect.DeepEqual(c, attachRef.config) {
+		attachRef.refCount++
+		return
+	}
+
+	// New attachment.
+	attachRef = &attachment{
+		controller: uint(controller),
+		lun:        uint(lun),
+		config:     c,
+		refCount:   1,
+		waitCh:     make(chan struct{}),
+	}
+	am.slots[controller][lun] = attachRef
+}
+
 func (am *AttachManager) trackAttachment(c *AttachConfig) (*attachment, bool, error) {
 	am.m.Lock()
 	defer am.m.Unlock()

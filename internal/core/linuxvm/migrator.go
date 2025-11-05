@@ -83,6 +83,7 @@ func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *c
 		Ifaces:     s.ifaces,
 		Containers: containers,
 	}
+	s.state.Vm.Config.Mounts = s.gt.GetMountConfig()
 	return s.state, &resources, nil
 }
 
@@ -104,6 +105,8 @@ type migrated struct {
 	agentConfig      *statepkg.GCState
 	newNetNS         string
 	oldIfaces        []*statepkg.GuestInterface
+	taskLayers       map[string]resourceUseLayers
+	mountsConfig     []*statepkg.Mount
 }
 
 func (m *migrated) LMComplete(ctx context.Context) (core.Sandbox, error) {
@@ -125,7 +128,7 @@ func (m *migrated) LMComplete(ctx context.Context) (core.Sandbox, error) {
 	if err := m.vm.LMFinalize(ctx, true); err != nil {
 		return nil, err
 	}
-	return newSandbox(ctx, m.vm, m.sandboxID, m.sandboxContainer, m.agentConfig, m.newNetNS, m.oldIfaces)
+	return newSandbox(ctx, m.vm, m.sandboxID, m.sandboxContainer, m.agentConfig, m.newNetNS, m.oldIfaces, m.taskLayers, m.mountsConfig)
 }
 
 func (m *migrated) LMKill(ctx context.Context) error {
@@ -139,12 +142,29 @@ type migrator struct {
 	vm           *vm.VM
 	sandboxState *statepkg.SandboxState
 	netns        string
+	taskLayers   map[string]resourceUseLayers
+	mountsConfig []*statepkg.Mount
 }
 
-func NewMigrator(ctx context.Context, id string, config *statepkg.SandboxState, netns string, annos map[string]string, replacements *core.Replacements) (_ core.Migrator, err error) {
+func NewMigrator(
+	ctx context.Context,
+	id string,
+	config *statepkg.SandboxState,
+	netns string,
+	annos map[string]string,
+	replacements *core.Replacements,
+	vmResources core.Resources,
+) (_ core.Migrator, err error) {
 	logrus.WithField("config", config).Info("creating lm sandbox with config")
 	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
 	vmConfig.Serial = annos["io.microsoft.virtualmachine.console.pipe"]
+
+	vmLayerIdToTaskId := make(map[string]string)
+	for _, layer := range vmResources.Layers {
+		vmLayerIdToTaskId[layer.ResourceID] = layer.ContainerID
+	}
+
+	vmTaskLayers := make(map[string]resourceUseLayers)
 
 	for _, replacement := range replacements.Layers {
 		for _, resource := range config.Vm.Resources {
@@ -170,13 +190,39 @@ func NewMigrator(ctx context.Context, id string, config *statepkg.SandboxState, 
 				if err := replace(uint(resource.Layers.Scratch.Controller), uint(resource.Layers.Scratch.Lun), replacement.Layers.Scratch); err != nil {
 					return nil, fmt.Errorf("error replacing resource %s: %w", replacement.ResourceID, err)
 				}
+
+				taskResources := resourceUseLayers{
+					scratchLayer: scsiAttachment{
+						controller: uint(resource.Layers.Scratch.Controller),
+						lun:        uint(resource.Layers.Scratch.Lun),
+					},
+				}
+
 				for i, resourceLayer := range resource.Layers.ReadOnlyLayers {
 					if err := replace(uint(resourceLayer.Controller), uint(resourceLayer.Lun), replacement.Layers.Layers[i]); err != nil {
 						return nil, fmt.Errorf("error replacing resource %s: %w", replacement.ResourceID, err)
 					}
+					taskResources.readOnlyLayers = append(taskResources.readOnlyLayers, scsiAttachment{
+						controller: uint(resourceLayer.Controller),
+						lun:        uint(resourceLayer.Lun),
+					})
 				}
+
+				taskId, ok := vmLayerIdToTaskId[replacement.ResourceID]
+				if !ok {
+					return nil, fmt.Errorf("invalid resource id %s", replacement.ResourceID)
+				}
+				vmTaskLayers[taskId] = taskResources
 			}
 		}
+	}
+
+	var result []*statepkg.Mount
+	for _, m := range config.Vm.Config.Mounts {
+		if m == nil {
+			continue
+		}
+		result = append(result, m)
 	}
 
 	vmID := fmt.Sprintf("%s@vm", id)
@@ -188,6 +234,8 @@ func NewMigrator(ctx context.Context, id string, config *statepkg.SandboxState, 
 		vm:           vm,
 		sandboxState: config,
 		netns:        netns,
+		taskLayers:   vmTaskLayers,
+		mountsConfig: result,
 	}, nil
 }
 
@@ -202,10 +250,12 @@ func (m *migrator) LMTransfer(ctx context.Context, socket uintptr) (core.Migrate
 		agentConfig:      m.sandboxState.Agent,
 		newNetNS:         m.netns,
 		oldIfaces:        m.sandboxState.Ifaces,
+		taskLayers:       m.taskLayers,
+		mountsConfig:     m.mountsConfig,
 	}, nil
 }
 
-func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContainer *statepkg.Container, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface) (core.Sandbox, error) {
+func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContainer *statepkg.Container, agentConfig *statepkg.GCState, newNetNS string, oldIFaces []*statepkg.GuestInterface, taskLayers map[string]resourceUseLayers, mountConfig []*statepkg.Mount) (core.Sandbox, error) {
 	vmConfig := vm.Config()
 	gm, err := guestmanager.NewLinuxManagerFromState(
 		func(port uint32) (net.Listener, error) { return vm.ListenHVSocket(winio.VsockServiceID(port)) },
@@ -260,6 +310,7 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContain
 
 	gb := scsi.NewLinuxGuestManagerBackend(gm)
 	mountManager := scsi.NewMountManager(gb, "/run/mounts/scsi/m%d") // Create mount manager
+	mountManager.HydrateMounts(mountConfig)
 	sa := scsi.NewAttachManager(
 		scsi.NewVMHostBackend(vm), // attacher
 		gb,                        // unplugger
@@ -268,6 +319,18 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContain
 		nil,                       // slots slice
 		mountManager,              // mount manager
 	)
+
+	for controllerID, controller := range vmConfig.SCSI {
+		for lunID, attachment := range controller {
+			sa.Hydrate(&scsi.AttachConfig{
+				Path:     attachment.Path,
+				ReadOnly: attachment.ReadOnly,
+				Type:     attachment.Type.String(),
+				EVDType:  attachment.EVDType,
+			}, int(controllerID), int(lunID))
+		}
+	}
+
 	// CHANGE: Pass the same mountManager to guestThing instead of creating a new one
 	gt := newGuestThingWithMountManager(gm, mountManager)
 
@@ -284,7 +347,7 @@ func newSandbox(ctx context.Context, vm *vm.VM, sandboxID string, sandboxContain
 			vm:             vm,
 			scsiAttacher:   sa,
 			allowMigration: true,
-			resources:      make(map[string]resourceUseLayers),
+			resources:      taskLayers,
 		},
 		waitCh:     make(chan struct{}),
 		ifaces:     ifaces,

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 
+	"github.com/Microsoft/hcsshim/internal/state"
 	"github.com/sirupsen/logrus"
 )
 
@@ -176,4 +177,73 @@ func (mm *MountManager) trackMount(controller, lun uint, c *MountConfig) (*mount
 // Caller must be holding mm.m.
 func (mm *MountManager) untrackMount(mount *mount) {
 	mm.mounts[mount.index] = nil
+}
+
+func (mm *MountManager) GetMounts() []*state.Mount {
+	mm.m.Lock()
+	defer mm.m.Unlock()
+
+	var mounts []*state.Mount
+	for _, m := range mm.mounts {
+		if m == nil {
+			continue // Skip unmounted entries
+		}
+		mounts = append(mounts, &state.Mount{
+			Path:       m.path,
+			Index:      uint32(m.index),
+			Controller: uint32(m.controller),
+			Lun:        uint32(m.lun),
+			RefCount:   uint32(m.refCount),
+			Config: &state.MountConfig{
+				Partition:        m.config.Partition,
+				ReadOnly:         m.config.ReadOnly,
+				Encrypted:        m.config.Encrypted,
+				Options:          m.config.Options,
+				EnsureFilesystem: m.config.EnsureFileystem,
+				Filesystem:       m.config.Filesystem,
+			},
+		})
+	}
+	return mounts
+}
+
+func (mm *MountManager) HydrateMounts(mounts []*state.Mount) {
+	mm.m.Lock()
+	defer mm.m.Unlock()
+
+	for _, m := range mounts {
+		if m == nil {
+			continue
+		}
+
+		// Reconstruct internal Mount
+		newMount := &mount{
+			path:       m.Path,
+			index:      int(m.Index),
+			controller: uint(m.Controller),
+			lun:        uint(m.Lun),
+			refCount:   uint(m.RefCount),
+			waitCh:     make(chan struct{}),
+			config: &MountConfig{
+				Partition:       m.Config.Partition,
+				ReadOnly:        m.Config.ReadOnly,
+				Encrypted:       m.Config.Encrypted,
+				Options:         m.Config.Options,
+				EnsureFileystem: m.Config.EnsureFilesystem,
+				Filesystem:      m.Config.Filesystem,
+			},
+		}
+
+		// Mark as ready (no pending Mount operation)
+		close(newMount.waitCh)
+
+		// Ensure slice is large enough
+		if newMount.index >= len(mm.mounts) {
+			newMounts := make([]*mount, newMount.index+1)
+			copy(newMounts, mm.mounts)
+			mm.mounts = newMounts
+		}
+
+		mm.mounts[newMount.index] = newMount
+	}
 }

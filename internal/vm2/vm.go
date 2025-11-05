@@ -391,6 +391,18 @@ const (
 	SCSIAttachmentTypeEVD
 )
 
+func (att SCSIAttachmentType) String() string {
+	switch att {
+	case SCSIAttachmentTypeVHD:
+		return "VirtualDisk"
+	case SCSIAttachmentTypePassThru:
+		return "PassThru"
+	case SCSIAttachmentTypeEVD:
+		return "ExtensibleVirtualDisk"
+	}
+	return ""
+}
+
 type NIC struct {
 	EndpointID string
 	MACAddress string

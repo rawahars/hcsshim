@@ -10,6 +10,7 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/layers"
 	"github.com/Microsoft/hcsshim/internal/ospath"
+	"github.com/Microsoft/hcsshim/internal/state"
 	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -108,4 +109,8 @@ func (gt *guestThing) CreateContainer(ctx context.Context, id string, gc *guestC
 	}
 
 	return ctr, nil
+}
+
+func (gt *guestThing) GetMountConfig() []*state.Mount {
+	return gt.scsiMounter.GetMounts()
 }

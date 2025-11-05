@@ -99,6 +99,7 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 		return fmt.Errorf("expected TaskServerState, got %T instead", configRaw)
 	}
 
+	var resources core.Resources
 	var replacements []*core.LayersReplacement
 	for _, resource := range spec.Resources.TaskRootfs {
 		l, err := layers.GetLCOWLayers([]*types.Mount{resource.Rootfs}, nil)
@@ -107,9 +108,10 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 		}
 		l2 := layers.GetLCOWLayers2(l)
 		replacements = append(replacements, &core.LayersReplacement{ResourceID: resource.Id, Layers: l2})
+		resources.Layers = append(resources.Layers, &core.LayersResource{ResourceID: resource.Id, ContainerID: resource.TaskId})
 	}
 
-	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations, &core.Replacements{Layers: replacements})
+	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations, &core.Replacements{Layers: replacements}, resources)
 	if err != nil {
 		return err
 	}

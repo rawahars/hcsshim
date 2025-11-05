@@ -135,13 +135,14 @@ func Open(ctx context.Context, host cow.ProcessHost, pid uint32, stdin io.Reader
 		}
 	}()
 	cmd := &Cmd{
-		Host:      host,
-		Process:   p,
-		allDoneCh: make(chan struct{}),
-		Log:       log.L.Dup(),
-		Stdin:     stdin,
-		Stdout:    stdout,
-		Stderr:    stderr,
+		Host:                 host,
+		Process:              p,
+		allDoneCh:            make(chan struct{}),
+		Log:                  log.L.Dup(),
+		Stdin:                stdin,
+		Stdout:               stdout,
+		Stderr:               stderr,
+		CopyAfterExitTimeout: 1 * time.Second,
 	}
 	if err := cmd.startRelay(); err != nil {
 		return nil, err

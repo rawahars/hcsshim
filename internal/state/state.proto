@@ -38,6 +38,25 @@ message VMConfig {
     bool va_backed = 3;
     map<uint32, SCSIController> scsi = 4;
     map<string, NIC> nics = 5;
+    repeated Mount mounts = 6;
+}
+
+message Mount {
+  string path = 1;
+  uint32 index = 2;
+  uint32 controller = 3;
+  uint32 lun = 4;
+  uint32 ref_count = 5;
+  MountConfig config = 6;
+}
+
+message MountConfig {
+  uint64 partition = 1;
+  bool read_only = 2;
+  bool encrypted = 3;
+  repeated string options = 4;
+  bool ensure_filesystem = 5;
+  string filesystem = 6;
 }
 
 message NIC {
