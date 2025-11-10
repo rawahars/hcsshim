@@ -79,6 +79,11 @@ type service struct {
 	// gracefulShutdown dictates whether to shutdown gracefully and clean up resources
 	// or exit immediately
 	gracefulShutdown bool
+
+	// sandboxState encapsulates the sandbox created by the shim.
+	// This sandbox is independent of pod/task.
+	// Note that this can only be managed via containerd 2.0 Sandbox APIs.
+	sandbox sandboxState
 }
 
 var _ task.TaskService = &service{}
@@ -94,6 +99,7 @@ func NewService(o ...ServiceOption) (svc *service, err error) {
 		tid:       opts.TID,
 		isSandbox: opts.IsSandbox,
 		shutdown:  make(chan struct{}),
+		sandbox:   sandboxState{},
 	}
 	return svc, nil
 }

@@ -13,6 +13,7 @@ import (
 	"unsafe"
 
 	"github.com/Microsoft/go-winio"
+	"github.com/containerd/containerd/api/runtime/sandbox/v1"
 	task "github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/ttrpc"
 	typeurl "github.com/containerd/typeurl/v2"
@@ -199,6 +200,7 @@ var serveCommand = cli.Command{
 		}
 		defer s.Close()
 		task.RegisterTaskService(s, svc)
+		sandbox.RegisterTTRPCSandboxService(s, svc)
 		shimdiag.RegisterShimDiagService(s, svc)
 		extendedtask.RegisterExtendedTaskService(s, svc)
 
