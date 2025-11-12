@@ -13,7 +13,6 @@ type MigrationService interface {
 	FinalizeSandbox(context.Context, *FinalizeSandboxRequest) (*FinalizeSandboxResponse, error)
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
 	CreateDuplicateSocket(context.Context, *CreateDuplicateSocketRequest) (*CreateDuplicateSocketResponse, error)
-	WaitForChannelReady(context.Context, *WaitForChannelReadyRequest) (*WaitForChannelReadyResponse, error)
 }
 
 type Migration_TransferSandboxServer interface {
@@ -60,13 +59,6 @@ func RegisterMigrationService(srv *ttrpc.Server, svc MigrationService) {
 				}
 				return svc.CreateDuplicateSocket(ctx, &req)
 			},
-			"WaitForChannelReady": func(ctx context.Context, unmarshal func(interface{}) error) (interface{}, error) {
-				var req WaitForChannelReadyRequest
-				if err := unmarshal(&req); err != nil {
-					return nil, err
-				}
-				return svc.WaitForChannelReady(ctx, &req)
-			},
 		},
 		Streams: map[string]ttrpc.Stream{
 			"TransferSandbox": {
@@ -90,7 +82,6 @@ type MigrationClient interface {
 	FinalizeSandbox(context.Context, *FinalizeSandboxRequest) (*FinalizeSandboxResponse, error)
 	Cancel(context.Context, *CancelRequest) (*CancelResponse, error)
 	CreateDuplicateSocket(context.Context, *CreateDuplicateSocketRequest) (*CreateDuplicateSocketResponse, error)
-	WaitForChannelReady(context.Context, *WaitForChannelReadyRequest) (*WaitForChannelReadyResponse, error)
 }
 
 type migrationClient struct {
@@ -159,14 +150,6 @@ func (c *migrationClient) Cancel(ctx context.Context, req *CancelRequest) (*Canc
 func (c *migrationClient) CreateDuplicateSocket(ctx context.Context, req *CreateDuplicateSocketRequest) (*CreateDuplicateSocketResponse, error) {
 	var resp CreateDuplicateSocketResponse
 	if err := c.client.Call(ctx, "runhcs.lm.Migration", "CreateDuplicateSocket", req, &resp); err != nil {
-		return nil, err
-	}
-	return &resp, nil
-}
-
-func (c *migrationClient) WaitForChannelReady(ctx context.Context, req *WaitForChannelReadyRequest) (*WaitForChannelReadyResponse, error) {
-	var resp WaitForChannelReadyResponse
-	if err := c.client.Call(ctx, "runhcs.lm.Migration", "WaitForChannelReady", req, &resp); err != nil {
 		return nil, err
 	}
 	return &resp, nil

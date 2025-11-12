@@ -7,6 +7,7 @@ option go_package = "/internal/lm/proto;lmproto";
 import "vendor/github.com/containerd/containerd/api/types/mount.proto";
 import "google/protobuf/any.proto";
 import "google/protobuf/timestamp.proto";
+import "google/protobuf/duration.proto";
 
 // This type should be binary-protobuf serialized and put in config.binpb in the sandbox's bundle.
 message SandboxLMSpec {
@@ -48,18 +49,104 @@ service Migration {
     // Called on SOURCE AND DESTINATION. Cancels an in-progress LM.
     rpc Cancel(CancelRequest) returns (CancelResponse);
     rpc CreateDuplicateSocket(CreateDuplicateSocketRequest) returns (CreateDuplicateSocketResponse);
-    rpc WaitForChannelReady(WaitForChannelReadyRequest) returns (WaitForChannelReadyResponse);
-
-
 }
 
-message PrepareSandboxRequest {}
+message PrepareSandboxRequest {
+  // Idempotency key for the migration session (stable across retries).
+  string session_id = 1;
+
+  // Migration mode: LIVE (in-memory live migration) or SR (save/restore).
+  MigrationMode mode = 2;
+
+  // Role of this peer in the migration.
+  MigrationRole role = 3;
+
+  // Optional: controls HCS migration initialization behavior.
+  InitializeOptions initialize_options = 10;
+}
+
+enum MigrationMode {
+  MIGRATION_MODE_UNSPECIFIED = 0;
+  MIGRATION_MODE_LIVE = 1;   // "LIVE"
+  MIGRATION_MODE_SR = 2;     // "SR" (Save/Restore)
+}
+
+enum MigrationRole {
+  MIGRATION_ROLE_UNSPECIFIED = 0;
+  MIGRATION_ROLE_SOURCE = 1;       // "SOURCE"
+  MIGRATION_ROLE_TARGET = 2;       // "TARGET"
+  MIGRATION_ROLE_SINGLE_HOST = 3;  // "SINGLE_HOST"
+}
+
+message InitializeOptions {
+  // Transport protocol for memory transfer (e.g., TCP).
+  MemoryTransport memory_transport = 1;
+
+  // Optional: Throttling/pacing settings for memory transfer during brownout/blackout.
+  MemoryTransferThrottleParams memory_transfer_throttle_params = 2;
+
+  // Optional: Compression knobs used during migration memory transfer.
+  CompressionSettings compression_settings = 3;
+
+  // Enable memory checksum verification.
+  bool checksum_verification = 4;
+
+  // Enable HCS performance tracing for migration.
+  bool perf_tracing_enabled = 5;
+
+  // Abort if blackout time crosses the configured threshold.
+  bool cancel_if_blackout_threshold_exceeds = 6;
+
+  // Extended timeout mode (e.g., cross-version live migration preparations).
+  bool prepare_memory_transfer_mode = 7;
+}
+
+enum MemoryTransport {
+  MEMORY_TRANSPORT_UNSPECIFIED = 0;
+  MEMORY_TRANSPORT_TCP = 1; // "TCP"
+}
+
+message MemoryTransferThrottleParams {
+  // If true, disables throttling regardless of the other parameters.
+  bool skip_throttling = 1;
+
+  // Percentage (1–100) overall throttle scale.
+  // Note: Using int32 to avoid floating point ambiguity across languages.
+  int32 throttling_scale_percent = 2;
+
+  // Min allowed throttle percent (0–100).
+  int32 minimum_throttle_percent = 3;
+
+  // Desired number of pre-blackout passes.
+  int32 target_brownout_passes = 4;
+
+  // Pass number when throttling starts.
+  int32 start_throttling_at_brownout_pass = 5;
+
+  // Hard cap before forcing blackout.
+  int32 max_brownout_passes = 6;
+
+  // Target blackout duration.
+  int32 target_blackout_duration = 7;
+
+  // Cancel if blackout exceeds this threshold.
+  int32 blackout_cancel_threshold = 8;
+}
+
+message CompressionSettings {
+  // [De]compression worker threads; effective only if > 0.
+  int32 throttle_worker_count = 1;
+}
 
 message PrepareSandboxResponse {
-    // An opaque config that should be set in the SandboxLMSpec on the destination.
-    google.protobuf.Any config = 1;
-    // Original resources (only rootfs supported for now).
-    SourceResources resources = 3;
+  // Echo session id for correlation/logging.
+  string session_id = 1;
+
+  // An opaque config that should be set in the SandboxLMSpec on the destination.
+  google.protobuf.Any config = 2;
+
+  // Original resources (only rootfs supported for now).
+  SourceResources resources = 3;
 }
 
 message SourceResources {
@@ -73,54 +160,143 @@ message SourceRootFS {
     string task_id = 2;
 }
 
-message TransferSandboxRequest {}
+message TransferSandboxRequest {
+  // Idempotency key for migration session.
+  string session_id = 1;
 
-// Provides streaming updates on the LM transfer operation.
-message TransferSandboxResponse {
-    enum Status {
-        STATUS_UNSPECIFIED = 0;
-        STATUS_BROWNOUT_IN_PROGRESS = 1;
-        STATUS_BLACKOUT_IN_PROGRESS = 2;
-        STATUS_COMPLETE = 3;
-        STATUS_FAILED = 4;
-        STATUS_CANCEL = 5;
-    }
+  // Migration type.
+  MigrationMode mode = 2; // LIVE | SR
 
-    // Increments on each message. Can be used to ensure messages are not processed twice in the case of a client crash.
-    uint32 message_id = 1;
-    Status status = 2;
-    string error_message = 3;
-    // Between 0 and 1 (inclusive).
-    float progress = 4;
-    // The time when the transfer started.
-    google.protobuf.Timestamp start_time = 5;
-    // The time when this update occurred.
-    google.protobuf.Timestamp update_time = 6;
+  // Role in migration.
+  MigrationRole role = 3; // SOURCE | TARGET | SINGLE_HOST
+
+  // Required for SR (checkpoint save location). Ignored for LIVE.
+  string save_path = 4;
+
+  // Max time to wait for socket/connection readiness before declaring TIMEOUT.
+  // If unset, server uses a sensible default (e.g., 10 minutes).
+  google.protobuf.Duration timeout = 5;
 }
 
-message CancelRequest {}
+// Provides streaming updates on the Transfer operation.
+message TransferSandboxResponse {
+  // Echo session and parameters for client correlation (useful with multiplexed streams).
+  string session_id = 1;
+  MigrationMode mode = 2;
+  MigrationRole role = 3;
 
-message CancelResponse {}
+  // Increments per message; can be used to dedupe after client restarts.
+  uint32 message_id = 10;
+
+  TransferStatus status = 11;
+
+  // Populated when status indicates an error or timeout.
+  string error_message = 12;
+
+  // 0.0 .. 1.0 (inclusive). Semantics depend on status/mode:
+  // - LIVE: fraction of total migration work (brownout + blackout).
+  // - SR: fraction of checkpointing/restore progress.
+  float progress = 13;
+
+  // When the transfer started (according to the server).
+  google.protobuf.Timestamp start_time = 14;
+
+  // When this update was produced.
+  google.protobuf.Timestamp update_time = 15;
+}
+
+enum TransferStatus {
+  TRANSFER_STATUS_UNSPECIFIED = 0;
+
+  // Live migration phases
+  TRANSFER_STATUS_BROWNOUT_IN_PROGRESS = 1;
+  TRANSFER_STATUS_BLACKOUT_IN_PROGRESS = 2;
+
+  // Save/Restore phase (SR mode)
+  TRANSFER_STATUS_SAVE_IN_PROGRESS = 3;
+
+  // Terminal states
+  TRANSFER_STATUS_COMPLETE = 4;
+  TRANSFER_STATUS_FAILED = 5;
+  TRANSFER_STATUS_CANCEL = 6;
+  TRANSFER_STATUS_TIMEOUT = 7;
+}
+
+
+message CancelRequest {
+  // Must match the active session (idempotency key).
+  string session_id = 1;
+
+  // Workflow type: LIVE migration, SAVE (checkpoint), or RESTORE (resume).
+  MigrationMode mode = 2; // LIVE | SAVE | RESTORE
+
+  // Role in workflow.
+  MigrationRole role = 3; // SOURCE | TARGET | SINGLE_HOST
+
+  // Optional human-readable reason for cancellation (for logs/auditing).
+  string reason = 4;
+}
+
+message CancelResponse {
+  // Echo session id for correlation.
+  string session_id = 1;
+}
 
 message FinalizeSandboxRequest {
-    enum Action {
-        ACTION_UNSPECIFIED = 0;
-        ACTION_STOP = 1;
-        ACTION_RESUME = 2;
-    }
+  // Idempotency key for the session (must match the key used in PrepareSandbox).
+  string session_id = 1;
 
-    // The action to perform on the sandbox.
-    Action action = 2;
+  // Workflow type: LIVE migration, SAVE (checkpoint)/RESTORE (resume from checkpoint).
+  MigrationMode mode = 2;  // LIVE | SAVE/RESTORE
+
+  // Role in workflow.
+  MigrationRole role = 3; // SOURCE | TARGET | SINGLE_HOST
+
+  // Action to perform on the sandbox at finalize time.
+  FinalizeAction action = 4; // STOP | RESUME | COMPLETE
 }
 
-message FinalizeSandboxResponse {}
+enum FinalizeAction {
+  ACTION_UNSPECIFIED = 0;
+  STOP = 1;
+  RESUME = 2;
+  COMPLETE = 3;
+}
+
+
+message FinalizeSandboxResponse {
+  // Echo session id for correlation/logging.
+  string session_id = 1;
+}
+
 
 message CreateDuplicateSocketRequest {
-  bytes protocol_info = 1; // Serialized WSAProtocolInfo struct
+  // Idempotency key; must match active LM session.
+  string session_id = 1;
+
+  // Must be LIVE for duplicate socket workflow.
+  DuplicateSocketMode mode = 2; // LIVE
+
+  // Must be SOURCE or TARGET.
+  DuplicateSocketRole role = 3; // SOURCE | TARGET
+
+  // Serialized WSAProtocolInfo struct (opaque to clients).
+  bytes protocol_info = 4;
 }
 
-message CreateDuplicateSocketResponse {}
+enum DuplicateSocketMode {
+  DUP_SOCKET_MODE_UNSPECIFIED = 0;
+  LIVE = 1; // Only valid mode for this API
+}
 
-message WaitForChannelReadyRequest {}
+enum DuplicateSocketRole {
+  DUP_SOCKET_ROLE_UNSPECIFIED = 0;
+  SOURCE = 1;
+  TARGET = 2;
+}
 
-message WaitForChannelReadyResponse {}
+
+message CreateDuplicateSocketResponse {
+  // Echo session id for correlation/logging.
+  string session_id = 1;
+}
