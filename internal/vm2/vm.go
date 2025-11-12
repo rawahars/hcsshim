@@ -20,6 +20,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	"github.com/Microsoft/hcsshim/internal/hcs/resourcepaths"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/schemaversion"
 	"github.com/sirupsen/logrus"
@@ -408,9 +409,9 @@ type NIC struct {
 	MACAddress string
 }
 
-func (vm *VM) LMPrepare(ctx context.Context) ([]byte, error) {
+func (vm *VM) LMPrepare(ctx context.Context, options *lmproto.InitializeOptions) ([]byte, error) {
 	if vm.migrationState == migrationNone {
-		err := vm.hcsSystem.HcsInitializeLiveMigrationOnSource(ctx)
+		err := vm.hcsSystem.HcsInitializeLiveMigrationOnSource(ctx, options)
 		if err != nil {
 			return nil, err
 		}

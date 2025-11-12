@@ -15,6 +15,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/guestmanager"
 	"github.com/Microsoft/hcsshim/internal/hns"
 	"github.com/Microsoft/hcsshim/internal/layers"
+	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
 	vm "github.com/Microsoft/hcsshim/internal/vm2"
@@ -23,8 +24,8 @@ import (
 	"github.com/sirupsen/logrus"
 )
 
-func (s *Sandbox) LMPrepare(ctx context.Context) (_ *statepkg.SandboxState, _ *core.Resources, err error) {
-	compatInfo, err := s.vm.LMPrepare(ctx)
+func (s *Sandbox) LMPrepare(ctx context.Context, options *lmproto.InitializeOptions) (_ *statepkg.SandboxState, _ *core.Resources, err error) {
+	compatInfo, err := s.vm.LMPrepare(ctx, options)
 	if err != nil {
 		return nil, nil, err
 	}

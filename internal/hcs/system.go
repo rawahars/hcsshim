@@ -17,6 +17,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/jobobject"
+	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/oc"
@@ -952,13 +953,44 @@ func (computeSystem *System) Modify(ctx context.Context, config interface{}) err
 	return nil
 }
 
-func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Context) error {
+func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Context, opt *lmproto.InitializeOptions) error {
 	computeSystem.handleLock.RLock()
 	defer computeSystem.handleLock.RUnlock()
 
 	op := computecore.NewOperation(0)
 	defer op.Close()
 	options := hcsschema.MigrationInitializeOptions{}
+
+	if opt != nil {
+		if opt.MemoryTransferThrottleParams != nil {
+			options.MemoryTransferThrottleParams = &hcsschema.MemoryMigrationTransferThrottleParams{
+				SkipThrottling:                              opt.MemoryTransferThrottleParams.SkipThrottling,
+				ThrottlingScale:                             float64(opt.MemoryTransferThrottleParams.ThrottlingScalePercent),
+				MinimumThrottlePercentage:                   uint8(opt.MemoryTransferThrottleParams.MinimumThrottlePercent),
+				TargetNumberOfBrownoutTransferPasses:        uint32(opt.MemoryTransferThrottleParams.TargetBrownoutPasses),
+				StartingBrownoutPassNumberForThrottling:     uint32(opt.MemoryTransferThrottleParams.StartThrottlingAtBrownoutPass),
+				MaximumNumberOfBrownoutTransferPasses:       uint32(opt.MemoryTransferThrottleParams.MaxBrownoutPasses),
+				TargetBlackoutTransferTime:                  uint32(opt.MemoryTransferThrottleParams.TargetBlackoutDuration),
+				BlackoutTimeThresholdForCancellingMigration: uint32(opt.MemoryTransferThrottleParams.BlackoutCancelThreshold),
+			}
+		}
+
+		if opt.CompressionSettings != nil {
+			var settings *uint32
+			v := uint32(opt.CompressionSettings.ThrottleWorkerCount)
+			settings = &v
+			options.CompressionSettings.ThrottleWorkerCount = settings
+		}
+
+		if opt.MemoryTransport == lmproto.MemoryTransport_MEMORY_TRANSPORT_TCP {
+			options.MemoryTransport = hcsschema.MigrationMemoryTransportTCP
+		}
+		options.CancelIfBlackoutThresholdExceeds = opt.CancelIfBlackoutThresholdExceeds
+		options.PerfTracingEnabled = opt.PerfTracingEnabled
+		options.ChecksumVerification = opt.ChecksumVerification
+		options.PrepareMemoryTransferMode = opt.PrepareMemoryTransferMode
+	}
+
 	optionsRaw, err := json.Marshal(options)
 	if err != nil {
 		return err

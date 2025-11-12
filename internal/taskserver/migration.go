@@ -43,10 +43,10 @@ type migrationState struct {
 	newID      string
 }
 
-var _ (lmproto.MigrationService) = (*service)(nil)
+var _ lmproto.MigrationService = (*service)(nil)
 
 func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandboxRequest) (*lmproto.PrepareSandboxResponse, error) {
-	sandboxState, resources, err := s.sandbox.Sandbox.(core.Migratable).LMPrepare(ctx)
+	sandboxState, resources, err := s.sandbox.Sandbox.(core.Migratable).LMPrepare(ctx, req.InitializeOptions)
 	if err != nil {
 		return nil, fmt.Errorf("prepare sandbox for migration: %w", err)
 	}
@@ -80,6 +80,7 @@ func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandbo
 	}
 	s.mCond = sync.NewCond(&s.m)
 	return &lmproto.PrepareSandboxResponse{
+		SessionId: req.SessionId,
 		Config:    stateAny,
 		Resources: &lmproto.SourceResources{TaskRootfs: outResources},
 	}, nil
@@ -143,7 +144,12 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	logrus.Info("TransferSandbox called")
 
 	// We will wait for channel to be ready.
-	channelReadyCtx, cancel := context.WithTimeout(ctx, time.Minute*2)
+	timeout := time.Minute * 10
+	if req.Timeout != nil {
+		timeout = req.Timeout.AsDuration()
+	}
+
+	channelReadyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	if s.mCond == nil {
@@ -175,8 +181,9 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	}()
 	start := time.Now()
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
+		SessionId:  req.SessionId,
 		MessageId:  1,
-		Status:     lmproto.TransferSandboxResponse_STATUS_BROWNOUT_IN_PROGRESS,
+		Status:     lmproto.TransferStatus_TRANSFER_STATUS_BROWNOUT_IN_PROGRESS,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
 	}); err != nil {
@@ -186,8 +193,9 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	migrated, err := s.migState.migrator.LMTransfer(ctx, uintptr(s.migState.c))
 	if err != nil {
 		if err := stream.Send(&lmproto.TransferSandboxResponse{
+			SessionId:    req.SessionId,
 			MessageId:    2,
-			Status:       lmproto.TransferSandboxResponse_STATUS_FAILED,
+			Status:       lmproto.TransferStatus_TRANSFER_STATUS_FAILED,
 			ErrorMessage: err.Error(),
 			StartTime:    timestamppb.New(start),
 			UpdateTime:   timestamppb.Now(),
@@ -199,8 +207,9 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	}
 	logrus.Info("LM transfer complete")
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
+		SessionId:  req.SessionId,
 		MessageId:  2,
-		Status:     lmproto.TransferSandboxResponse_STATUS_BLACKOUT_IN_PROGRESS,
+		Status:     lmproto.TransferStatus_TRANSFER_STATUS_BLACKOUT_IN_PROGRESS,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
 		Progress:   0.5,
@@ -209,8 +218,9 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 		return fmt.Errorf("send blackout status: %w", err)
 	}
 	if err := stream.Send(&lmproto.TransferSandboxResponse{
+		SessionId:  req.SessionId,
 		MessageId:  3,
-		Status:     lmproto.TransferSandboxResponse_STATUS_COMPLETE,
+		Status:     lmproto.TransferStatus_TRANSFER_STATUS_COMPLETE,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
 		Progress:   1,
@@ -227,7 +237,7 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 		return nil, fmt.Errorf("no migrated sandbox is present")
 	}
 	switch req.Action {
-	case lmproto.FinalizeSandboxRequest_ACTION_RESUME:
+	case lmproto.FinalizeAction_RESUME:
 		sandbox, err := s.migState.migrated.LMComplete(ctx)
 		if err != nil {
 			return nil, err
@@ -244,7 +254,7 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 			waitCancel: waitCancel,
 		}
 		go waitContainer(s.sandbox.waitCtx, s.sandbox.Sandbox, s.sandbox.State, s.publisher)
-	case lmproto.FinalizeSandboxRequest_ACTION_STOP:
+	case lmproto.FinalizeAction_STOP:
 		if err := s.migState.migrated.LMKill(ctx); err != nil {
 			return nil, err
 		}
@@ -278,7 +288,9 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 	default:
 		return nil, fmt.Errorf("unsupported action: %v", req.Action)
 	}
-	return &lmproto.FinalizeSandboxResponse{}, nil
+	return &lmproto.FinalizeSandboxResponse{
+		SessionId: req.SessionId,
+	}, nil
 }
 
 func (s *service) Cancel(ctx context.Context, req *lmproto.CancelRequest) (*lmproto.CancelResponse, error) {
@@ -338,9 +350,6 @@ func getRestoreContainerSpec(ctx context.Context, bundle string) (*lmproto.Conta
 		return nil, err
 	}
 	return &spec, nil
-}
-func (s *service) WaitForChannelReady(ctx context.Context, req *lmproto.WaitForChannelReadyRequest) (*lmproto.WaitForChannelReadyResponse, error) {
-	return &lmproto.WaitForChannelReadyResponse{}, nil
 }
 
 var wsasocket = windows.WSASocket
@@ -406,5 +415,7 @@ func (s *service) CreateDuplicateSocket(ctx context.Context, req *lmproto.Create
 	logrus.Infof("new socket handle set in migration state: %v", s.migState.c)
 	s.mCond.Broadcast()
 
-	return &lmproto.CreateDuplicateSocketResponse{}, nil
+	return &lmproto.CreateDuplicateSocketResponse{
+		SessionId: req.SessionId,
+	}, nil
 }

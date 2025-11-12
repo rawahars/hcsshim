@@ -5,6 +5,7 @@ import (
 
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/layers"
+	lmproto "github.com/Microsoft/hcsshim/internal/lm/proto"
 	statepkg "github.com/Microsoft/hcsshim/internal/state"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
@@ -47,7 +48,7 @@ type Migrator interface {
 
 type Migratable interface {
 	Migrator
-	LMPrepare(ctx context.Context) (*statepkg.SandboxState, *Resources, error)
+	LMPrepare(ctx context.Context, options *lmproto.InitializeOptions) (*statepkg.SandboxState, *Resources, error)
 	RestoreLinuxContainer(ctx context.Context, cid string, pid uint32, myIO cmd.UpstreamIO) (Ctr, error)
 }
 
