@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 
 	"sync"
 
@@ -41,6 +42,16 @@ type migrationState struct {
 	migrated   core.Migrated
 	taskState  map[string]*statepkg.TaskState
 	newID      string
+
+	// Latest-only state for streaming
+	latest    atomic.Value // stores *lmproto.TransferSandboxResponse
+	seqMu     sync.Mutex
+	seqCond   *sync.Cond
+	seq       uint64 // incremented on every new latest
+	completed bool   // set true when migration ends (FAILED or COMPLETE)
+
+	// One-time start guard
+	startOnce sync.Once
 }
 
 var _ lmproto.MigrationService = (*service)(nil)
@@ -80,7 +91,7 @@ func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandbo
 	}
 	s.mCond = sync.NewCond(&s.m)
 	return &lmproto.PrepareSandboxResponse{
-		SessionId: req.SessionId,
+		SessionId: req.SessionId, // Session ID is not super important at this point.
 		Config:    stateAny,
 		Resources: &lmproto.SourceResources{TaskRootfs: outResources},
 	}, nil
@@ -149,6 +160,92 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 		timeout = req.Timeout.AsDuration()
 	}
 
+	s.migState.startOnce.Do(func() {
+		go s.runMigration(context.Background(), req.GetSessionId(), timeout)
+	})
+
+	s.ensureSeqCond()
+
+	// Track what we have observed
+	// Send current latest immediately if present
+	if v := s.migState.latest.Load(); v != nil {
+		msg := v.(*lmproto.TransferSandboxResponse)
+		if err := stream.Send(msg); err != nil {
+			return fmt.Errorf("initial stream send failed: %w", err)
+		}
+	}
+
+	// Track observed generation
+	s.migState.seqMu.Lock()
+	seenSeq := s.migState.seq
+	s.migState.seqMu.Unlock()
+
+	// Loop: wait for next seq change, then read latest and send
+	for {
+		// Respect client cancellation
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
+		s.migState.seqMu.Lock()
+		// Wait until a new message arrives or migration is completed
+		for s.migState.seq == seenSeq && !s.migState.completed {
+			s.migState.seqCond.Wait()
+		}
+
+		// If completed and no new message, we are done
+		if s.migState.completed && s.migState.seq == seenSeq {
+			s.migState.seqMu.Unlock()
+			return s.terminalErrorIfAny()
+		}
+
+		// We have a new message (seq advanced)
+		seenSeq = s.migState.seq
+		s.migState.seqMu.Unlock()
+
+		v := s.migState.latest.Load()
+		if v == nil {
+			// Shouldn’t happen: seq advanced but latest nil. Be defensive.
+			continue
+		}
+		msg := v.(*lmproto.TransferSandboxResponse)
+
+		if err := stream.Send(msg); err != nil {
+			return fmt.Errorf("stream send failed: %w", err)
+		}
+	}
+}
+
+// must be called with s.migState.seqMu held if you need consistency with `completed` and `seq`
+// but it's fine to load `latest` atomically outside the lock too.
+func (s *service) terminalErrorIfAny() error {
+	v := s.migState.latest.Load()
+	if v == nil {
+		return nil
+	}
+	msg := v.(*lmproto.TransferSandboxResponse)
+	if msg.Status == lmproto.TransferStatus_TRANSFER_STATUS_FAILED {
+		// prefer ErrorMessage; fallback to a generic error if empty
+		if em := msg.ErrorMessage; em != "" {
+			return fmt.Errorf(em)
+		}
+		return fmt.Errorf("migration failed")
+	}
+	return nil
+}
+
+// initialize seqCond lazily/safely
+func (s *service) ensureSeqCond() {
+	if s.migState.seqCond == nil {
+		s.migState.seqCond = sync.NewCond(&s.migState.seqMu)
+	}
+}
+
+func (s *service) runMigration(ctx context.Context, sessionID string, timeout time.Duration) {
+	s.ensureSeqCond()
+
 	channelReadyCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
@@ -169,7 +266,7 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 	select {
 	case <-channelReadyCtx.Done():
 		logrus.Warn("ChannelReady: context canceled or timed out")
-		return fmt.Errorf("channel: context canceled or timed out")
+		return
 	case <-done:
 		logrus.Infof("ChannelReady: Channel is ready %v", s.migState.c)
 	}
@@ -179,57 +276,76 @@ func (s *service) TransferSandbox(ctx context.Context, req *lmproto.TransferSand
 			windows.Closesocket(s.migState.c)
 		}
 	}()
+
+	// Emit helper: write latest, bump seq, broadcast
+	emit := func(msg *lmproto.TransferSandboxResponse) {
+		s.migState.latest.Store(msg)
+		s.migState.seqMu.Lock()
+		s.migState.seq++
+		s.migState.seqCond.Broadcast()
+		s.migState.seqMu.Unlock()
+	}
+
 	start := time.Now()
-	if err := stream.Send(&lmproto.TransferSandboxResponse{
-		SessionId:  req.SessionId,
+
+	// Brownout
+	emit(&lmproto.TransferSandboxResponse{
+		SessionId:  sessionID,
 		MessageId:  1,
 		Status:     lmproto.TransferStatus_TRANSFER_STATUS_BROWNOUT_IN_PROGRESS,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
-	}); err != nil {
-		logrus.WithError(err).Error("failed stream send")
-		return fmt.Errorf("send brownout status: %w", err)
-	}
+	})
+
 	migrated, err := s.migState.migrator.LMTransfer(ctx, uintptr(s.migState.c))
 	if err != nil {
-		if err := stream.Send(&lmproto.TransferSandboxResponse{
-			SessionId:    req.SessionId,
+		emit(&lmproto.TransferSandboxResponse{
+			SessionId:    sessionID,
 			MessageId:    2,
 			Status:       lmproto.TransferStatus_TRANSFER_STATUS_FAILED,
 			ErrorMessage: err.Error(),
 			StartTime:    timestamppb.New(start),
 			UpdateTime:   timestamppb.Now(),
-		}); err != nil {
-			logrus.WithError(err).Error("failed stream send")
-			return fmt.Errorf("send failed status: %w", err)
-		}
-		return err
+		})
+		// Mark completed and broadcast one more time to let readers exit.
+		s.migState.seqMu.Lock()
+		s.migState.completed = true
+		s.migState.seqCond.Broadcast()
+		s.migState.seqMu.Unlock()
+		return
 	}
+
+	time.Sleep(time.Second * 1) // Emulate actual scenario
 	logrus.Info("LM transfer complete")
-	if err := stream.Send(&lmproto.TransferSandboxResponse{
-		SessionId:  req.SessionId,
+
+	// Blackout in progress
+	emit(&lmproto.TransferSandboxResponse{
+		SessionId:  sessionID,
 		MessageId:  2,
 		Status:     lmproto.TransferStatus_TRANSFER_STATUS_BLACKOUT_IN_PROGRESS,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
 		Progress:   0.5,
-	}); err != nil {
-		logrus.WithError(err).Error("failed stream send")
-		return fmt.Errorf("send blackout status: %w", err)
-	}
-	if err := stream.Send(&lmproto.TransferSandboxResponse{
-		SessionId:  req.SessionId,
+	})
+
+	time.Sleep(time.Second * 1) // Emulate actual scenario
+	// Complete
+	emit(&lmproto.TransferSandboxResponse{
+		SessionId:  sessionID,
 		MessageId:  3,
 		Status:     lmproto.TransferStatus_TRANSFER_STATUS_COMPLETE,
 		StartTime:  timestamppb.New(start),
 		UpdateTime: timestamppb.Now(),
 		Progress:   1,
-	}); err != nil {
-		logrus.WithError(err).Error("failed stream send")
-		return fmt.Errorf("send complete status: %w", err)
-	}
+	})
+
+	// Mark completed
+	s.migState.seqMu.Lock()
+	s.migState.completed = true
+	s.migState.seqCond.Broadcast()
+	s.migState.seqMu.Unlock()
+
 	s.migState.migrated = migrated
-	return nil
 }
 
 func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSandboxRequest) (*lmproto.FinalizeSandboxResponse, error) {
@@ -357,8 +473,11 @@ var getsockopt = windows.Getsockopt
 
 func (s *service) CreateDuplicateSocket(ctx context.Context, req *lmproto.CreateDuplicateSocketRequest) (*lmproto.CreateDuplicateSocketResponse, error) {
 	if s.migState.c != 0 {
-		logrus.Error("duplicate socket already exists")
-		return nil, fmt.Errorf("duplicate socket already exists")
+		logrus.Warn("duplicate socket already exists")
+
+		return &lmproto.CreateDuplicateSocketResponse{
+			SessionId: req.SessionId,
+		}, nil
 	}
 	if req.ProtocolInfo == nil {
 		logrus.Error("no protocol info provided")

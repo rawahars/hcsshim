@@ -206,6 +206,10 @@ func (s *service) Exec(ctx context.Context, req *task.ExecProcessRequest) (*empt
 }
 
 func (s *service) Kill(ctx context.Context, req *task.KillRequest) (*emptypb.Empty, error) {
+	if s.sandbox == nil {
+		return &emptypb.Empty{}, nil
+	}
+
 	if req.ID == s.sandbox.TaskID {
 		if req.ExecID != "" {
 			return nil, fmt.Errorf("killing sandbox execs is not supported")
