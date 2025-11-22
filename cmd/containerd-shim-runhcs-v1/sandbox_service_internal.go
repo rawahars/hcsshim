@@ -141,6 +141,7 @@ func (s *service) platform(_ context.Context, sandboxId string) (*sandbox.Platfo
 }
 
 func (s *service) stopSandbox(ctx context.Context, request *sandbox.StopSandboxRequest) (*sandbox.StopSandboxResponse, error) {
+	// Todo: Implement the stop method.
 	return nil, nil
 }
 
@@ -205,5 +206,6 @@ func (s *service) shutdownSandbox(ctx context.Context, sandboxId string) (*sandb
 }
 
 func (s *service) sandboxMetrics(ctx context.Context, request *sandbox.SandboxMetricsRequest) (*sandbox.SandboxMetricsResponse, error) {
+	// Todo: Implement the metrics method.
 	return nil, nil
 }

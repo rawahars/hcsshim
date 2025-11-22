@@ -130,7 +130,7 @@ func (s *service) ShutdownSandbox(ctx context.Context, request *sandbox.Shutdown
 
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 
-	r, e := s.shutdownSandbox(ctx, request)
+	r, e := s.shutdownSandbox(ctx, request.SandboxID)
 	return r, errdefs.ToGRPC(e)
 }
 
