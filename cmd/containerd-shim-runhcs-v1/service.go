@@ -99,7 +99,9 @@ func NewService(o ...ServiceOption) (svc *service, err error) {
 		tid:       opts.TID,
 		isSandbox: opts.IsSandbox,
 		shutdown:  make(chan struct{}),
-		sandbox:   sandboxState{},
+		sandbox: sandboxState{
+			phase: sandboxUnknown,
+		},
 	}
 	return svc, nil
 }

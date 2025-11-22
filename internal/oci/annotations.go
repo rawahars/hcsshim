@@ -108,12 +108,16 @@ func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []h
 	}
 
 	// basic error checking: warn about and delete invalid registry keys
-	rvs := make([]hcsschema.RegistryValue, 0, len(t))
-	for _, rv := range t {
+	return ValidateAndFilterRegistryValues(ctx, t)
+}
+
+func ValidateAndFilterRegistryValues(ctx context.Context, input []hcsschema.RegistryValue) []hcsschema.RegistryValue {
+	rvs := make([]hcsschema.RegistryValue, 0, len(input))
+
+	for _, rv := range input {
 		entry := log.G(ctx).WithFields(logrus.Fields{
-			logfields.OCIAnnotation: k,
-			logfields.Value:         v,
-			"registry-value":        log.Format(ctx, rv),
+			logfields.Value:  log.Format(ctx, rv),
+			"registry-value": log.Format(ctx, rv),
 		})
 
 		if rv.Key == nil {
@@ -157,7 +161,10 @@ func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []h
 
 		// multiple values are set
 		b2i := map[bool]int{true: 1} // hack to convert bool to int
-		if (b2i[rv.StringValue != ""] + b2i[rv.BinaryValue != ""] + b2i[rv.DWordValue != 0] + b2i[rv.QWordValue != 0]) > 1 {
+		if (b2i[rv.StringValue != ""] +
+			b2i[rv.BinaryValue != ""] +
+			b2i[rv.DWordValue != 0] +
+			b2i[rv.QWordValue != 0]) > 1 {
 			entry.Warning("multiple values set")
 			continue
 		}

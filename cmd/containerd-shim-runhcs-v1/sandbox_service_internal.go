@@ -4,16 +4,120 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 
+	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/sandbox_options"
+	"github.com/Microsoft/hcsshim/internal/log"
+	"github.com/Microsoft/hcsshim/internal/uvm"
+	"github.com/Microsoft/hcsshim/osversion"
 	"github.com/containerd/containerd/api/runtime/sandbox/v1"
+	"github.com/containerd/containerd/api/types"
+	"github.com/containerd/errdefs"
+	"github.com/pkg/errors"
 )
 
-func (s *service) createSandbox(ctx context.Context, request *sandbox.CreateSandboxRequest) (*sandbox.CreateSandboxResponse, error) {
-	return nil, nil
+func (s *service) createSandbox(
+	ctx context.Context,
+	sandboxId string,
+	rootfs []*types.Mount,
+	bundle string,
+	sandboxSpec *sandbox_options.SandboxSpec,
+) (*sandbox.CreateSandboxResponse, error) {
+	// We are not actively using Sandbox Options and therefore, we are omitting unmarshalling them.
+
+	// Return error on older versions of Windows.
+	if osversion.Build() < osversion.RS5 {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "pod support is not available on Windows versions previous to RS5 (%d)", osversion.RS5)
+	}
+
+	// For process-isolation, this API will
+	if sandboxSpec.GetIsolationLevel() != nil && sandboxSpec.GetProcess() != nil {
+		log.G(ctx).Info("creating sandbox with process isolation level is not supported")
+		// Instead of returning an error, make it a no-op.
+		// This is because for process-isolated cases, CRI can call into Task API
+		// to create the pause container which will hold the pod namespace open.
+		// Therefore, same workflow can be used by CRI for all types of containers.
+		return &sandbox.CreateSandboxResponse{}, nil
+	}
+
+	// Hold the lock on service mutex prior to starting a new sandbox.
+	// This is needed to avoid any race conditions.
+	s.cl.Lock()
+
+	// If the sandbox was already created, or is not managed by the sandbox API,
+	// return an error.
+	if s.sandbox.phase != sandboxUnknown {
+		s.cl.Unlock()
+		return nil, fmt.Errorf("invalid phase %s of sandbox", s.sandbox.phase.String())
+	}
+
+	// Create the LCOW or WCOW options and save them.
+	owner := filepath.Base(os.Args[0])
+	lcowOptions, wcowOptions, err := sandbox_options.BuildUVMOptions(ctx, sandboxSpec, fmt.Sprintf("%s@vm", sandboxId), owner)
+	if err != nil {
+		s.cl.Unlock()
+		return nil, fmt.Errorf("failed to build uvm options: %w", err)
+	}
+
+	var host *uvm.UtilityVM
+	if lcowOptions != nil {
+		lcowOptions.BundleDirectory = bundle
+		host, err = uvm.CreateLCOW(ctx, lcowOptions)
+		if err != nil {
+			s.cl.Unlock()
+			return nil, fmt.Errorf("failed to create lcow uvm: %w", err)
+		}
+	}
+
+	if wcowOptions != nil {
+		err = initializeWCOWBootFiles(ctx, wcowOptions, rootfs, []string{})
+		if err != nil {
+			s.cl.Unlock()
+			return nil, fmt.Errorf("failed to initialize wcow boot files: %w", err)
+		}
+
+		host, err = uvm.CreateWCOW(ctx, wcowOptions)
+		if err != nil {
+			s.cl.Unlock()
+			return nil, fmt.Errorf("failed to create wcow uvm: %w", err)
+		}
+	}
+
+	s.sandbox.host = host
+	s.sandbox.lcowOptions = lcowOptions
+	s.sandbox.wcowOptions = wcowOptions
+
+	// Set the sandbox params.
+	s.sandbox.phase = sandboxCreated
+	s.sandbox.id = sandboxId
+	// For the workflow via CreateSandbox, we need to mark this field as true
+	s.isSandbox = true
+
+	s.cl.Unlock()
+	return &sandbox.CreateSandboxResponse{}, nil
 }
 
-func (s *service) startSandbox(ctx context.Context, request *sandbox.StartSandboxRequest) (*sandbox.StartSandboxResponse, error) {
-	return nil, nil
+func (s *service) startSandbox(ctx context.Context, sandboxId string) (*sandbox.StartSandboxResponse, error) {
+	s.cl.Lock()
+	if s.sandbox.id != sandboxId {
+		s.cl.Unlock()
+		return &sandbox.StartSandboxResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase != sandboxCreated {
+		s.cl.Unlock()
+		return &sandbox.StartSandboxResponse{}, fmt.Errorf("invalid sandbox phase")
+	}
+
+	err := s.sandbox.host.Start(ctx)
+	if err != nil {
+		s.cl.Unlock()
+		return &sandbox.StartSandboxResponse{}, fmt.Errorf("failed to start sandbox: %w", err)
+	}
+
+	return &sandbox.StartSandboxResponse{}, nil
 }
 
 func (s *service) platform(ctx context.Context, request *sandbox.PlatformRequest) (*sandbox.PlatformResponse, error) {

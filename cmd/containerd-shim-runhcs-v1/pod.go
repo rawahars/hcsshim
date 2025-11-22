@@ -28,15 +28,11 @@ import (
 )
 
 // initializeWCOWBootFiles handles the initialization of boot files for WCOW VMs
-func initializeWCOWBootFiles(ctx context.Context, wopts *uvm.OptionsWCOW, rootfs []*types.Mount, s *specs.Spec) error {
+func initializeWCOWBootFiles(ctx context.Context, wopts *uvm.OptionsWCOW, rootfs []*types.Mount, layerFolders []string) error {
 	var (
-		layerFolders []string
-		err          error
+		err error
 	)
 
-	if s.Windows != nil {
-		layerFolders = s.Windows.LayerFolders
-	}
 	log.G(ctx).WithField("options", log.Format(ctx, *wopts)).Debug("initialize WCOW boot files")
 
 	wopts.BootFiles, err = layers.GetWCOWUVMBootFilesFromLayers(ctx, rootfs, layerFolders)
@@ -187,7 +183,13 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 			}
 		case *uvm.OptionsWCOW:
 			wopts := (opts).(*uvm.OptionsWCOW)
-			err = initializeWCOWBootFiles(ctx, wopts, req.Rootfs, s)
+
+			var layerFolders []string
+			if s.Windows != nil {
+				layerFolders = s.Windows.LayerFolders
+			}
+
+			err = initializeWCOWBootFiles(ctx, wopts, req.Rootfs, layerFolders)
 			if err != nil {
 				return nil, err
 			}

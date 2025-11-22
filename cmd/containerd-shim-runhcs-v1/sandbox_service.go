@@ -4,41 +4,19 @@ package main
 
 import (
 	"context"
-	"sync/atomic"
+	"encoding/json"
+	"os"
+	"path/filepath"
 
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/sandbox_options"
 	"github.com/Microsoft/hcsshim/internal/oc"
-	"github.com/Microsoft/hcsshim/internal/uvm"
 
 	"github.com/containerd/containerd/api/runtime/sandbox/v1"
 	errdefs "github.com/containerd/errdefs/pkg/errgrpc"
-	"github.com/containerd/platforms"
 	"go.opencensus.io/trace"
 )
 
 var _ sandbox.TTRPCSandboxService = &service{}
-
-// sandboxState tracks the lifecycle and configuration of a
-// sandbox managed by the shim via Sandbox APIs.
-type sandboxState struct {
-	// id is the unique identifier for the sandbox.
-	// This MUST remain constant for the lifetime of the sandbox.
-	id string
-
-	// spec is the immutable SandboxSpec provided during CreateSandbox.
-	// It contains all configuration details (platform, isolation, resources, etc.).
-	spec *sandbox_options.SandboxSpec
-
-	// host is the UtilityVM instance backing the sandbox when isolation == HYPERVISOR.
-	// For PROCESS isolation, this will be nil.
-	host *uvm.UtilityVM
-
-	// Platform refers to the platform for the sandbox.
-	platform platforms.Platform
-
-	// isCreated indicates whether the sandbox has been successfully created.
-	isCreated atomic.Bool
-}
 
 // CreateSandbox creates (or prepares) a new sandbox for the given SandboxID.
 func (s *service) CreateSandbox(ctx context.Context, request *sandbox.CreateSandboxRequest) (resp *sandbox.CreateSandboxResponse, err error) {
@@ -53,7 +31,19 @@ func (s *service) CreateSandbox(ctx context.Context, request *sandbox.CreateSand
 		trace.StringAttribute("bundle", request.BundlePath),
 		trace.StringAttribute("net-ns-path", request.NetnsPath))
 
-	r, e := s.createSandbox(ctx, request)
+	// Decode the Sandbox spec passed along from CRI.
+	var sandboxSpec sandbox_options.SandboxSpec
+	f, err := os.Open(filepath.Join(request.BundlePath, "config.json"))
+	if err != nil {
+		return nil, err
+	}
+	if err := json.NewDecoder(f).Decode(&sandboxSpec); err != nil {
+		f.Close()
+		return nil, err
+	}
+	f.Close()
+
+	r, e := s.createSandbox(ctx, request.SandboxID, request.Rootfs, request.BundlePath, &sandboxSpec)
 	return r, errdefs.ToGRPC(e)
 }
 
@@ -65,7 +55,7 @@ func (s *service) StartSandbox(ctx context.Context, request *sandbox.StartSandbo
 
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 
-	r, e := s.startSandbox(ctx, request)
+	r, e := s.startSandbox(ctx, request.SandboxID)
 	return r, errdefs.ToGRPC(e)
 }
 
