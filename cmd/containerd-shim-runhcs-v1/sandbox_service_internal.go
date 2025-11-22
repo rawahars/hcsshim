@@ -55,7 +55,7 @@ func (s *service) createSandbox(
 
 	// Create the LCOW or WCOW options and save them.
 	owner := filepath.Base(os.Args[0])
-	lcowOptions, wcowOptions, err := sandbox_options.BuildUVMOptions(ctx, sandboxSpec, fmt.Sprintf("%s@vm", sandboxId), owner)
+	lcowOptions, wcowOptions, plat, err := sandbox_options.BuildUVMOptions(ctx, sandboxSpec, fmt.Sprintf("%s@vm", sandboxId), owner)
 	if err != nil {
 		s.cl.Unlock()
 		return nil, fmt.Errorf("failed to build uvm options: %w", err)
@@ -92,6 +92,7 @@ func (s *service) createSandbox(
 	// Set the sandbox params.
 	s.sandbox.phase = sandboxCreated
 	s.sandbox.id = sandboxId
+	s.sandbox.platform = plat
 	// For the workflow via CreateSandbox, we need to mark this field as true
 	s.isSandbox = true
 
@@ -120,8 +121,23 @@ func (s *service) startSandbox(ctx context.Context, sandboxId string) (*sandbox.
 	return &sandbox.StartSandboxResponse{}, nil
 }
 
-func (s *service) platform(ctx context.Context, request *sandbox.PlatformRequest) (*sandbox.PlatformResponse, error) {
-	return nil, nil
+func (s *service) platform(_ context.Context, sandboxId string) (*sandbox.PlatformResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.PlatformResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase == sandboxUnknown || s.sandbox.phase == sandboxPodManaged {
+		return &sandbox.PlatformResponse{}, fmt.Errorf("invalid sandbox phase")
+	}
+
+	return &sandbox.PlatformResponse{
+		Platform: &types.Platform{
+			OS:           s.sandbox.platform.OS,
+			Architecture: s.sandbox.platform.Architecture,
+			Variant:      s.sandbox.platform.Variant,
+			OSVersion:    s.sandbox.platform.OSVersion,
+		},
+	}, nil
 }
 
 func (s *service) stopSandbox(ctx context.Context, request *sandbox.StopSandboxRequest) (*sandbox.StopSandboxResponse, error) {

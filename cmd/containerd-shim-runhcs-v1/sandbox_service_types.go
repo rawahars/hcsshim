@@ -4,6 +4,7 @@ package main
 
 import (
 	"github.com/Microsoft/hcsshim/internal/uvm"
+	"github.com/containerd/platforms"
 )
 
 // sandboxState tracks the lifecycle and configuration of a
@@ -12,6 +13,8 @@ type sandboxState struct {
 	// id is the unique identifier for the sandbox.
 	// This MUST remain constant for the lifetime of the sandbox.
 	id string
+
+	platform *platforms.Platform
 
 	// Options for building a UVM.
 	lcowOptions *uvm.OptionsLCOW

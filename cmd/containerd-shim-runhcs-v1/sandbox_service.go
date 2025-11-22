@@ -67,7 +67,7 @@ func (s *service) Platform(ctx context.Context, request *sandbox.PlatformRequest
 
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 
-	r, e := s.platform(ctx, request)
+	r, e := s.platform(ctx, request.SandboxID)
 	return r, errdefs.ToGRPC(e)
 }
 

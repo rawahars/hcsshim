@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"maps"
+	"runtime"
 	"strings"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
@@ -11,34 +12,47 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oci"
 	"github.com/Microsoft/hcsshim/internal/uvm"
+	"github.com/containerd/platforms"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
+)
+
+var (
+	// linuxPlatformFormat represents the format for linux platform.
+	// Example: linux/amd64
+	linuxPlatformFormat = "linux/%s"
+	// windowsPlatformFormat represents the format for windows platform.
+	// Example: windows/amd64
+	windowsPlatformFormat = "windows/%s"
 )
 
 // BuildUVMOptions creates either LCOW or WCOW options from SandboxSpec.
 // Defaults are set by NewDefaultOptionsLCOW/NewDefaultOptionsWCOW and
 // then overridden by any fields present in the proto.
-func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (*uvm.OptionsLCOW, *uvm.OptionsWCOW, error) {
+func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (*uvm.OptionsLCOW, *uvm.OptionsWCOW, *platforms.Platform, error) {
 	if spec == nil {
-		return nil, nil, fmt.Errorf("nil SandboxSpec")
+		return nil, nil, nil, fmt.Errorf("nil SandboxSpec")
 	}
 
 	switch isolation := spec.IsolationLevel.(type) {
 	case *SandboxSpec_Process:
 		// Process isolation: no UVM to create.
-		return nil, nil, fmt.Errorf("uvm options cannot be created for process isolation")
+		return nil, nil, nil, fmt.Errorf("uvm options cannot be created for process isolation")
 
 	case *SandboxSpec_Hypervisor:
 		hypervisor := isolation.Hypervisor
 		if hypervisor == nil {
-			return nil, nil, fmt.Errorf("hypervisor section is nil for isolation_level=hypervisor")
+			return nil, nil, nil, fmt.Errorf("hypervisor section is nil for isolation_level=hypervisor")
 		}
 
 		switch platform := hypervisor.Platform.(type) {
 		case *HypervisorIsolated_Lcow:
 			if platform.Lcow == nil {
-				return nil, nil, fmt.Errorf("lcow params are nil for isolation_level=hypervisor")
+				return nil, nil, nil, fmt.Errorf("lcow params are nil for isolation_level=hypervisor")
 			}
+
+			var plat *platforms.Platform
+			var err error
 
 			optionsLCOW := uvm.NewDefaultOptionsLCOW(id, owner)
 
@@ -50,8 +64,8 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 				applyLinuxGuestOptions(optionsLCOW, lg)
 			}
 			if ld := platform.Lcow.GetLinuxDeviceOptions(); ld != nil {
-				if err := applyLinuxDeviceOptions(ctx, optionsLCOW, ld); err != nil {
-					return nil, nil, err
+				if err = applyLinuxDeviceOptions(ctx, optionsLCOW, ld); err != nil {
+					return nil, nil, nil, err
 				}
 			}
 			if lc := platform.Lcow.GetConfidentialOptions(); lc != nil {
@@ -61,6 +75,10 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 			// Common overlays
 			if cpu := hypervisor.GetCpuConfig(); cpu != nil {
 				applyCPUConfig(optionsLCOW.Options, cpu)
+				plat, err = parsePlatform(cpu, true)
+				if err != nil {
+					return nil, nil, nil, err
+				}
 			}
 			if mem := hypervisor.GetMemoryConfig(); mem != nil {
 				applyMemoryConfig(optionsLCOW.Options, mem)
@@ -76,9 +94,8 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 				applyAdditionalConfig(ctx, optionsLCOW.Options, add)
 			}
 
-			err := applyHypervisorConfig(optionsLCOW.Options, hypervisor)
-			if err != nil {
-				return nil, nil, err
+			if err = applyHypervisorConfig(optionsLCOW.Options, hypervisor); err != nil {
+				return nil, nil, nil, err
 			}
 
 			// Some final checks prior to commiting.
@@ -87,12 +104,15 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 				optionsLCOW.VPMemDeviceCount = 0
 			}
 
-			return optionsLCOW, nil, nil
+			return optionsLCOW, nil, plat, nil
 
 		case *HypervisorIsolated_Wcow:
 			if platform.Wcow == nil {
-				return nil, nil, fmt.Errorf("wcow params are nil for isolation_level=hypervisor")
+				return nil, nil, nil, fmt.Errorf("wcow params are nil for isolation_level=hypervisor")
 			}
+
+			var plat *platforms.Platform
+			var err error
 
 			optionsWCOW := uvm.NewDefaultOptionsWCOW(id, owner)
 
@@ -101,20 +121,24 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 				applyWindowsBootOptions(optionsWCOW, wb)
 			}
 			if wg := platform.Wcow.GetWindowsGuestOptions(); wg != nil {
-				if err := applyWindowsGuestOptions(ctx, optionsWCOW, wg); err != nil {
-					return nil, nil, err
+				if err = applyWindowsGuestOptions(ctx, optionsWCOW, wg); err != nil {
+					return nil, nil, nil, err
 				}
 			}
 			if wc := platform.Wcow.GetConfidentialOptions(); wc != nil {
-				err := applyWCOWConfidentialOptions(optionsWCOW, wc)
+				err = applyWCOWConfidentialOptions(optionsWCOW, wc)
 				if err != nil {
-					return nil, nil, err
+					return nil, nil, nil, err
 				}
 			}
 
 			// Common overlays
 			if cpu := hypervisor.GetCpuConfig(); cpu != nil {
 				applyCPUConfig(optionsWCOW.Options, cpu)
+				plat, err = parsePlatform(cpu, true)
+				if err != nil {
+					return nil, nil, nil, err
+				}
 			}
 			if mem := hypervisor.GetMemoryConfig(); mem != nil {
 				applyMemoryConfig(optionsWCOW.Options, mem)
@@ -129,9 +153,8 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 				applyAdditionalConfig(ctx, optionsWCOW.Options, add)
 			}
 
-			err := applyHypervisorConfig(optionsWCOW.Options, hypervisor)
-			if err != nil {
-				return nil, nil, err
+			if err = applyHypervisorConfig(optionsWCOW.Options, hypervisor); err != nil {
+				return nil, nil, nil, err
 			}
 
 			// Some final checks prior to commiting.
@@ -139,14 +162,14 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 				optionsWCOW.AllowOvercommit = false
 			}
 
-			return nil, optionsWCOW, nil
+			return nil, optionsWCOW, plat, nil
 
 		default:
-			return nil, nil, fmt.Errorf("hypervisor.platform must be LCOW or WCOW")
+			return nil, nil, nil, fmt.Errorf("hypervisor.platform must be LCOW or WCOW")
 		}
 
 	default:
-		return nil, nil, fmt.Errorf("unknown isolation_level")
+		return nil, nil, nil, fmt.Errorf("unknown isolation_level")
 	}
 }
 
@@ -169,6 +192,27 @@ func applyCPUConfig(common *uvm.Options, cpu *CPUConfig) {
 	if cpu.ProcessorWeight != nil && *cpu.ProcessorWeight > 0 {
 		common.ProcessorWeight = *cpu.ProcessorWeight
 	}
+}
+
+func parsePlatform(cpu *CPUConfig, isLinux bool) (*platforms.Platform, error) {
+	arch := runtime.GOARCH
+	if cpu.Architecture != nil {
+		arch = *cpu.Architecture
+	}
+
+	var plat platforms.Platform
+	var err error
+	if isLinux {
+		plat, err = platforms.Parse(fmt.Sprintf(linuxPlatformFormat, arch))
+	} else {
+		plat, err = platforms.Parse(fmt.Sprintf(windowsPlatformFormat, arch))
+	}
+
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse platform: %w", err)
+	}
+
+	return &plat, nil
 }
 
 func applyMemoryConfig(common *uvm.Options, mem *MemoryConfig) {
