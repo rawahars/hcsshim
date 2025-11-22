@@ -384,3 +384,7 @@ func (uvm *UtilityVM) acceptAndClose(ctx context.Context, l net.Listener) (net.C
 	}
 	return nil, err
 }
+
+func (uvm *UtilityVM) IsStopped() bool {
+	return uvm.hcsSystem.Stopped()
+}

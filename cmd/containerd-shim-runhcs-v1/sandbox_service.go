@@ -92,7 +92,7 @@ func (s *service) WaitSandbox(ctx context.Context, request *sandbox.WaitSandboxR
 
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 
-	r, e := s.waitSandbox(ctx, request)
+	r, e := s.waitSandbox(ctx, request.SandboxID)
 	return r, errdefs.ToGRPC(e)
 }
 
@@ -117,7 +117,7 @@ func (s *service) PingSandbox(ctx context.Context, request *sandbox.PingRequest)
 
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 
-	r, e := s.pingSandbox(ctx, request)
+	r, e := s.pingSandbox(ctx, request.SandboxID)
 	return r, errdefs.ToGRPC(e)
 }
 

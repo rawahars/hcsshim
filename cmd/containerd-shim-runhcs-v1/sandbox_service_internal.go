@@ -144,16 +144,44 @@ func (s *service) stopSandbox(ctx context.Context, request *sandbox.StopSandboxR
 	return nil, nil
 }
 
-func (s *service) waitSandbox(ctx context.Context, request *sandbox.WaitSandboxRequest) (*sandbox.WaitSandboxResponse, error) {
-	return nil, nil
+func (s *service) waitSandbox(ctx context.Context, sandboxId string) (*sandbox.WaitSandboxResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.WaitSandboxResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase != sandboxStarted {
+		return &sandbox.WaitSandboxResponse{}, fmt.Errorf("sandbox not started")
+	}
+
+	err := s.sandbox.host.WaitCtx(ctx)
+	if err != nil {
+		return &sandbox.WaitSandboxResponse{}, err
+	}
+
+	// Todo: Implement pathway for sandbox status and set the exited params.
+	return &sandbox.WaitSandboxResponse{}, nil
 }
 
 func (s *service) sandboxStatus(ctx context.Context, request *sandbox.SandboxStatusRequest) (*sandbox.SandboxStatusResponse, error) {
+	// Todo: Implement the status method.
 	return nil, nil
 }
 
-func (s *service) pingSandbox(ctx context.Context, request *sandbox.PingRequest) (*sandbox.PingResponse, error) {
-	return nil, nil
+func (s *service) pingSandbox(ctx context.Context, sandboxId string) (*sandbox.PingResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.PingResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase != sandboxStarted {
+		return &sandbox.PingResponse{}, fmt.Errorf("sandbox not started")
+	}
+
+	isStopped := s.sandbox.host.IsStopped()
+	if isStopped {
+		return &sandbox.PingResponse{}, fmt.Errorf("sandbox is stopped")
+	}
+
+	return &sandbox.PingResponse{}, nil
 }
 
 func (s *service) shutdownSandbox(ctx context.Context, request *sandbox.ShutdownSandboxRequest) (*sandbox.ShutdownSandboxResponse, error) {

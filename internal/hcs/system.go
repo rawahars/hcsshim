@@ -333,6 +333,11 @@ func (computeSystem *System) stopped() bool {
 	return false
 }
 
+// Stopped returns true if the compute system stopped.
+func (computeSystem *System) Stopped() bool {
+	return computeSystem.stopped()
+}
+
 // ExitError returns an error describing the reason the compute system terminated.
 func (computeSystem *System) ExitError() error {
 	if !computeSystem.stopped() {
