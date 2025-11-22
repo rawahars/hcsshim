@@ -167,7 +167,7 @@ func (s *service) sandboxStatus(ctx context.Context, request *sandbox.SandboxSta
 	return nil, nil
 }
 
-func (s *service) pingSandbox(ctx context.Context, sandboxId string) (*sandbox.PingResponse, error) {
+func (s *service) pingSandbox(_ context.Context, sandboxId string) (*sandbox.PingResponse, error) {
 	if s.sandbox.id != sandboxId {
 		return &sandbox.PingResponse{}, fmt.Errorf("invalid sandbox id")
 	}
@@ -184,8 +184,24 @@ func (s *service) pingSandbox(ctx context.Context, sandboxId string) (*sandbox.P
 	return &sandbox.PingResponse{}, nil
 }
 
-func (s *service) shutdownSandbox(ctx context.Context, request *sandbox.ShutdownSandboxRequest) (*sandbox.ShutdownSandboxResponse, error) {
-	return nil, nil
+func (s *service) shutdownSandbox(ctx context.Context, sandboxId string) (*sandbox.ShutdownSandboxResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase != sandboxStarted {
+		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("sandbox not started")
+	}
+
+	isStopped := s.sandbox.host.IsStopped()
+	if !isStopped {
+		err := s.sandbox.host.CloseCtx(ctx)
+		if err != nil {
+			return &sandbox.ShutdownSandboxResponse{}, err
+		}
+	}
+
+	return &sandbox.ShutdownSandboxResponse{}, nil
 }
 
 func (s *service) sandboxMetrics(ctx context.Context, request *sandbox.SandboxMetricsRequest) (*sandbox.SandboxMetricsResponse, error) {
