@@ -4,16 +4,17 @@ package main
 
 import (
 	"context"
-	"encoding/json"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/sandbox_options"
 	"github.com/Microsoft/hcsshim/internal/oc"
-
 	"github.com/containerd/containerd/api/runtime/sandbox/v1"
 	errdefs "github.com/containerd/errdefs/pkg/errgrpc"
 	"go.opencensus.io/trace"
+	"google.golang.org/protobuf/proto"
 )
 
 var _ sandbox.TTRPCSandboxService = &service{}
@@ -37,11 +38,17 @@ func (s *service) CreateSandbox(ctx context.Context, request *sandbox.CreateSand
 	if err != nil {
 		return nil, err
 	}
-	if err := json.NewDecoder(f).Decode(&sandboxSpec); err != nil {
-		f.Close()
-		return nil, err
+	defer f.Close()
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, fmt.Errorf("error in read bundle: %w", err)
 	}
-	f.Close()
+
+	// Unmarshal to SandboxSpec
+	if err := proto.Unmarshal(data, &sandboxSpec); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal Any from binary: %w", err)
+	}
 
 	r, e := s.createSandbox(ctx, request.SandboxID, request.Rootfs, request.BundlePath, &sandboxSpec)
 	return r, errdefs.ToGRPC(e)

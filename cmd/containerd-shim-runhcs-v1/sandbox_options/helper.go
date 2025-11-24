@@ -82,6 +82,11 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 			}
 			if mem := hypervisor.GetMemoryConfig(); mem != nil {
 				applyMemoryConfig(optionsLCOW.Options, mem)
+
+				if hypervisor.MemoryConfig.FullyPhysicallyBacked != nil && *hypervisor.MemoryConfig.FullyPhysicallyBacked {
+					optionsLCOW.AllowOvercommit = false
+					optionsLCOW.VPMemDeviceCount = 0
+				}
 			}
 			if sto := hypervisor.GetStorageConfig(); sto != nil {
 				applyStorageConfig(optionsLCOW.Options, sto)
@@ -96,12 +101,6 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 
 			if err = applyHypervisorConfig(optionsLCOW.Options, hypervisor); err != nil {
 				return nil, nil, nil, err
-			}
-
-			// Some final checks prior to commiting.
-			if hypervisor.MemoryConfig.FullyPhysicallyBacked != nil && *hypervisor.MemoryConfig.FullyPhysicallyBacked {
-				optionsLCOW.AllowOvercommit = false
-				optionsLCOW.VPMemDeviceCount = 0
 			}
 
 			return optionsLCOW, nil, plat, nil
@@ -142,6 +141,10 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 			}
 			if mem := hypervisor.GetMemoryConfig(); mem != nil {
 				applyMemoryConfig(optionsWCOW.Options, mem)
+
+				if hypervisor.MemoryConfig.FullyPhysicallyBacked != nil && *hypervisor.MemoryConfig.FullyPhysicallyBacked {
+					optionsWCOW.AllowOvercommit = false
+				}
 			}
 			if sto := hypervisor.GetStorageConfig(); sto != nil {
 				applyStorageConfig(optionsWCOW.Options, sto)
@@ -155,11 +158,6 @@ func BuildUVMOptions(ctx context.Context, spec *SandboxSpec, id, owner string) (
 
 			if err = applyHypervisorConfig(optionsWCOW.Options, hypervisor); err != nil {
 				return nil, nil, nil, err
-			}
-
-			// Some final checks prior to commiting.
-			if hypervisor.MemoryConfig.FullyPhysicallyBacked != nil && *hypervisor.MemoryConfig.FullyPhysicallyBacked {
-				optionsWCOW.AllowOvercommit = false
 			}
 
 			return nil, optionsWCOW, plat, nil

@@ -118,6 +118,8 @@ func (s *service) startSandbox(ctx context.Context, sandboxId string) (*sandbox.
 		return &sandbox.StartSandboxResponse{}, fmt.Errorf("failed to start sandbox: %w", err)
 	}
 
+	s.sandbox.phase = sandboxStarted
+	s.cl.Unlock()
 	return &sandbox.StartSandboxResponse{}, nil
 }
 
