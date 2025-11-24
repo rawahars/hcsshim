@@ -756,6 +756,10 @@ func (ht *hcsTask) closeHost(ctx context.Context) {
 }
 
 func (ht *hcsTask) ExecInHost(ctx context.Context, req *shimdiag.ExecProcessRequest) (int, error) {
+	return execInHost(ctx, req, ht.host)
+}
+
+func execInHost(ctx context.Context, req *shimdiag.ExecProcessRequest, host *uvm.UtilityVM) (int, error) {
 	cmdReq := &cmd.CmdProcessRequest{
 		Args:     req.Args,
 		Workdir:  req.Workdir,
@@ -765,10 +769,10 @@ func (ht *hcsTask) ExecInHost(ctx context.Context, req *shimdiag.ExecProcessRequ
 		Stderr:   req.Stderr,
 	}
 
-	if ht.host == nil {
+	if host == nil {
 		return cmd.ExecInShimHost(ctx, cmdReq)
 	}
-	return cmd.ExecInUvm(ctx, ht.host, cmdReq)
+	return cmd.ExecInUvm(ctx, host, cmdReq)
 }
 
 func (ht *hcsTask) DumpGuestStacks(ctx context.Context) string {

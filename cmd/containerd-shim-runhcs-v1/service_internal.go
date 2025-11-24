@@ -349,14 +349,29 @@ func (s *service) diagExecInHostInternal(ctx context.Context, req *shimdiag.Exec
 	if req.Terminal && req.Stderr != "" {
 		return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "if using terminal, stderr must be empty")
 	}
-	t, err := s.getTask(s.tid)
-	if err != nil {
-		return nil, err
+
+	var t shimTask
+	var ec int
+	var err error
+
+	// If the sandbox is managed via sandbox APIs,
+	// we will call the internal methods directly.
+	if s.sandbox.phase == sandboxStarted {
+		ec, err = execInHost(ctx, req, s.sandbox.host)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		t, err = s.getTask(s.tid)
+		if err != nil {
+			return nil, err
+		}
+		ec, err = t.ExecInHost(ctx, req)
+		if err != nil {
+			return nil, err
+		}
 	}
-	ec, err := t.ExecInHost(ctx, req)
-	if err != nil {
-		return nil, err
-	}
+
 	return &shimdiag.ExecProcessResponse{ExitCode: int32(ec)}, nil
 }
 
