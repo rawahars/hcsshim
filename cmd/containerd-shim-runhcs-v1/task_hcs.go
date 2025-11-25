@@ -759,22 +759,6 @@ func (ht *hcsTask) ExecInHost(ctx context.Context, req *shimdiag.ExecProcessRequ
 	return execInHost(ctx, req, ht.host)
 }
 
-func execInHost(ctx context.Context, req *shimdiag.ExecProcessRequest, host *uvm.UtilityVM) (int, error) {
-	cmdReq := &cmd.CmdProcessRequest{
-		Args:     req.Args,
-		Workdir:  req.Workdir,
-		Terminal: req.Terminal,
-		Stdin:    req.Stdin,
-		Stdout:   req.Stdout,
-		Stderr:   req.Stderr,
-	}
-
-	if host == nil {
-		return cmd.ExecInShimHost(ctx, cmdReq)
-	}
-	return cmd.ExecInUvm(ctx, host, cmdReq)
-}
-
 func (ht *hcsTask) DumpGuestStacks(ctx context.Context) string {
 	if ht.host != nil {
 		stacks, err := ht.host.DumpStacks(ctx)
@@ -791,7 +775,7 @@ func (ht *hcsTask) Share(ctx context.Context, req *shimdiag.ShareRequest) error 
 	if ht.host == nil {
 		return errTaskNotIsolated
 	}
-	return ht.host.Share(ctx, req.HostPath, req.UvmPath, req.ReadOnly)
+	return shareOnHost(ctx, req, ht.host)
 }
 
 func hcsPropertiesToWindowsStats(props *hcsschema.Properties) *stats.Statistics_Windows {

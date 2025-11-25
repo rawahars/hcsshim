@@ -8,7 +8,6 @@ import (
 	"runtime"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	task "github.com/containerd/containerd/api/runtime/task/v2"
@@ -61,10 +60,15 @@ type service struct {
 	// This MUST be treated as readonly for the lifetime of the shim.
 	isSandbox bool
 
-	// taskOrPod is either the `pod` this shim is tracking if `isSandbox ==
-	// true` or it is the `task` this shim is tracking. If no call to `Create`
-	// has taken place yet `taskOrPod.Load()` MUST return `nil`.
-	taskOrPod atomic.Value
+	// pods stores multiple pods (in sandbox mode) which this shim is tracking.
+	pods sync.Map // key: string (podID), value: shimPod
+
+	// tasks maps the shimTasks to their corresponding pod.
+	// In this map, we store the taskID value to the corresponding shimPod.
+	// The corresponding shimTask can then be queried via shimPod.
+	// For standalone cases, the value will be a shimTask instance.
+	//
+	tasks sync.Map // key: string (taskID), value: shimPod or shimTask.
 
 	// cl is the create lock. Since each shim MUST only track a single task or
 	// POD. `cl` is used to create the task or POD sandbox. It SHOULD NOT be
