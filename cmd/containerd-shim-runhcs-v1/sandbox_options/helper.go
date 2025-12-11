@@ -306,10 +306,10 @@ func parseHVSocketServiceTable(ctx context.Context, hyperVConfig map[string]*HvS
 }
 
 func applyHypervisorConfig(common *uvm.Options, hypervisor *HypervisorIsolated) error {
-	setStr(&common.CPUGroupID, hypervisor.CpuGroupId)
+	setStr(&common.CPUGroupID, hypervisor.CpuGroupID)
 
-	if hypervisor.ResourcePartitionId != nil {
-		resourcePartitionId := *hypervisor.ResourcePartitionId
+	if hypervisor.ResourcePartitionID != nil {
+		resourcePartitionId := *hypervisor.ResourcePartitionID
 		resourcePartitionIdGuid, err := guid.FromString(resourcePartitionId)
 		if err != nil {
 			return fmt.Errorf("failed to parse resource partition id %q to GUID: %w", resourcePartitionId, err)
@@ -384,7 +384,7 @@ func applyLinuxDeviceOptions(ctx context.Context, opts *uvm.OptionsLCOW, ld *Lin
 	windowsDevices := make([]specs.WindowsDevice, 0, len(ld.AssignedDevices))
 	for idx, device := range ld.AssignedDevices {
 		windowsDevices[idx] = specs.WindowsDevice{
-			ID:     device.Id,
+			ID:     device.ID,
 			IDType: device.IdType,
 		}
 	}
