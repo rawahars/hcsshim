@@ -304,6 +304,27 @@ func createPodWithSandbox(
 ) (_ shimPod, err error) {
 	log.G(ctx).WithField("tid", req.ID).Debug("createPodWithSandbox")
 
+	ct, sid, err := oci.GetSandboxTypeAndID(s.Annotations)
+	if err != nil {
+		return nil, err
+	}
+	if ct != oci.KubernetesContainerTypeSandbox {
+		return nil, errors.Wrapf(
+			errdefs.ErrFailedPrecondition,
+			"expected annotation: '%s': '%s' got '%s'",
+			annotations.KubernetesContainerType,
+			oci.KubernetesContainerTypeSandbox,
+			ct)
+	}
+	if sid != req.ID {
+		return nil, errors.Wrapf(
+			errdefs.ErrFailedPrecondition,
+			"expected annotation '%s': '%s' got '%s'",
+			annotations.KubernetesSandboxID,
+			req.ID,
+			sid)
+	}
+
 	p := pod{
 		events: events,
 		id:     req.ID,
