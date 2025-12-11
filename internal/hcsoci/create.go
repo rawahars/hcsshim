@@ -31,7 +31,7 @@ import (
 )
 
 var (
-	lcowRootInUVM = guestpath.LCOWRootPrefixInUVM + "/%s"
+	lcowRootInUVM = guestpath.LCOWRootPrefixInUVM + "/%s/%s"
 	wcowRootInUVM = guestpath.WCOWRootPrefixInUVM + "/%s"
 )
 
@@ -203,9 +203,17 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 		}
 	}()
 
+	ct, sid, err := oci.GetSandboxTypeAndID(coi.Spec.Annotations)
+	if err != nil {
+		return nil, r, err
+	}
+	isSandbox := ct == oci.KubernetesContainerTypeSandbox
+
 	if coi.HostingSystem != nil {
 		if coi.Spec.Linux != nil {
-			r.SetContainerRootInUVM(fmt.Sprintf(lcowRootInUVM, coi.ID))
+			// The container root within the UVM would be as below-
+			// <Root Dir>/pods/<PodID>/<ContainerID>
+			r.SetContainerRootInUVM(fmt.Sprintf(lcowRootInUVM, sid, coi.ID))
 		} else {
 			n := coi.HostingSystem.ContainerCounter()
 			r.SetContainerRootInUVM(fmt.Sprintf(wcowRootInUVM, strconv.FormatUint(n, 16)))
@@ -219,12 +227,6 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 		}
 		r.Add(driverClosers...)
 	}
-
-	ct, _, err := oci.GetSandboxTypeAndID(coi.Spec.Annotations)
-	if err != nil {
-		return nil, r, err
-	}
-	isSandbox := ct == oci.KubernetesContainerTypeSandbox
 
 	// Create a network namespace if necessary.
 	if coi.Spec.Windows != nil &&

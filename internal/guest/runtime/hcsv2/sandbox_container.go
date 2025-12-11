@@ -5,6 +5,7 @@ package hcsv2
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -20,16 +21,16 @@ import (
 	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
-func getSandboxHostnamePath(id, virtualSandboxID string) string {
-	return filepath.Join(specGuest.VirtualPodAwareSandboxRootDir(id, virtualSandboxID), "hostname")
+func getSandboxHostnamePath(id string) string {
+	return filepath.Join(specGuest.SandboxRootDir(id), "hostname")
 }
 
-func getSandboxHostsPath(id, virtualSandboxID string) string {
-	return filepath.Join(specGuest.VirtualPodAwareSandboxRootDir(id, virtualSandboxID), "hosts")
+func getSandboxHostsPath(id string) string {
+	return filepath.Join(specGuest.SandboxRootDir(id), "hosts")
 }
 
-func getSandboxResolvPath(id, virtualSandboxID string) string {
-	return filepath.Join(specGuest.VirtualPodAwareSandboxRootDir(id, virtualSandboxID), "resolv.conf")
+func getSandboxResolvPath(id string) string {
+	return filepath.Join(specGuest.SandboxRootDir(id), "resolv.conf")
 }
 
 func setupSandboxContainerSpec(ctx context.Context, id string, spec *oci.Spec) (err error) {
@@ -38,11 +39,8 @@ func setupSandboxContainerSpec(ctx context.Context, id string, spec *oci.Spec) (
 	defer func() { oc.SetSpanStatus(span, err) }()
 	span.AddAttributes(trace.StringAttribute("cid", id))
 
-	// Check if this is a virtual pod to use appropriate root directory
-	virtualSandboxID := spec.Annotations[annotations.VirtualPodID]
-
-	// Generate the sandbox root dir - virtual pod aware
-	rootDir := specGuest.VirtualPodAwareSandboxRootDir(id, virtualSandboxID)
+	// Generate the sandbox root dir
+	rootDir := specGuest.SandboxRootDir(id)
 	if err := os.MkdirAll(rootDir, 0755); err != nil {
 		return errors.Wrapf(err, "failed to create sandbox root directory %q", rootDir)
 	}
@@ -62,21 +60,19 @@ func setupSandboxContainerSpec(ctx context.Context, id string, spec *oci.Spec) (
 		}
 	}
 
-	sandboxHostnamePath := getSandboxHostnamePath(id, virtualSandboxID)
+	sandboxHostnamePath := getSandboxHostnamePath(id)
 	if err := os.WriteFile(sandboxHostnamePath, []byte(hostname+"\n"), 0644); err != nil {
 		return errors.Wrapf(err, "failed to write hostname to %q", sandboxHostnamePath)
 	}
 
 	// Write the hosts
 	sandboxHostsContent := network.GenerateEtcHostsContent(ctx, hostname)
-	sandboxHostsPath := getSandboxHostsPath(id, virtualSandboxID)
+	sandboxHostsPath := getSandboxHostsPath(id)
 	if err := os.WriteFile(sandboxHostsPath, []byte(sandboxHostsContent), 0644); err != nil {
 		return errors.Wrapf(err, "failed to write sandbox hosts to %q", sandboxHostsPath)
 	}
 
-	// Check if this is a virtual pod sandbox container by comparing container ID with virtual pod ID
-	isVirtualPodSandbox := virtualSandboxID != "" && id == virtualSandboxID
-	if strings.EqualFold(spec.Annotations[annotations.SkipPodNetworking], "true") || isVirtualPodSandbox {
+	if strings.EqualFold(spec.Annotations[annotations.SkipPodNetworking], "true") {
 		ns := GetOrAddNetworkNamespace(specGuest.GetNetworkNamespaceID(spec))
 		err := ns.Sync(ctx)
 		if err != nil {
@@ -105,7 +101,7 @@ func setupSandboxContainerSpec(ctx context.Context, id string, spec *oci.Spec) (
 		if err != nil {
 			return errors.Wrap(err, "failed to generate sandbox resolv.conf content")
 		}
-		sandboxResolvPath := getSandboxResolvPath(id, virtualSandboxID)
+		sandboxResolvPath := getSandboxResolvPath(id)
 		if err := os.WriteFile(sandboxResolvPath, []byte(resolvContent), 0644); err != nil {
 			return errors.Wrap(err, "failed to write sandbox resolv.conf")
 		}
@@ -131,14 +127,9 @@ func setupSandboxContainerSpec(ctx context.Context, id string, spec *oci.Spec) (
 	// also has a concept of a sandbox/shm file when the IPC NamespaceMode !=
 	// NODE.
 
-	// Set cgroup path - check if this is a virtual pod
-	if virtualSandboxID != "" {
-		// Virtual pod sandbox gets its own cgroup under /containers/virtual-pods using the virtual pod ID
-		spec.Linux.CgroupsPath = "/containers/virtual-pods/" + virtualSandboxID
-	} else {
-		// Traditional sandbox goes under /containers
-		spec.Linux.CgroupsPath = "/containers/" + id
-	}
+	// Set cgroup path
+	// This will be a hierarchical path under pods.
+	spec.Linux.CgroupsPath = fmt.Sprintf("/pods/%s/%s", id, id)
 
 	// Clear the windows section as we dont want to forward to runc
 	spec.Windows = nil

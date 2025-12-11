@@ -23,9 +23,10 @@ import (
 )
 
 type container struct {
-	r    *runcRuntime
-	id   string
-	init *process
+	r         *runcRuntime
+	id        string
+	sandboxId string
+	init      *process
 	// ownsPidNamespace indicates whether the container's init process is also
 	// the init process for its pid namespace.
 	ownsPidNamespace bool
@@ -35,6 +36,10 @@ var _ runtime.Container = &container{}
 
 func (c *container) ID() string {
 	return c.id
+}
+
+func (c *container) SandboxID() string {
+	return c.sandboxId
 }
 
 func (c *container) Pid() int {
@@ -52,7 +57,7 @@ func (c *container) PipeRelay() *stdio.PipeRelay {
 // Start unblocks the container's init process created by the call to
 // CreateContainer.
 func (c *container) Start() error {
-	logPath := c.r.getLogPath(c.id)
+	logPath := c.r.getLogPath(c.sandboxId, c.id)
 	args := []string{"start", c.id}
 	cmd := runcCommandLog(logPath, args...)
 	out, err := cmd.CombinedOutput()
@@ -114,7 +119,7 @@ func (c *container) Pause() error {
 
 // Resume unsuspends processes running in the container.
 func (c *container) Resume() error {
-	logPath := c.r.getLogPath(c.id)
+	logPath := c.r.getLogPath(c.sandboxId, c.id)
 	args := []string{"resume", c.id}
 	cmd := runcCommandLog(logPath, args...)
 	out, err := cmd.CombinedOutput()
@@ -341,11 +346,11 @@ func (c *container) startProcess(
 	if err := setSubreaper(1); err != nil {
 		return nil, errors.Wrapf(err, "failed to set process as subreaper for process in container %s", c.id)
 	}
-	if err := c.r.makeLogDir(c.id); err != nil {
+	if err := c.r.makeLogDir(c.sandboxId, c.id); err != nil {
 		return nil, err
 	}
 
-	logPath := c.r.getLogPath(c.id)
+	logPath := c.r.getLogPath(c.sandboxId, c.id)
 	args = append(args, "--pid-file", filepath.Join(tempProcessDir, "pid"))
 
 	var sockListener *net.UnixListener

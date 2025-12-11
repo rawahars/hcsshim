@@ -69,8 +69,8 @@ func (r *runcRuntime) initialize() error {
 // bundlePath.
 // bundlePath should be a path to an OCI bundle containing a config.json file
 // and a rootfs for the container.
-func (r *runcRuntime) CreateContainer(id string, bundlePath string, stdioSet *stdio.ConnectionSet) (c runtime.Container, err error) {
-	c, err = r.runCreateCommand(id, bundlePath, stdioSet)
+func (r *runcRuntime) CreateContainer(sandboxID string, id string, bundlePath string, stdioSet *stdio.ConnectionSet) (c runtime.Container, err error) {
+	c, err = r.runCreateCommand(sandboxID, id, bundlePath, stdioSet)
 	if err != nil {
 		return nil, err
 	}
@@ -154,8 +154,8 @@ func (r *runcRuntime) waitOnProcess(pid int) (int, error) {
 }
 
 // runCreateCommand sets up the arguments for calling runc create.
-func (r *runcRuntime) runCreateCommand(id string, bundlePath string, stdioSet *stdio.ConnectionSet) (runtime.Container, error) {
-	c := &container{r: r, id: id}
+func (r *runcRuntime) runCreateCommand(sandboxID string, id string, bundlePath string, stdioSet *stdio.ConnectionSet) (runtime.Container, error) {
+	c := &container{r: r, sandboxId: sandboxID, id: id}
 	if err := r.makeContainerDir(id); err != nil {
 		return nil, err
 	}
