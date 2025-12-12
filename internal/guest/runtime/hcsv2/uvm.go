@@ -263,15 +263,15 @@ func (h *Host) RemoveContainer(id string) {
 		_ = RemoveNetworkNamespace(context.Background(), id)
 	}
 
-	h.podsMutex.Lock()
-	defer h.podsMutex.Unlock()
-
 	pod, exists := h.getPod(c.sandboxID)
 	if !exists {
 		// This would not be the case.
 		// But in case that happens, we should return from here.
 		return
 	}
+
+	h.podsMutex.Lock()
+	defer h.podsMutex.Unlock()
 
 	// For a container, just delete the reference from the pod struct.
 	if criType == "container" {

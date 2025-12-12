@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
@@ -68,12 +67,8 @@ func readMemoryEvents(startTime time.Time, efdFile *os.File, cgName string, thre
 		}
 
 		count++
-		var msg string
-		if strings.HasPrefix(cgName, "/virtual-pods") {
-			msg = "memory usage for virtual pods cgroup exceeded threshold"
-		} else {
-			msg = "memory usage for cgroup exceeded threshold"
-		}
+		msg := "memory usage for cgroup exceeded threshold"
+
 		entry := logrus.WithFields(logrus.Fields{
 			"gcsStartTime":   startTime,
 			"time":           time.Now(),
