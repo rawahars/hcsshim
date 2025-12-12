@@ -199,7 +199,7 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 		}
 
 		if s.sandbox.phase == sandboxStarted {
-			pod, err = createPodWithSandbox(ctx, s.events, req, &spec, s.sandbox.host)
+			pod, err = createPodWithSandbox(ctx, s.events, req, &spec, s.sandbox.host, s.sandbox.id)
 		} else {
 			pod, err = createPod(ctx, s.events, req, &spec)
 		}

@@ -284,7 +284,7 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 		}
 		// LCOW (and WCOW Process Isolated for the time being) requires a real
 		// task for the sandbox.
-		lt, err := newHcsTask(ctx, events, parent, true, req, s)
+		lt, err := newHcsTask(ctx, events, parent, true, req, s, req.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -301,6 +301,7 @@ func createPodWithSandbox(
 	req *task.CreateTaskRequest,
 	s *specs.Spec,
 	parent *uvm.UtilityVM,
+	sandboxID string,
 ) (_ shimPod, err error) {
 	log.G(ctx).WithField("tid", req.ID).Debug("createPodWithSandbox")
 
@@ -316,7 +317,7 @@ func createPodWithSandbox(
 			oci.KubernetesContainerTypeSandbox,
 			ct)
 	}
-	if sid != req.ID {
+	if sid != sandboxID {
 		return nil, errors.Wrapf(
 			errdefs.ErrFailedPrecondition,
 			"expected annotation '%s': '%s' got '%s'",
@@ -345,7 +346,7 @@ func createPodWithSandbox(
 		// LCOW (and WCOW Process Isolated for the time being) requires a real
 		// task for the sandbox.
 		// This task does not own the host.
-		lt, err := newHcsTask(ctx, events, parent, false, req, s)
+		lt, err := newHcsTask(ctx, events, parent, false, req, s, req.ID)
 		if err != nil {
 			return nil, err
 		}
@@ -445,7 +446,7 @@ func (p *pod) CreateTask(ctx context.Context, req *task.CreateTaskRequest, s *sp
 			sid)
 	}
 
-	st, err := newHcsTask(ctx, p.events, p.host, false, req, s)
+	st, err := newHcsTask(ctx, p.events, p.host, false, req, s, p.id)
 	if err != nil {
 		return nil, err
 	}
