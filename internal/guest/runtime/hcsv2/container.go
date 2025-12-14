@@ -17,6 +17,7 @@ import (
 	"github.com/pkg/errors"
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
+	"golang.org/x/sys/unix"
 
 	"github.com/Microsoft/hcsshim/internal/bridgeutils/gcserr"
 	"github.com/Microsoft/hcsshim/internal/guest/prot"
@@ -237,9 +238,52 @@ func (c *Container) Delete(ctx context.Context) error {
 			entity.WithError(err).Error("failed to unmount tmpfs sandbox mounts")
 		}
 
+		// During setup, we mounted tempfs over tempfsDir for the sandbox container.
+		// Now that we are deleting, we need to unmount that tempfs.
+		tempfsDir := specGuest.SandboxTmpfsMountsDir(c.id)
+		if err := unix.Unmount(tempfsDir, 0); err != nil {
+			entity.WithError(err).Errorf("failed to unmount tmpfs at %s", tempfsDir)
+		}
+		// Delete the folder as well.
+		if err := os.RemoveAll(tempfsDir); err != nil && !os.IsNotExist(err) {
+			entity.WithError(err).Errorf("failed to remove tmpfs dir at %s", tempfsDir)
+		}
+
 		// remove hugepages mounts in sandbox container
 		if err := storage.UnmountAllInPath(ctx, specGuest.HugePagesMountsDir(c.id), true); err != nil {
 			entity.WithError(err).Error("failed to unmount hugepages mounts")
+		}
+
+		// Remove the hostname file created for the sandbox container.
+		sandboxHostnamePath := getSandboxHostnamePath(c.id)
+		if err := os.Remove(sandboxHostnamePath); err != nil && !os.IsNotExist(err) {
+			entity.WithError(err).
+				WithField("path", sandboxHostnamePath).
+				Error("failed to remove sandbox hostname")
+		}
+
+		// Remove the hosts file created for the sandbox container.
+		sandboxHostsPath := getSandboxHostsPath(c.id)
+		if err := os.Remove(sandboxHostsPath); err != nil && !os.IsNotExist(err) {
+			entity.WithError(err).
+				WithField("path", sandboxHostsPath).
+				Error("failed to remove sandbox hosts file")
+		}
+
+		// Remove the resolv.conf file created for the sandbox container.
+		sandboxResolvPath := getSandboxResolvPath(c.id)
+		if err := os.Remove(sandboxResolvPath); err != nil && !os.IsNotExist(err) {
+			entity.WithError(err).
+				WithField("path", sandboxResolvPath).
+				Error("failed to remove sandbox resolv.conf")
+		}
+
+		// Remove the logs directory created for the sandbox container.
+		sandboxLogsDir := specGuest.SandboxLogsDir(c.id)
+		if err := os.RemoveAll(sandboxLogsDir); err != nil && !os.IsNotExist(err) {
+			entity.WithError(err).
+				WithField("path", sandboxLogsDir).
+				Error("failed to remove sandbox logs directory")
 		}
 	}
 
@@ -261,6 +305,31 @@ func (c *Container) Delete(ctx context.Context) error {
 			retErr = fmt.Errorf("errors deleting container oci bundle dir: %w; %w", retErr, err)
 		} else {
 			retErr = err
+		}
+	}
+
+	// If this was the sandbox container, if empty, clean up the sandbox root dir.
+	if c.isSandbox {
+		rootPath := specGuest.SandboxRootDir(c.id)
+		files, err := os.ReadDir(rootPath)
+		if err != nil {
+			entity.WithError(err).Error("failed to read sandbox root dir for container cleanup")
+			if retErr != nil {
+				retErr = fmt.Errorf("failed to read sandbox root dir for container cleanup: %w; %w", retErr, err)
+			} else {
+				retErr = err
+			}
+		}
+		if len(files) == 0 {
+			entity.Debugf("deleting empty sandbox root dir %s", rootPath)
+			if err = os.RemoveAll(rootPath); err != nil {
+				entity.WithError(err).Error("failed to remove sandbox root dir during container cleanup")
+				if retErr != nil {
+					retErr = fmt.Errorf("failed to remove sandbox root dir during container cleanup: %w; %w", retErr, err)
+				} else {
+					retErr = err
+				}
+			}
 		}
 	}
 
