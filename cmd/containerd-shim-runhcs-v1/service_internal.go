@@ -30,15 +30,28 @@ import (
 
 var empty = &emptypb.Empty{}
 
-// getPod returns the pod with requested id which this shim is tracking or
-// else returns `nil`. It is the callers responsibility to verify that
-// `s.isSandbox == true` before calling this method.
+// getPod returns the pod with requested podID or TaskID.
 //
-// If `pod==nil` returns `errdefs.ErrFailedPrecondition`.
-func (s *service) getPod(podId string) (shimPod, error) {
-	rawPod, _ := s.pods.Load(podId)
+// We return `errdefs.ErrFailedPrecondition` if -
+// - The id does not correspond to a task or a pod
+// - The id corresponds to a standalone task
+func (s *service) getPod(podOrTaskId string) (shimPod, error) {
+	rawPod, _ := s.pods.Load(podOrTaskId)
 	if rawPod == nil {
-		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "task with id: '%s' must be created first", s.tid)
+		// Check if the requested podOrTaskId matches the task id.
+		raw, ok := s.tasks.Load(podOrTaskId)
+		if !ok {
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "task with id: '%s' must be created first", s.tid)
+		}
+
+		switch val := raw.(type) {
+		case shimPod:
+			return val, nil
+		case shimTask:
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "standalone task found with id: '%s'", s.tid)
+		default:
+			return nil, fmt.Errorf("invalid type for task with id: '%s'", podOrTaskId)
+		}
 	}
 	return rawPod.(shimPod), nil
 }
