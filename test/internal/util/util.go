@@ -17,10 +17,10 @@ import (
 	"github.com/Microsoft/hcsshim/internal/version"
 )
 
-// CleanName returns a string appropriate for uVM, container, or file names.
+// CleanString returns a string appropriate for uVM, container, or file names.
 //
 // Based on [testing.TB.TempDir].
-func CleanName(n string) string {
+func CleanString(n string) string {
 	mapper := func(r rune) rune {
 		const allowed = "!#$%&()+,-.=@^_{}~ "
 		if unicode.IsLetter(r) || unicode.IsNumber(r) || strings.ContainsRune(allowed, r) {
@@ -29,6 +29,13 @@ func CleanName(n string) string {
 		return -1
 	}
 	return strings.TrimSpace(strings.Map(mapper, n))
+}
+
+// CleanName returns [CleanString] applied to the [testing.TB.Name]
+func CleanName(tb testing.TB) string {
+	tb.Helper()
+
+	return CleanString(tb.Name())
 }
 
 // RunningBenchmarks returns whether benchmarks were requested to be run.
@@ -154,6 +161,12 @@ func repeat(f func() error, n int, d time.Duration) (err error) {
 
 	return err
 }
+
+// TODO(go1.24): use [TB.Context]
+// See:
+//  - https://tip.golang.org/doc/go1.24#testingpkgtesting
+//  - https://pkg.go.dev/testing@master#T.Context
+//  - https://pkg.go.dev/testing@master#TB
 
 // Context creates a [context.Context] that uses the testing.Deadline minus a small grace period (if applicable)
 // and the cancellation to the testing cleanup.

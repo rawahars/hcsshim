@@ -12,18 +12,22 @@ import (
 	"strconv"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
+	specs "github.com/opencontainers/runtime-spec/specs-go"
+	"github.com/sirupsen/logrus"
+
 	"github.com/Microsoft/hcsshim/internal/cow"
 	"github.com/Microsoft/hcsshim/internal/guestpath"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/Microsoft/hcsshim/internal/hvsocket"
 	"github.com/Microsoft/hcsshim/internal/layers"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oci"
+	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 	"github.com/Microsoft/hcsshim/internal/resources"
 	"github.com/Microsoft/hcsshim/internal/schemaversion"
 	"github.com/Microsoft/hcsshim/internal/uvm"
-	specs "github.com/opencontainers/runtime-spec/specs-go"
-	"github.com/sirupsen/logrus"
+	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
 var (
@@ -68,9 +72,15 @@ type createOptionsInternal struct {
 	actualID               string             // Identifier for the container
 	actualOwner            string             // Owner for the container
 	actualNetworkNamespace string
-	ccgState               *hcsschema.ContainerCredentialGuardState // Container Credential Guard information to be attached to HCS container document
+	// ccgState is Container Credential Guard information to be attached to HCS container document
+	ccgState *hcsschema.ContainerCredentialGuardState
 
-	windowsAdditionalMounts []hcsschema.MappedDirectory // Holds additional mounts based on added devices (such as SCSI). Only used for Windows v2 schema containers.
+	// windowsAdditionalMounts holds additional mounts based on added devices (such as SCSI).
+	// Only used for Windows v2 schema containers.
+	windowsAdditionalMounts []hcsschema.MappedDirectory
+
+	// namedPipeMounts holds named pipe mount information.
+	namedPipeMounts []uvm.NamedPipe
 
 	mountedWCOWLayers *layers.MountedWCOWLayers
 }
@@ -139,10 +149,14 @@ func configureSandboxNetwork(ctx context.Context, coi *createOptionsInternal, r 
 	coi.actualNetworkNamespace = r.NetNS()
 
 	if coi.HostingSystem != nil {
+		// Check for virtual pod first containers: if containerID == virtualPodID, treat as sandbox for networking configuration
+		virtualPodID := coi.Spec.Annotations[annotations.VirtualPodID]
+		isVirtualPodFirstContainer := virtualPodID != "" && coi.actualID == virtualPodID
+
 		// Only add the network namespace to a standalone or sandbox
 		// container but not a workload container in a sandbox that inherits
 		// the namespace.
-		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
+		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox || isVirtualPodFirstContainer {
 			if err := coi.HostingSystem.ConfigureNetworking(ctx, coi.actualNetworkNamespace); err != nil {
 				// No network setup type was specified for this UVM. Create and assign one here unless
 				// we received a different error.
@@ -256,10 +270,21 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 			// v1 Argon or Xenon. Pass the document directly to HCS.
 			hcsDocument = v1
 		} else if coi.HostingSystem != nil {
-			// v2 Xenon. Pass the container object to the UVM.
-			gcsDocument = &hcsschema.HostedSystem{
-				SchemaVersion: schemaversion.SchemaV21(),
-				Container:     v2,
+			if coi.HostingSystem.HasConfidentialPolicy() {
+				// confidential wcow uvm
+				gcsDocument = &guestresource.CWCOWHostedSystem{
+					Spec: *createOptions.Spec,
+					CWCOWHostedSystem: hcsschema.HostedSystem{
+						SchemaVersion: schemaversion.SchemaV21(),
+						Container:     v2,
+					},
+				}
+			} else {
+				// v2 Xenon. Pass the container object to the UVM.
+				gcsDocument = &hcsschema.HostedSystem{
+					SchemaVersion: schemaversion.SchemaV21(),
+					Container:     v2,
+				}
 			}
 		} else {
 			// v2 Argon. Pass the container object to the HCS.
@@ -278,6 +303,24 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 		if err != nil {
 			return nil, r, err
 		}
+
+		if coi.HostingSystem.OS() == "windows" {
+			log.G(ctx).Debug("redirecting container HvSocket for WCOW")
+			props, err := c.PropertiesV2(ctx, hcsschema.PTSystemGUID)
+			if err != nil {
+				return nil, r, fmt.Errorf("query created container properties failed: %w", err)
+			}
+			containerSystemGUID, err := guid.FromString(props.SystemGUID)
+			if err != nil {
+				return nil, r, fmt.Errorf("convert to system GUID failed: %w", err)
+			}
+			addressInfoCloser, err := hvsocket.CreateContainerAddressInfo(containerSystemGUID, coi.HostingSystem.RuntimeID())
+			if err != nil {
+				return nil, r, fmt.Errorf("redirect container HvSocket failed: %w", err)
+			}
+			r.Add(addressInfoCloser)
+		}
+
 		return c, r, nil
 	}
 
