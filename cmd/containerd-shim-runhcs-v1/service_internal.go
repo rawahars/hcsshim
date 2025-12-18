@@ -402,6 +402,10 @@ func (s *service) diagExecInHostInternal(ctx context.Context, req *shimdiag.Exec
 
 	// If the sandbox is managed via sandbox APIs,
 	// we will call the internal methods directly.
+	if s.sandbox.phase == sandboxTerminated {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox is terminated")
+	}
+
 	if s.sandbox.phase == sandboxStarted {
 		ec, err = execInHost(ctx, req, s.sandbox.host)
 		if err != nil {
@@ -424,6 +428,10 @@ func (s *service) diagExecInHostInternal(ctx context.Context, req *shimdiag.Exec
 func (s *service) diagShareInternal(ctx context.Context, req *shimdiag.ShareRequest) (*shimdiag.ShareResponse, error) {
 	// If the sandbox is managed via sandbox APIs,
 	// we will call the internal methods directly.
+	if s.sandbox.phase == sandboxTerminated {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox is terminated")
+	}
+
 	if s.sandbox.phase == sandboxStarted {
 		if err := shareOnHost(ctx, req, s.sandbox.host); err != nil {
 			return nil, err
@@ -454,6 +462,9 @@ func (s *service) diagListExecs(task shimTask) ([]*shimdiag.Exec, error) {
 }
 
 func (s *service) diagTasksInternal(ctx context.Context, req *shimdiag.TasksRequest) (_ *shimdiag.TasksResponse, err error) {
+	if s.sandbox.phase == sandboxTerminated {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox is terminated")
+	}
 
 	resp := &shimdiag.TasksResponse{}
 	if s.isSandbox {

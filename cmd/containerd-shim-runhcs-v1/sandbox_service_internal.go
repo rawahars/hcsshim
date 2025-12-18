@@ -12,10 +12,14 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/uvm"
 	"github.com/Microsoft/hcsshim/osversion"
+	"github.com/containerd/typeurl/v2"
+	"golang.org/x/sys/windows"
+
 	"github.com/containerd/containerd/api/runtime/sandbox/v1"
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/errdefs"
 	"github.com/pkg/errors"
+	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
 func (s *service) createSandbox(
@@ -118,9 +122,15 @@ func (s *service) startSandbox(ctx context.Context, sandboxId string) (*sandbox.
 		return &sandbox.StartSandboxResponse{}, fmt.Errorf("failed to start sandbox: %w", err)
 	}
 
+	// Ignore the error here since the start time should always be available after a successful start.
+	startTime, _ := s.sandbox.host.StartTime()
+
 	s.sandbox.phase = sandboxStarted
 	s.cl.Unlock()
-	return &sandbox.StartSandboxResponse{}, nil
+
+	return &sandbox.StartSandboxResponse{
+		CreatedAt: timestamppb.New(startTime),
+	}, nil
 }
 
 func (s *service) platform(_ context.Context, sandboxId string) (*sandbox.PlatformResponse, error) {
@@ -142,9 +152,25 @@ func (s *service) platform(_ context.Context, sandboxId string) (*sandbox.Platfo
 	}, nil
 }
 
-func (s *service) stopSandbox(ctx context.Context, request *sandbox.StopSandboxRequest) (*sandbox.StopSandboxResponse, error) {
-	// Todo: Implement the stop method.
-	return nil, nil
+func (s *service) stopSandbox(ctx context.Context, sandboxId string) (*sandbox.StopSandboxResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.StopSandboxResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	// Todo: Consider custom error for invalid phase.
+	if s.sandbox.phase != sandboxStarted {
+		return &sandbox.StopSandboxResponse{}, fmt.Errorf("invalid sandbox phase")
+	}
+
+	isStopped := s.sandbox.host.IsStopped()
+	if !isStopped {
+		err := s.sandbox.host.CloseCtx(ctx)
+		if err != nil {
+			return &sandbox.StopSandboxResponse{}, err
+		}
+	}
+
+	return &sandbox.StopSandboxResponse{}, nil
 }
 
 func (s *service) waitSandbox(ctx context.Context, sandboxId string) (*sandbox.WaitSandboxResponse, error) {
@@ -161,12 +187,64 @@ func (s *service) waitSandbox(ctx context.Context, sandboxId string) (*sandbox.W
 		return &sandbox.WaitSandboxResponse{}, err
 	}
 
-	// Todo: Implement pathway for sandbox status and set the exited params.
-	return &sandbox.WaitSandboxResponse{}, nil
+	stopTime, err := s.sandbox.host.StopTime()
+	if err != nil {
+		return &sandbox.WaitSandboxResponse{}, fmt.Errorf("failed to get sandbox stop time: %w", err)
+	}
+
+	// Get the exit error for the uvm.
+	exitStatus := 0
+	// If there was an exit error, set a non-zero exit status.
+	if exitError := s.sandbox.host.ExitError(); exitError != nil {
+		exitStatus = int(windows.ERROR_INTERNAL_ERROR)
+	}
+
+	// Update the sandbox phase to terminated.
+	s.sandbox.phase = sandboxTerminated
+
+	return &sandbox.WaitSandboxResponse{
+		ExitStatus: uint32(exitStatus),
+		ExitedAt:   timestamppb.New(stopTime),
+	}, nil
 }
 
-func (s *service) sandboxStatus(ctx context.Context, request *sandbox.SandboxStatusRequest) (*sandbox.SandboxStatusResponse, error) {
-	// Todo: Implement the status method.
+func (s *service) sandboxStatus(_ context.Context, sandboxId string, verbose bool) (*sandbox.SandboxStatusResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.SandboxStatusResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase == sandboxPodManaged {
+		return &sandbox.SandboxStatusResponse{}, fmt.Errorf("sandbox is pod managed")
+	}
+
+	resp := &sandbox.SandboxStatusResponse{
+		SandboxID: s.sandbox.id,
+		State:     SandboxStateNotReady,
+	}
+
+	if s.sandbox.phase == sandboxStarted {
+		resp.State = SandboxStateReady
+	}
+
+	if !verbose {
+		// If not verbose, return early.
+		return resp, nil
+	}
+
+	if s.sandbox.phase == sandboxStarted || s.sandbox.phase == sandboxTerminated {
+		// Ignore the error here since the start time should always be available after a successful start.
+		startTime, _ := s.sandbox.host.StartTime()
+		resp.CreatedAt = timestamppb.New(startTime)
+	}
+
+	if s.sandbox.phase == sandboxTerminated {
+		// Ignore the error here since the stop time should always be available after a successful stop.
+		stopTime, _ := s.sandbox.host.StopTime()
+		resp.ExitedAt = timestamppb.New(stopTime)
+	}
+
+	// Todo: Add more verbose info if needed.
+
 	return nil, nil
 }
 
@@ -187,27 +265,48 @@ func (s *service) pingSandbox(_ context.Context, sandboxId string) (*sandbox.Pin
 	return &sandbox.PingResponse{}, nil
 }
 
-func (s *service) shutdownSandbox(ctx context.Context, sandboxId string) (*sandbox.ShutdownSandboxResponse, error) {
+func (s *service) shutdownSandbox(_ context.Context, sandboxId string) (*sandbox.ShutdownSandboxResponse, error) {
 	if s.sandbox.id != sandboxId {
 		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("invalid sandbox id")
 	}
 
-	if s.sandbox.phase != sandboxStarted {
-		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("sandbox not started")
+	if s.sandbox.phase != sandboxTerminated {
+		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("sandbox not terminated")
 	}
 
-	isStopped := s.sandbox.host.IsStopped()
-	if !isStopped {
-		err := s.sandbox.host.CloseCtx(ctx)
-		if err != nil {
-			return &sandbox.ShutdownSandboxResponse{}, err
-		}
-	}
+	// Along with terminating the UVM, signal the service to perform shutdown.
+	s.shutdownOnce.Do(func() {
+		s.gracefulShutdown = true
+		close(s.shutdown)
+	})
 
 	return &sandbox.ShutdownSandboxResponse{}, nil
 }
 
-func (s *service) sandboxMetrics(ctx context.Context, request *sandbox.SandboxMetricsRequest) (*sandbox.SandboxMetricsResponse, error) {
-	// Todo: Implement the metrics method.
-	return nil, nil
+func (s *service) sandboxMetrics(ctx context.Context, sandboxId string) (*sandbox.SandboxMetricsResponse, error) {
+	if s.sandbox.id != sandboxId {
+		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("invalid sandbox id")
+	}
+
+	if s.sandbox.phase != sandboxStarted {
+		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("sandbox not started")
+	}
+
+	stats, err := s.sandbox.host.Stats(ctx)
+	if err != nil {
+		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("failed to get sandbox metrics: %w", err)
+	}
+
+	anyStat, err := typeurl.MarshalAny(stats)
+	if err != nil {
+		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("failed to marshal sandbox metrics: %w", err)
+	}
+
+	return &sandbox.SandboxMetricsResponse{
+		Metrics: &types.Metric{
+			Timestamp: timestamppb.Now(),
+			ID:        sandboxId,
+			Data:      typeurl.MarshalProto(anyStat),
+		},
+	}, nil
 }

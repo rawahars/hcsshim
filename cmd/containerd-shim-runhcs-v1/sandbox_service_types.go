@@ -65,3 +65,10 @@ func (s sandboxPhase) String() string {
 		return "sandboxPhase(<invalid>)"
 	}
 }
+
+const (
+	// SandboxStateReady indicates the sandbox is ready.
+	SandboxStateReady = "SANDBOX_READY"
+	// SandboxStateNotReady indicates the sandbox is not ready.
+	SandboxStateNotReady = "SANDBOX_NOTREADY"
+)

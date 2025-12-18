@@ -87,7 +87,7 @@ func (s *service) StopSandbox(ctx context.Context, request *sandbox.StopSandboxR
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 	span.AddAttributes(trace.Int64Attribute("timeout-secs", int64(request.TimeoutSecs)))
 
-	r, e := s.stopSandbox(ctx, request)
+	r, e := s.stopSandbox(ctx, request.GetSandboxID())
 	return r, errdefs.ToGRPC(e)
 }
 
@@ -112,7 +112,7 @@ func (s *service) SandboxStatus(ctx context.Context, request *sandbox.SandboxSta
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 	span.AddAttributes(trace.BoolAttribute("verbose", request.Verbose))
 
-	r, e := s.sandboxStatus(ctx, request)
+	r, e := s.sandboxStatus(ctx, request.SandboxID, request.Verbose)
 	return r, errdefs.ToGRPC(e)
 }
 
@@ -150,6 +150,6 @@ func (s *service) SandboxMetrics(ctx context.Context, request *sandbox.SandboxMe
 
 	span.AddAttributes(trace.StringAttribute("sandbox-id", request.SandboxID))
 
-	r, e := s.sandboxMetrics(ctx, request)
+	r, e := s.sandboxMetrics(ctx, request.SandboxID)
 	return r, errdefs.ToGRPC(e)
 }
