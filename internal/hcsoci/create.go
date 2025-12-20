@@ -27,7 +27,6 @@ import (
 	"github.com/Microsoft/hcsshim/internal/resources"
 	"github.com/Microsoft/hcsshim/internal/schemaversion"
 	"github.com/Microsoft/hcsshim/internal/uvm"
-	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
 var (
@@ -128,6 +127,19 @@ func initializeCreateOptions(ctx context.Context, createOptions *CreateOptions) 
 		coi.actualSchemaVersion = schemaversion.DetermineSchemaVersion(coi.SchemaVersion)
 	}
 
+	// Set default CPU period and quota if not set for LCOW containers.
+	if coi.Spec.Linux != nil &&
+		coi.Spec.Linux.Resources != nil &&
+		coi.Spec.Linux.Resources.CPU != nil {
+
+		if *coi.Spec.Linux.Resources.CPU.Period == 0 {
+			*coi.Spec.Linux.Resources.CPU.Period = 100000 // Default CPU period
+		}
+		if *coi.Spec.Linux.Resources.CPU.Quota == 0 {
+			*coi.Spec.Linux.Resources.CPU.Quota = -1 // No CPU limit
+		}
+	}
+
 	log.G(ctx).WithFields(logrus.Fields{
 		"options": fmt.Sprintf("%+v", createOptions),
 		"schema":  coi.actualSchemaVersion,
@@ -150,14 +162,10 @@ func configureSandboxNetwork(ctx context.Context, coi *createOptionsInternal, r 
 	coi.actualNetworkNamespace = r.NetNS()
 
 	if coi.HostingSystem != nil {
-		// Check for virtual pod first containers: if containerID == virtualPodID, treat as sandbox for networking configuration
-		virtualPodID := coi.Spec.Annotations[annotations.VirtualPodID]
-		isVirtualPodFirstContainer := virtualPodID != "" && coi.actualID == virtualPodID
-
 		// Only add the network namespace to a standalone or sandbox
 		// container but not a workload container in a sandbox that inherits
 		// the namespace.
-		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox || isVirtualPodFirstContainer {
+		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
 			if err := coi.HostingSystem.ConfigureNetworking(ctx, coi.actualNetworkNamespace); err != nil {
 				// No network setup type was specified for this UVM. Create and assign one here unless
 				// we received a different error.

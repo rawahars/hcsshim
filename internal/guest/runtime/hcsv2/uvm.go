@@ -1382,26 +1382,6 @@ func (h *Host) getPod(sandboxID string) (*uvmPod, bool) {
 }
 
 func (h *Host) createPodInUVM(sid string, pSpec *specs.Spec, nsID string) error {
-	// Extract memory limit from sandbox container spec
-	var memoryLimit *int64
-	if pSpec.Linux != nil &&
-		pSpec.Linux.Resources != nil &&
-		pSpec.Linux.Resources.Memory != nil &&
-		pSpec.Linux.Resources.Memory.Limit != nil {
-		memoryLimit = pSpec.Linux.Resources.Memory.Limit
-
-		logrus.WithFields(logrus.Fields{
-			"sandboxID":   sid,
-			"memoryLimit": *memoryLimit,
-		}).Info("Extracted memory limit from sandbox container spec")
-	}
-
-	if memoryLimit == nil {
-		logrus.WithFields(logrus.Fields{
-			"sandboxID": sid,
-		}).Info("Memory limit not found in sandbox container spec")
-	}
-
 	h.podsMutex.Lock()
 	defer h.podsMutex.Unlock()
 
@@ -1419,14 +1399,18 @@ func (h *Host) createPodInUVM(sid string, pSpec *specs.Spec, nsID string) error 
 
 	// Create the cgroup for the pod within the sandbox.
 	resources := &specs.LinuxResources{}
-	if memoryLimit != nil {
-		resources.Memory = &specs.LinuxMemory{
-			Limit: memoryLimit,
-		}
+	if pSpec.Linux.Resources != nil {
+		resources = pSpec.Linux.Resources
 		logrus.WithFields(logrus.Fields{
-			"sandboxID":   sid,
-			"memoryLimit": *memoryLimit,
-		}).Info("Creating pod with memory limit")
+			"sandboxID": sid,
+			"resources": resources,
+		}).Info("Creating pod cgroup with specified resources")
+	}
+
+	if pSpec.Linux.Resources == nil {
+		logrus.WithFields(logrus.Fields{
+			"sandboxID": sid,
+		}).Info("Creating pod cgroup with default resources as none were specified")
 	}
 
 	cgroupControl, err := cgroups.New(cgroups.StaticPath(cgroupPath), resources)
