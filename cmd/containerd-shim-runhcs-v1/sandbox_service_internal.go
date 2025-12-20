@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/sandbox_options"
 	"github.com/Microsoft/hcsshim/internal/log"
@@ -265,7 +266,7 @@ func (s *service) pingSandbox(_ context.Context, sandboxId string) (*sandbox.Pin
 	return &sandbox.PingResponse{}, nil
 }
 
-func (s *service) shutdownSandbox(_ context.Context, sandboxId string) (*sandbox.ShutdownSandboxResponse, error) {
+func (s *service) shutdownSandbox(ctx context.Context, sandboxId string) (*sandbox.ShutdownSandboxResponse, error) {
 	if s.sandbox.id != sandboxId {
 		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("invalid sandbox id")
 	}
@@ -274,11 +275,19 @@ func (s *service) shutdownSandbox(_ context.Context, sandboxId string) (*sandbox
 		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("sandbox not terminated")
 	}
 
-	// Along with terminating the UVM, signal the service to perform shutdown.
-	s.shutdownOnce.Do(func() {
-		s.gracefulShutdown = true
-		close(s.shutdown)
-	})
+	// Use a goroutine to wait for the context to be done.
+	// This allows us to return the response of the shutdown call prior to
+	// the server being shut down.
+	go func() {
+		<-ctx.Done()
+		time.Sleep(20 * time.Millisecond) // tiny cushion to avoid edge races
+
+		// Along with terminating the UVM, signal the service to perform shutdown.
+		s.shutdownOnce.Do(func() {
+			s.gracefulShutdown = true
+			close(s.shutdown)
+		})
+	}()
 
 	return &sandbox.ShutdownSandboxResponse{}, nil
 }
