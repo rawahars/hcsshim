@@ -301,7 +301,6 @@ func createPodWithSandbox(
 	req *task.CreateTaskRequest,
 	s *specs.Spec,
 	parent *uvm.UtilityVM,
-	sandboxID string,
 ) (_ shimPod, err error) {
 	log.G(ctx).WithField("tid", req.ID).Debug("createPodWithSandbox")
 
@@ -317,7 +316,7 @@ func createPodWithSandbox(
 			oci.KubernetesContainerTypeSandbox,
 			ct)
 	}
-	if sid != sandboxID {
+	if sid != req.ID {
 		return nil, errors.Wrapf(
 			errdefs.ErrFailedPrecondition,
 			"expected annotation '%s': '%s' got '%s'",

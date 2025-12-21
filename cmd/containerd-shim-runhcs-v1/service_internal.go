@@ -212,8 +212,11 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 		}
 
 		if s.sandbox.phase == sandboxStarted {
-			pod, err = createPodWithSandbox(ctx, s.events, req, &spec, s.sandbox.host, s.sandbox.id)
+			pod, err = createPodWithSandbox(ctx, s.events, req, &spec, s.sandbox.host)
 		} else {
+			if s.tid != req.ID {
+				return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox task %q already exists", s.tid)
+			}
 			pod, err = createPod(ctx, s.events, req, &spec)
 		}
 

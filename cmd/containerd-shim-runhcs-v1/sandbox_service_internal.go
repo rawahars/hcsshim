@@ -246,7 +246,7 @@ func (s *service) sandboxStatus(_ context.Context, sandboxId string, verbose boo
 
 	// Todo: Add more verbose info if needed.
 
-	return nil, nil
+	return resp, nil
 }
 
 func (s *service) pingSandbox(_ context.Context, sandboxId string) (*sandbox.PingResponse, error) {
