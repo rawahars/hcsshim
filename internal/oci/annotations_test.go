@@ -348,7 +348,7 @@ func TestParseAdditionalRegistryValues(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Logf("registry values:\n%s", tt.give)
 			v := strings.ReplaceAll(tt.give, "\n", "")
-			rvs := parseAdditionalRegistryValues(ctx, map[string]string{
+			rvs := ParseAdditionalRegistryValues(ctx, map[string]string{
 				"some-random-annotation":                                "random",
 				"not-microsoft.virtualmachine.wcow.additional-reg-keys": "this is fake",
 				iannotations.AdditionalRegistryValues:                   v,
@@ -460,7 +460,7 @@ func TestParseHVSocketServiceTable(t *testing.T) {
 			maps.Copy(annots, tt.give)
 			t.Logf("annotations:\n%v", annots)
 
-			rvs := parseHVSocketServiceTable(ctx, annots)
+			rvs := ParseHVSocketServiceTable(ctx, annots)
 			t.Logf("got %v", rvs)
 			want := tt.want
 			if want == nil {

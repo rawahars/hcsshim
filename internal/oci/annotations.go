@@ -86,10 +86,10 @@ func ParseAnnotationsDisableGMSA(ctx context.Context, s *specs.Spec) bool {
 	return ParseAnnotationsBool(ctx, s.Annotations, annotations.WCOWDisableGMSA, false)
 }
 
-// parseAdditionalRegistryValues extracts the additional registry values to set from annotations.
+// ParseAdditionalRegistryValues extracts the additional registry values to set from annotations.
 //
 // Like the [parseAnnotation*] functions, this logs errors but does not return them.
-func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []hcsschema.RegistryValue {
+func ParseAdditionalRegistryValues(ctx context.Context, a map[string]string) []hcsschema.RegistryValue {
 	// rather than have users deal with nil vs []hcsschema.RegistryValue as returns, always
 	// return the latter.
 	// this is mostly to make testing easier, since its awkward to have to differentiate between
@@ -211,10 +211,10 @@ func ValidateAndFilterRegistryValues(ctx context.Context, input []hcsschema.Regi
 	return slices.Clip(rvs)
 }
 
-// parseHVSocketServiceTable extracts any additional Hyper-V socket service configurations from annotations.
+// ParseHVSocketServiceTable extracts any additional Hyper-V socket service configurations from annotations.
 //
 // Like the [parseAnnotation*] functions, this logs errors but does not return them.
-func parseHVSocketServiceTable(ctx context.Context, a map[string]string) map[string]hcsschema.HvSocketServiceConfig {
+func ParseHVSocketServiceTable(ctx context.Context, a map[string]string) map[string]hcsschema.HvSocketServiceConfig {
 	sc := make(map[string]hcsschema.HvSocketServiceConfig)
 	// TODO(go1.23) use range over functions to implement a functional `filter | map $ a`
 	for k, v := range a {
