@@ -336,6 +336,12 @@ func createPodWithSandbox(
 		return nil, errors.New("process isolated containers are not supported with createPodWithSandbox")
 	}
 
+	if parent != nil {
+		if err := parent.CreateAndAssignNetworkSetup(ctx, "", ""); err != nil {
+			return nil, err
+		}
+	}
+
 	if oci.IsWCOW(s) {
 		err = p.setupWCOWPodSandboxTask(ctx, req, s)
 		if err != nil {
