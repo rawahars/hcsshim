@@ -86,10 +86,10 @@ func ParseAnnotationsDisableGMSA(ctx context.Context, s *specs.Spec) bool {
 	return ParseAnnotationsBool(ctx, s.Annotations, annotations.WCOWDisableGMSA, false)
 }
 
-// parseAdditionalRegistryValues extracts the additional registry values to set from annotations.
+// ParseAdditionalRegistryValues extracts the additional registry values to set from annotations.
 //
 // Like the [parseAnnotation*] functions, this logs errors but does not return them.
-func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []hcsschema.RegistryValue {
+func ParseAdditionalRegistryValues(ctx context.Context, a map[string]string) []hcsschema.RegistryValue {
 	// rather than have users deal with nil vs []hcsschema.RegistryValue as returns, always
 	// return the latter.
 	// this is mostly to make testing easier, since its awkward to have to differentiate between
@@ -108,12 +108,16 @@ func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []h
 	}
 
 	// basic error checking: warn about and delete invalid registry keys
-	rvs := make([]hcsschema.RegistryValue, 0, len(t))
-	for _, rv := range t {
+	return ValidateAndFilterRegistryValues(ctx, t)
+}
+
+func ValidateAndFilterRegistryValues(ctx context.Context, input []hcsschema.RegistryValue) []hcsschema.RegistryValue {
+	rvs := make([]hcsschema.RegistryValue, 0, len(input))
+
+	for _, rv := range input {
 		entry := log.G(ctx).WithFields(logrus.Fields{
-			logfields.OCIAnnotation: k,
-			logfields.Value:         v,
-			"registry-value":        log.Format(ctx, rv),
+			logfields.Value:  log.Format(ctx, rv),
+			"registry-value": log.Format(ctx, rv),
 		})
 
 		if rv.Key == nil {
@@ -157,7 +161,10 @@ func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []h
 
 		// multiple values are set
 		b2i := map[bool]int{true: 1} // hack to convert bool to int
-		if (b2i[rv.StringValue != ""] + b2i[rv.BinaryValue != ""] + b2i[rv.DWordValue != 0] + b2i[rv.QWordValue != 0]) > 1 {
+		if (b2i[rv.StringValue != ""] +
+			b2i[rv.BinaryValue != ""] +
+			b2i[rv.DWordValue != 0] +
+			b2i[rv.QWordValue != 0]) > 1 {
 			entry.Warning("multiple values set")
 			continue
 		}
@@ -204,10 +211,10 @@ func parseAdditionalRegistryValues(ctx context.Context, a map[string]string) []h
 	return slices.Clip(rvs)
 }
 
-// parseHVSocketServiceTable extracts any additional Hyper-V socket service configurations from annotations.
+// ParseHVSocketServiceTable extracts any additional Hyper-V socket service configurations from annotations.
 //
 // Like the [parseAnnotation*] functions, this logs errors but does not return them.
-func parseHVSocketServiceTable(ctx context.Context, a map[string]string) map[string]hcsschema.HvSocketServiceConfig {
+func ParseHVSocketServiceTable(ctx context.Context, a map[string]string) map[string]hcsschema.HvSocketServiceConfig {
 	sc := make(map[string]hcsschema.HvSocketServiceConfig)
 	// TODO(go1.23) use range over functions to implement a functional `filter | map $ a`
 	for k, v := range a {

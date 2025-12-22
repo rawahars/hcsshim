@@ -27,11 +27,10 @@ import (
 	"github.com/Microsoft/hcsshim/internal/resources"
 	"github.com/Microsoft/hcsshim/internal/schemaversion"
 	"github.com/Microsoft/hcsshim/internal/uvm"
-	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
 var (
-	lcowRootInUVM = guestpath.LCOWRootPrefixInUVM + "/%s"
+	lcowRootInUVM = guestpath.LCOWRootPrefixInUVM + "/%s/%s"
 	wcowRootInUVM = guestpath.WCOWRootPrefixInUVM + "/%s"
 )
 
@@ -43,6 +42,7 @@ var (
 type CreateOptions struct {
 	// Common parameters
 	ID               string             // Identifier for the container
+	SandboxID        string             // Identifier for the pod of this container.
 	Owner            string             // Specifies the owner. Defaults to executable name.
 	Spec             *specs.Spec        // Definition of the container or utility VM being created
 	SchemaVersion    *hcsschema.Version // Requested Schema Version. Defaults to v2 for RS5, v1 for RS1..RS4
@@ -127,6 +127,19 @@ func initializeCreateOptions(ctx context.Context, createOptions *CreateOptions) 
 		coi.actualSchemaVersion = schemaversion.DetermineSchemaVersion(coi.SchemaVersion)
 	}
 
+	// Set default CPU period and quota if not set for LCOW containers.
+	if coi.Spec.Linux != nil &&
+		coi.Spec.Linux.Resources != nil &&
+		coi.Spec.Linux.Resources.CPU != nil {
+
+		if *coi.Spec.Linux.Resources.CPU.Period == 0 {
+			*coi.Spec.Linux.Resources.CPU.Period = 100000 // Default CPU period
+		}
+		if *coi.Spec.Linux.Resources.CPU.Quota == 0 {
+			*coi.Spec.Linux.Resources.CPU.Quota = -1 // No CPU limit
+		}
+	}
+
 	log.G(ctx).WithFields(logrus.Fields{
 		"options": fmt.Sprintf("%+v", createOptions),
 		"schema":  coi.actualSchemaVersion,
@@ -149,14 +162,10 @@ func configureSandboxNetwork(ctx context.Context, coi *createOptionsInternal, r 
 	coi.actualNetworkNamespace = r.NetNS()
 
 	if coi.HostingSystem != nil {
-		// Check for virtual pod first containers: if containerID == virtualPodID, treat as sandbox for networking configuration
-		virtualPodID := coi.Spec.Annotations[annotations.VirtualPodID]
-		isVirtualPodFirstContainer := virtualPodID != "" && coi.actualID == virtualPodID
-
 		// Only add the network namespace to a standalone or sandbox
 		// container but not a workload container in a sandbox that inherits
 		// the namespace.
-		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox || isVirtualPodFirstContainer {
+		if ct == oci.KubernetesContainerTypeNone || ct == oci.KubernetesContainerTypeSandbox {
 			if err := coi.HostingSystem.ConfigureNetworking(ctx, coi.actualNetworkNamespace); err != nil {
 				// No network setup type was specified for this UVM. Create and assign one here unless
 				// we received a different error.
@@ -205,7 +214,9 @@ func CreateContainer(ctx context.Context, createOptions *CreateOptions) (_ cow.C
 
 	if coi.HostingSystem != nil {
 		if coi.Spec.Linux != nil {
-			r.SetContainerRootInUVM(fmt.Sprintf(lcowRootInUVM, coi.ID))
+			// The container root within the UVM would be as below-
+			// <Root Dir>/pods/<PodID>/<ContainerID>
+			r.SetContainerRootInUVM(fmt.Sprintf(lcowRootInUVM, coi.SandboxID, coi.ID))
 		} else {
 			n := coi.HostingSystem.ContainerCounter()
 			r.SetContainerRootInUVM(fmt.Sprintf(wcowRootInUVM, strconv.FormatUint(n, 16)))

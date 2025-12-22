@@ -41,7 +41,7 @@ func setupPodServiceWithFakes(t *testing.T) (*service, *testShimTask, *testShimT
 	pod := &testShimPod{id: tid}
 
 	// create init fake container
-	task := &testShimTask{
+	task1 := &testShimTask{
 		id:    tid,
 		exec:  newTestShimExec(tid, tid, 10),
 		execs: make(map[string]*testShimExec),
@@ -59,10 +59,12 @@ func setupPodServiceWithFakes(t *testing.T) (*service, *testShimTask, *testShimT
 	task2.execs[secondTaskSecondExecID] = task2exec2
 
 	// store the init task and 2nd task in the pod
-	pod.tasks.Store(task.id, task)
+	pod.tasks.Store(task1.id, task1)
 	pod.tasks.Store(task2.id, task2)
-	s.taskOrPod.Store(pod)
-	return s, task, task2, task2exec2
+	s.pods.Store(tid, pod)
+	s.tasks.Store(task1.id, pod)
+	s.tasks.Store(task2.id, pod)
+	return s, task1, task2, task2exec2
 }
 
 func Test_PodShim_getPod_NotCreated_Error(t *testing.T) {
@@ -71,7 +73,7 @@ func Test_PodShim_getPod_NotCreated_Error(t *testing.T) {
 		isSandbox: true,
 	}
 
-	p, err := s.getPod()
+	p, err := s.getPod(t.Name())
 
 	verifyExpectedError(t, p, err, errdefs.ErrFailedPrecondition)
 }
@@ -79,7 +81,7 @@ func Test_PodShim_getPod_NotCreated_Error(t *testing.T) {
 func Test_PodShim_getPod_Created_Success(t *testing.T) {
 	s, _, _, _ := setupPodServiceWithFakes(t)
 
-	p, err := s.getPod()
+	p, err := s.getPod(s.tid)
 	if err != nil {
 		t.Fatalf("should have not failed with error, got: %v", err)
 	}

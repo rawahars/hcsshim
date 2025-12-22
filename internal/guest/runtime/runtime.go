@@ -63,6 +63,7 @@ type Process interface {
 type Container interface {
 	Process
 	ID() string
+	SandboxID() string
 	Exists() (bool, error)
 	Start() error
 	ExecProcess(process *oci.Process, stdioSet *stdio.ConnectionSet) (p Process, err error)
@@ -79,6 +80,6 @@ type Container interface {
 // Runtime is the interface defining commands over an OCI container runtime,
 // such as runC.
 type Runtime interface {
-	CreateContainer(id string, bundlePath string, stdioSet *stdio.ConnectionSet) (c Container, err error)
+	CreateContainer(sandboxID string, id string, bundlePath string, stdioSet *stdio.ConnectionSet) (c Container, err error)
 	ListContainerStates() ([]ContainerState, error)
 }

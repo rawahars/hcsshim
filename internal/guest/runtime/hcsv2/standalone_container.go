@@ -17,27 +17,22 @@ import (
 	specGuest "github.com/Microsoft/hcsshim/internal/guest/spec"
 	"github.com/Microsoft/hcsshim/internal/guestpath"
 	"github.com/Microsoft/hcsshim/internal/oc"
-	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
-func getStandaloneRootDir(id, virtualSandboxID string) string {
-	if virtualSandboxID != "" {
-		// Standalone container in virtual pod gets its own subdir
-		return filepath.Join(guestpath.LCOWRootPrefixInUVM, "virtual-pods", virtualSandboxID, id)
-	}
+func getStandaloneRootDir(id string) string {
 	return filepath.Join(guestpath.LCOWRootPrefixInUVM, id)
 }
 
-func getStandaloneHostnamePath(id, virtualSandboxID string) string {
-	return filepath.Join(getStandaloneRootDir(id, virtualSandboxID), "hostname")
+func getStandaloneHostnamePath(id string) string {
+	return filepath.Join(getStandaloneRootDir(id), "hostname")
 }
 
-func getStandaloneHostsPath(id, virtualSandboxID string) string {
-	return filepath.Join(getStandaloneRootDir(id, virtualSandboxID), "hosts")
+func getStandaloneHostsPath(id string) string {
+	return filepath.Join(getStandaloneRootDir(id), "hosts")
 }
 
-func getStandaloneResolvPath(id, virtualSandboxID string) string {
-	return filepath.Join(getStandaloneRootDir(id, virtualSandboxID), "resolv.conf")
+func getStandaloneResolvPath(id string) string {
+	return filepath.Join(getStandaloneRootDir(id), "resolv.conf")
 }
 
 func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec) (err error) {
@@ -46,11 +41,8 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 	defer func() { oc.SetSpanStatus(span, err) }()
 	span.AddAttributes(trace.StringAttribute("cid", id))
 
-	// Check if this is a virtual pod (unlikely for standalone)
-	virtualSandboxID := spec.Annotations[annotations.VirtualPodID]
-
-	// Generate the standalone root dir - virtual pod aware
-	rootDir := getStandaloneRootDir(id, virtualSandboxID)
+	// Generate the standalone root dir
+	rootDir := getStandaloneRootDir(id)
 	if err := os.MkdirAll(rootDir, 0755); err != nil {
 		return errors.Wrapf(err, "failed to create container root directory %q", rootDir)
 	}
@@ -71,7 +63,7 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 
 	// Write the hostname
 	if !specGuest.MountPresent("/etc/hostname", spec.Mounts) {
-		standaloneHostnamePath := getStandaloneHostnamePath(id, virtualSandboxID)
+		standaloneHostnamePath := getStandaloneHostnamePath(id)
 		if err := os.WriteFile(standaloneHostnamePath, []byte(hostname+"\n"), 0644); err != nil {
 			return errors.Wrapf(err, "failed to write hostname to %q", standaloneHostnamePath)
 		}
@@ -79,7 +71,7 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 		mt := oci.Mount{
 			Destination: "/etc/hostname",
 			Type:        "bind",
-			Source:      getStandaloneHostnamePath(id, virtualSandboxID),
+			Source:      getStandaloneHostnamePath(id),
 			Options:     []string{"bind"},
 		}
 		if specGuest.IsRootReadonly(spec) {
@@ -91,7 +83,7 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 	// Write the hosts
 	if !specGuest.MountPresent("/etc/hosts", spec.Mounts) {
 		standaloneHostsContent := network.GenerateEtcHostsContent(ctx, hostname)
-		standaloneHostsPath := getStandaloneHostsPath(id, virtualSandboxID)
+		standaloneHostsPath := getStandaloneHostsPath(id)
 		if err := os.WriteFile(standaloneHostsPath, []byte(standaloneHostsContent), 0644); err != nil {
 			return errors.Wrapf(err, "failed to write standalone hosts to %q", standaloneHostsPath)
 		}
@@ -99,7 +91,7 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 		mt := oci.Mount{
 			Destination: "/etc/hosts",
 			Type:        "bind",
-			Source:      getStandaloneHostsPath(id, virtualSandboxID),
+			Source:      getStandaloneHostsPath(id),
 			Options:     []string{"bind"},
 		}
 		if specGuest.IsRootReadonly(spec) {
@@ -124,7 +116,7 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 		if err != nil {
 			return errors.Wrap(err, "failed to generate standalone resolv.conf content")
 		}
-		standaloneResolvPath := getStandaloneResolvPath(id, virtualSandboxID)
+		standaloneResolvPath := getStandaloneResolvPath(id)
 		if err := os.WriteFile(standaloneResolvPath, []byte(resolvContent), 0644); err != nil {
 			return errors.Wrap(err, "failed to write standalone resolv.conf")
 		}
@@ -132,7 +124,7 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 		mt := oci.Mount{
 			Destination: "/etc/resolv.conf",
 			Type:        "bind",
-			Source:      getStandaloneResolvPath(id, virtualSandboxID),
+			Source:      getStandaloneResolvPath(id),
 			Options:     []string{"bind"},
 		}
 		if specGuest.IsRootReadonly(spec) {
@@ -141,15 +133,9 @@ func setupStandaloneContainerSpec(ctx context.Context, id string, spec *oci.Spec
 		spec.Mounts = append(spec.Mounts, mt)
 	}
 
-	// Set cgroup path - check if this is part of a virtual pod (unlikely for standalone)
-	if virtualSandboxID != "" {
-		// Standalone container in virtual pod goes under /containers/virtual-pods/{virtualSandboxID}/{containerID}
-		// Each virtualSandboxID creates its own pod-level cgroup for all containers in that virtual pod
-		spec.Linux.CgroupsPath = "/containers/virtual-pods/" + virtualSandboxID + "/" + id
-	} else {
-		// Traditional standalone container goes under /containers
-		spec.Linux.CgroupsPath = "/containers/" + id
-	}
+	// Set cgroup path
+	// This will be a hierarchical path under pods.
+	spec.Linux.CgroupsPath = "/pods/" + id
 
 	// Clear the windows section as we dont want to forward to runc
 	spec.Windows = nil

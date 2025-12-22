@@ -28,15 +28,11 @@ import (
 )
 
 // initializeWCOWBootFiles handles the initialization of boot files for WCOW VMs
-func initializeWCOWBootFiles(ctx context.Context, wopts *uvm.OptionsWCOW, rootfs []*types.Mount, s *specs.Spec) error {
+func initializeWCOWBootFiles(ctx context.Context, wopts *uvm.OptionsWCOW, rootfs []*types.Mount, layerFolders []string) error {
 	var (
-		layerFolders []string
-		err          error
+		err error
 	)
 
-	if s.Windows != nil {
-		layerFolders = s.Windows.LayerFolders
-	}
 	log.G(ctx).WithField("options", log.Format(ctx, *wopts)).Debug("initialize WCOW boot files")
 
 	wopts.BootFiles, err = layers.GetWCOWUVMBootFilesFromLayers(ctx, rootfs, layerFolders)
@@ -187,7 +183,13 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 			}
 		case *uvm.OptionsWCOW:
 			wopts := (opts).(*uvm.OptionsWCOW)
-			err = initializeWCOWBootFiles(ctx, wopts, req.Rootfs, s)
+
+			var layerFolders []string
+			if s.Windows != nil {
+				layerFolders = s.Windows.LayerFolders
+			}
+
+			err = initializeWCOWBootFiles(ctx, wopts, req.Rootfs, layerFolders)
 			if err != nil {
 				return nil, err
 			}
@@ -258,36 +260,9 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 	// need to provision the guest network namespace if this is hypervisor
 	// isolated. Process isolated WCOW gets the namespace endpoints
 	// automatically.
-	nsid := ""
 	if isWCOW && parent != nil {
-		if s.Windows != nil && s.Windows.Network != nil {
-			nsid = s.Windows.Network.NetworkNamespace
-		}
-
-		if nsid != "" {
-			if err := parent.ConfigureNetworking(ctx, nsid); err != nil {
-				return nil, errors.Wrapf(err, "failed to setup networking for pod %q", req.ID)
-			}
-		}
-		p.sandboxTask = newWcowPodSandboxTask(ctx, events, req.ID, req.Bundle, parent, nsid)
-		// Publish the created event. We only do this for a fake WCOW task. A
-		// HCS Task will event itself based on actual process lifetime.
-		if err := events.publishEvent(
-			ctx,
-			runtime.TaskCreateEventTopic,
-			&eventstypes.TaskCreate{
-				ContainerID: req.ID,
-				Bundle:      req.Bundle,
-				Rootfs:      req.Rootfs,
-				IO: &eventstypes.TaskIO{
-					Stdin:    req.Stdin,
-					Stdout:   req.Stdout,
-					Stderr:   req.Stderr,
-					Terminal: req.Terminal,
-				},
-				Checkpoint: "",
-				Pid:        0,
-			}); err != nil {
+		err = p.setupWCOWPodSandboxTask(ctx, req, s)
+		if err != nil {
 			return nil, err
 		}
 	} else {
@@ -309,12 +284,74 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 		}
 		// LCOW (and WCOW Process Isolated for the time being) requires a real
 		// task for the sandbox.
-		lt, err := newHcsTask(ctx, events, parent, true, req, s)
+		lt, err := newHcsTask(ctx, events, parent, true, req, s, req.ID)
 		if err != nil {
 			return nil, err
 		}
 		p.sandboxTask = lt
 	}
+	return &p, nil
+}
+
+// createPodWithSandbox is used to create a pod within an existing sandbox.
+// Such sandboxes are managed using Sandbox APIs.
+func createPodWithSandbox(
+	ctx context.Context,
+	events publisher,
+	req *task.CreateTaskRequest,
+	s *specs.Spec,
+	parent *uvm.UtilityVM,
+) (_ shimPod, err error) {
+	log.G(ctx).WithField("tid", req.ID).Debug("createPodWithSandbox")
+
+	ct, sid, err := oci.GetSandboxTypeAndID(s.Annotations)
+	if err != nil {
+		return nil, err
+	}
+	if ct != oci.KubernetesContainerTypeSandbox {
+		return nil, errors.Wrapf(
+			errdefs.ErrFailedPrecondition,
+			"expected annotation: '%s': '%s' got '%s'",
+			annotations.KubernetesContainerType,
+			oci.KubernetesContainerTypeSandbox,
+			ct)
+	}
+	if sid != req.ID {
+		return nil, errors.Wrapf(
+			errdefs.ErrFailedPrecondition,
+			"expected annotation '%s': '%s' got '%s'",
+			annotations.KubernetesSandboxID,
+			req.ID,
+			sid)
+	}
+
+	p := pod{
+		events: events,
+		id:     req.ID,
+		spec:   s,
+		host:   parent,
+	}
+
+	if !oci.IsIsolated(s) {
+		return nil, errors.New("process isolated containers are not supported with createPodWithSandbox")
+	}
+
+	if oci.IsWCOW(s) {
+		err = p.setupWCOWPodSandboxTask(ctx, req, s)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		// LCOW (and WCOW Process Isolated for the time being) requires a real
+		// task for the sandbox.
+		// This task does not own the host.
+		lt, err := newHcsTask(ctx, events, parent, false, req, s, req.ID)
+		if err != nil {
+			return nil, err
+		}
+		p.sandboxTask = lt
+	}
+
 	return &p, nil
 }
 
@@ -408,7 +445,7 @@ func (p *pod) CreateTask(ctx context.Context, req *task.CreateTaskRequest, s *sp
 			sid)
 	}
 
-	st, err := newHcsTask(ctx, p.events, p.host, false, req, s)
+	st, err := newHcsTask(ctx, p.events, p.host, false, req, s, p.id)
 	if err != nil {
 		return nil, err
 	}
@@ -497,6 +534,54 @@ func (p *pod) DeleteTask(ctx context.Context, tid string) error {
 
 	if p.id != tid {
 		p.workloadTasks.Delete(tid)
+	}
+
+	return nil
+}
+
+func (p *pod) setupWCOWPodSandboxTask(
+	ctx context.Context,
+	req *task.CreateTaskRequest,
+	s *specs.Spec,
+) error {
+	nsId := ""
+
+	if s.Windows.Network != nil && s.Windows.Network.NetworkNamespace != "" {
+		if err := p.host.ConfigureNetworking(
+			ctx,
+			s.Windows.Network.NetworkNamespace,
+		); err != nil {
+			return errors.Wrapf(err, "failed to setup networking for pod %q", req.ID)
+		}
+		nsId = s.Windows.Network.NetworkNamespace
+	}
+
+	p.sandboxTask = newWcowPodSandboxTask(
+		ctx,
+		p.events,
+		req.ID,
+		req.Bundle,
+		p.host,
+		nsId)
+	// Publish the created event. We only do this for a fake WCOW task. A
+	// HCS Task will event itself based on actual process lifetime.
+	if err := p.events.publishEvent(
+		ctx,
+		runtime.TaskCreateEventTopic,
+		&eventstypes.TaskCreate{
+			ContainerID: req.ID,
+			Bundle:      req.Bundle,
+			Rootfs:      req.Rootfs,
+			IO: &eventstypes.TaskIO{
+				Stdin:    req.Stdin,
+				Stdout:   req.Stdout,
+				Stderr:   req.Stderr,
+				Terminal: req.Terminal,
+			},
+			Checkpoint: "",
+			Pid:        0,
+		}); err != nil {
+		return err
 	}
 
 	return nil

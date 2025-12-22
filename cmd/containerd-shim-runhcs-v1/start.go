@@ -214,9 +214,21 @@ func getSpecAnnotations(bundlePath string) (map[string]string, error) {
 		return nil, err
 	}
 	defer f.Close()
-	var spec specAnnotations
-	if err := json.NewDecoder(f).Decode(&spec); err != nil {
-		return nil, errors.Wrap(err, "failed to deserialize valid OCI spec")
+
+	data, err := io.ReadAll(f)
+	if err != nil {
+		return nil, err
 	}
-	return spec.Annotations, nil
+
+	// First: try OCI annotations
+	var spec specAnnotations
+	if err := json.Unmarshal(data, &spec); err == nil {
+		// If we do not see any annotations, we return empty map.
+		if spec.Annotations == nil {
+			return map[string]string{}, nil
+		}
+		return spec.Annotations, nil
+	}
+
+	return nil, errors.Wrapf(err, "error unmarshalling the config")
 }

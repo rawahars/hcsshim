@@ -289,7 +289,7 @@ func (wpst *wcowPodSandboxTask) Share(ctx context.Context, req *shimdiag.ShareRe
 	if wpst.host == nil {
 		return errTaskNotIsolated
 	}
-	return wpst.host.Share(ctx, req.HostPath, req.UvmPath, req.ReadOnly)
+	return shareOnHost(ctx, req, wpst.host)
 }
 
 func (wpst *wcowPodSandboxTask) Stats(ctx context.Context) (*stats.Statistics, error) {
