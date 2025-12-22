@@ -267,11 +267,11 @@ func (s *service) pingSandbox(_ context.Context, sandboxId string) (*sandbox.Pin
 }
 
 func (s *service) shutdownSandbox(ctx context.Context, sandboxId string) (*sandbox.ShutdownSandboxResponse, error) {
-	if s.sandbox.id != sandboxId {
-		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("invalid sandbox id")
+	if s.sandbox.id != "" && s.sandbox.id != sandboxId {
+		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("invalid sandbox id %q, expected %q", sandboxId, s.sandbox.id)
 	}
 
-	if s.sandbox.phase != sandboxTerminated {
+	if s.sandbox.phase != sandboxUnknown && s.sandbox.phase != sandboxTerminated {
 		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("sandbox not terminated")
 	}
 
