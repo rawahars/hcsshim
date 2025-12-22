@@ -206,7 +206,7 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 
 	} else if oci.IsJobContainer(s) {
 		// If we're making a job container fake a task (i.e reuse the wcowPodSandbox logic)
-		p.sandboxTask = newWcowPodSandboxTask(ctx, events, req.ID, req.Bundle, parent, "")
+		p.sandboxTask = newWcowPodSandboxTask(ctx, events, req.ID, req.Bundle, parent, "", true)
 		if err := events.publishEvent(
 			ctx,
 			runtime.TaskCreateEventTopic,
@@ -261,7 +261,7 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 	// isolated. Process isolated WCOW gets the namespace endpoints
 	// automatically.
 	if isWCOW && parent != nil {
-		err = p.setupWCOWPodSandboxTask(ctx, req, s)
+		err = p.setupWCOWPodSandboxTask(ctx, req, s, true)
 		if err != nil {
 			return nil, err
 		}
@@ -336,8 +336,14 @@ func createPodWithSandbox(
 		return nil, errors.New("process isolated containers are not supported with createPodWithSandbox")
 	}
 
+	if parent != nil {
+		if err := parent.CreateAndAssignNetworkSetup(ctx, "", ""); err != nil {
+			return nil, err
+		}
+	}
+
 	if oci.IsWCOW(s) {
-		err = p.setupWCOWPodSandboxTask(ctx, req, s)
+		err = p.setupWCOWPodSandboxTask(ctx, req, s, false)
 		if err != nil {
 			return nil, err
 		}
@@ -543,6 +549,7 @@ func (p *pod) setupWCOWPodSandboxTask(
 	ctx context.Context,
 	req *task.CreateTaskRequest,
 	s *specs.Spec,
+	ownsHost bool,
 ) error {
 	nsId := ""
 
@@ -562,7 +569,8 @@ func (p *pod) setupWCOWPodSandboxTask(
 		req.ID,
 		req.Bundle,
 		p.host,
-		nsId)
+		nsId,
+		ownsHost)
 	// Publish the created event. We only do this for a fake WCOW task. A
 	// HCS Task will event itself based on actual process lifetime.
 	if err := p.events.publishEvent(
