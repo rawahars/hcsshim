@@ -139,6 +139,10 @@ const (
 	// SkipPodNetworking is the annotation to skip networking setup for the pod.
 	// This prevents errors from being raised when the pod is created without endpoints. Boolean.
 	SkipPodNetworking = "io.microsoft.cri.skip-pod-networking"
+
+	// TenantSandboxID is the annotation to specify the ID of an existing tenant sandbox
+	// to use for the pod sandbox. If present, the pod will join the specified tenant sandbox. String.
+	TenantSandboxID = "io.microsoft.cri.tenant-sandbox-id"
 )
 
 // LCOW integrity protection and confidential container annotations.
