@@ -35,9 +35,15 @@ func GenerateSandboxSpecs(
 	case runhcsoptions.Options_HYPERVISOR:
 		ctx := context.Background()
 		// UVM-backed isolation
-		osName, arch, er := splitPlatform(opts.SandboxPlatform)
-		if er != nil {
-			return nil, fmt.Errorf("failed to parse platform: %s", er)
+		osName, arch, err := splitPlatform(opts.SandboxPlatform)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse platform: %s", err)
+		}
+
+		// Process annotations prior to parsing them into SandboxSpec.
+		err = processAnnotations(ctx, opts, annotations)
+		if err != nil {
+			return nil, fmt.Errorf("failed to process annotations: %w", err)
 		}
 
 		// Create HypervisorIsolated spec
@@ -171,6 +177,23 @@ func GenerateSandboxSpecs(
 	default:
 		return nil, fmt.Errorf("unsupported sandbox_isolation: %v", opts.SandboxIsolation)
 	}
+}
+
+func processAnnotations(ctx context.Context, opts *runhcsoptions.Options, annotations map[string]string) error {
+	// Apply default annotations.
+	for key, value := range opts.DefaultContainerAnnotations {
+		// Only set default if not already set in annotations
+		if _, exists := annotations[key]; !exists {
+			annotations[key] = value
+		}
+	}
+
+	err := oci.ProcessAnnotations(ctx, annotations)
+	if err != nil {
+		return err
+	}
+
+	return nil
 }
 
 // parseCPUParameters parses CPU related parameters from annotations and options.
