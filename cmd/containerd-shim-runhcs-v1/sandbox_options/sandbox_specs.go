@@ -16,7 +16,7 @@ import (
 func GenerateSandboxSpecs(
 	opts *runhcsoptions.Options,
 	annotations map[string]string,
-	devices []*specs.WindowsDevice,
+	devices []specs.WindowsDevice,
 ) (*SandboxSpec, error) {
 	if opts == nil {
 		return nil, fmt.Errorf("no options provided")
@@ -433,7 +433,7 @@ func parseLinuxGuestOptions(ctx context.Context, annotations map[string]string) 
 	return guestOptions, nil
 }
 
-func parseLinuxDeviceOptions(ctx context.Context, annotations map[string]string, devices []*specs.WindowsDevice) (*LinuxDeviceOptions, error) {
+func parseLinuxDeviceOptions(ctx context.Context, annotations map[string]string, devices []specs.WindowsDevice) (*LinuxDeviceOptions, error) {
 	deviceOptions := &LinuxDeviceOptions{}
 
 	vpMemDeviceCount := oci.ParseAnnotationsUint32(ctx, annotations, shimannotations.VPMemCount, 0)
