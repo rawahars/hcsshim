@@ -34,10 +34,6 @@ const (
 	// sandboxUnknown is the zero-value; use it before the sandbox is handed to pod management.
 	sandboxUnknown sandboxPhase = iota
 
-	// sandboxPodManaged indicates the sandbox is known to/managed by the Pod
-	// and is not managed via Sandbox APIs.
-	sandboxPodManaged
-
 	// sandboxCreated means CreateSandbox completed successfully.
 	sandboxCreated
 
@@ -53,8 +49,6 @@ func (s sandboxPhase) String() string {
 	switch s {
 	case sandboxUnknown:
 		return "sandboxUnknown"
-	case sandboxPodManaged:
-		return "sandboxPodManaged"
 	case sandboxCreated:
 		return "sandboxCreated"
 	case sandboxStarted:

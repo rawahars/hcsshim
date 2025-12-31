@@ -58,12 +58,27 @@ func (s *service) createSandbox(
 		return nil, fmt.Errorf("invalid phase %s of sandbox", s.sandbox.phase.String())
 	}
 
+	err := s.createSandboxInternal(ctx, sandboxId, rootfs, bundle, sandboxSpec)
+	if err != nil {
+		s.cl.Unlock()
+		return nil, fmt.Errorf("failed to create sandbox: %w", err)
+	}
+
+	s.cl.Unlock()
+	return &sandbox.CreateSandboxResponse{}, nil
+}
+
+func (s *service) createSandboxInternal(ctx context.Context,
+	sandboxId string,
+	rootfs []*types.Mount,
+	bundle string,
+	sandboxSpec *sandbox_options.SandboxSpec,
+) error {
 	// Create the LCOW or WCOW options and save them.
 	owner := filepath.Base(os.Args[0])
 	lcowOptions, wcowOptions, plat, err := sandbox_options.BuildUVMOptions(ctx, sandboxSpec, fmt.Sprintf("%s@vm", sandboxId), owner)
 	if err != nil {
-		s.cl.Unlock()
-		return nil, fmt.Errorf("failed to build uvm options: %w", err)
+		return fmt.Errorf("failed to build uvm options: %w", err)
 	}
 
 	var host *uvm.UtilityVM
@@ -71,22 +86,19 @@ func (s *service) createSandbox(
 		lcowOptions.BundleDirectory = bundle
 		host, err = uvm.CreateLCOW(ctx, lcowOptions)
 		if err != nil {
-			s.cl.Unlock()
-			return nil, fmt.Errorf("failed to create lcow uvm: %w", err)
+			return fmt.Errorf("failed to create lcow uvm: %w", err)
 		}
 	}
 
 	if wcowOptions != nil {
 		err = initializeWCOWBootFiles(ctx, wcowOptions, rootfs, []string{})
 		if err != nil {
-			s.cl.Unlock()
-			return nil, fmt.Errorf("failed to initialize wcow boot files: %w", err)
+			return fmt.Errorf("failed to initialize wcow boot files: %w", err)
 		}
 
 		host, err = uvm.CreateWCOW(ctx, wcowOptions)
 		if err != nil {
-			s.cl.Unlock()
-			return nil, fmt.Errorf("failed to create wcow uvm: %w", err)
+			return fmt.Errorf("failed to create wcow uvm: %w", err)
 		}
 	}
 
@@ -101,8 +113,7 @@ func (s *service) createSandbox(
 	// For the workflow via CreateSandbox, we need to mark this field as true
 	s.isSandbox = true
 
-	s.cl.Unlock()
-	return &sandbox.CreateSandboxResponse{}, nil
+	return nil
 }
 
 func (s *service) startSandbox(ctx context.Context, sandboxId string) (*sandbox.StartSandboxResponse, error) {
@@ -119,6 +130,7 @@ func (s *service) startSandbox(ctx context.Context, sandboxId string) (*sandbox.
 
 	err := s.sandbox.host.Start(ctx)
 	if err != nil {
+		s.sandbox.host.Close()
 		s.cl.Unlock()
 		return &sandbox.StartSandboxResponse{}, fmt.Errorf("failed to start sandbox: %w", err)
 	}
@@ -139,7 +151,7 @@ func (s *service) platform(_ context.Context, sandboxId string) (*sandbox.Platfo
 		return &sandbox.PlatformResponse{}, fmt.Errorf("invalid sandbox id")
 	}
 
-	if s.sandbox.phase == sandboxUnknown || s.sandbox.phase == sandboxPodManaged {
+	if s.sandbox.phase == sandboxUnknown {
 		return &sandbox.PlatformResponse{}, fmt.Errorf("invalid sandbox phase")
 	}
 
@@ -212,10 +224,6 @@ func (s *service) waitSandbox(ctx context.Context, sandboxId string) (*sandbox.W
 func (s *service) sandboxStatus(_ context.Context, sandboxId string, verbose bool) (*sandbox.SandboxStatusResponse, error) {
 	if s.sandbox.id != sandboxId {
 		return &sandbox.SandboxStatusResponse{}, fmt.Errorf("invalid sandbox id")
-	}
-
-	if s.sandbox.phase == sandboxPodManaged {
-		return &sandbox.SandboxStatusResponse{}, fmt.Errorf("sandbox is pod managed")
 	}
 
 	resp := &sandbox.SandboxStatusResponse{

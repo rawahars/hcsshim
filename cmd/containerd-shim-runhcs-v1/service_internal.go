@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/sandbox_options"
 	task "github.com/containerd/containerd/api/runtime/task/v2"
 	containerd_v1_types "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/errdefs"
@@ -203,23 +204,61 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 			return resp, nil
 		}
 
+		// POD sandbox was not found, create a new one.
+
+		// Check preconditions for pod creation.
+		err = validatePodPreconditions(req.ID, &spec)
+		if err != nil {
+			s.cl.Unlock()
+			return nil, err
+		}
+
+		ownsHostSandbox := false
 		if s.sandbox.phase == sandboxUnknown {
-			// Sandbox is not managed by the Sandbox Controller and therefore,
-			// needs to be tied with this pod lifecycle.
-			s.sandbox.phase = sandboxPodManaged
-		} else if s.sandbox.phase == sandboxCreated || s.sandbox.phase == sandboxTerminated {
+			// Sandbox is being created by Task API and therefore, the
+			// pod lifecycle is tied to the sandbox lifecycle.
+			ownsHostSandbox = true
+
+			// Check if a sandbox task already exists.
+			// For cases when the sandbox is created via Sandbox API,
+			// the sandbox tid will be different from req.ID.
+			if s.tid != req.ID {
+				s.cl.Unlock()
+				return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox task %q already exists", s.tid)
+			}
+
+			if oci.IsIsolated(&spec) {
+				sandboxSpec, err := sandbox_options.GenerateSandboxSpecs(shimOpts, spec.Annotations, spec.Windows.Devices)
+				if err != nil {
+					s.cl.Unlock()
+					return nil, errors.Wrapf(err, "failed to generate sandbox specs for sandbox %q", req.ID)
+				}
+
+				// Create the sandbox.
+				err = s.createSandboxInternal(ctx, req.ID, req.Rootfs, req.Bundle, sandboxSpec)
+				if err != nil {
+					s.cl.Unlock()
+					return nil, errors.Wrapf(err, "failed to create sandbox %q", req.ID)
+				}
+
+				// Start the sandbox.
+				err = s.sandbox.host.Start(ctx)
+				if err != nil {
+					s.sandbox.host.Close()
+					s.cl.Unlock()
+					return nil, fmt.Errorf("failed to start sandbox: %w", err)
+				}
+			}
+			// For non-isolated sandboxes, we consider them started.
+			s.sandbox.phase = sandboxStarted
+		}
+
+		if s.sandbox.phase != sandboxStarted {
+			s.cl.Unlock()
 			return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "sandbox not running")
 		}
 
-		if s.sandbox.phase == sandboxStarted {
-			pod, err = createPodWithSandbox(ctx, s.events, req, &spec, s.sandbox.host)
-		} else {
-			if s.tid != req.ID {
-				return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox task %q already exists", s.tid)
-			}
-			pod, err = createPod(ctx, s.events, req, &spec)
-		}
-
+		pod, err = createPod(ctx, s.events, req, &spec, s.sandbox.host, ownsHostSandbox)
 		if err != nil {
 			s.cl.Unlock()
 			return nil, err
