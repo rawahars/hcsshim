@@ -32,16 +32,17 @@ import (
 // It is assumed that this is the only fake WCOW task and that this task owns
 // `parent`. When the fake WCOW `init` process exits via `Signal` `parent` will
 // be forcibly closed by this task.
-func newWcowPodSandboxTask(ctx context.Context, events publisher, id, bundle string, parent *uvm.UtilityVM, nsid string) shimTask {
+func newWcowPodSandboxTask(ctx context.Context, events publisher, id, bundle string, parent *uvm.UtilityVM, nsid string, ownsHost bool) shimTask {
 	log.G(ctx).WithField("tid", id).Debug("newWcowPodSandboxTask")
 
 	wpst := &wcowPodSandboxTask{
-		events: events,
-		id:     id,
-		init:   newWcowPodSandboxExec(ctx, events, id, bundle),
-		host:   parent,
-		closed: make(chan struct{}),
-		nsid:   nsid,
+		events:   events,
+		id:       id,
+		init:     newWcowPodSandboxExec(ctx, events, id, bundle),
+		host:     parent,
+		closed:   make(chan struct{}),
+		nsid:     nsid,
+		ownsHost: ownsHost,
 	}
 	if parent != nil {
 		// We have (and own) a parent UVM. Listen for its exit and forcibly
@@ -89,6 +90,11 @@ type wcowPodSandboxTask struct {
 	// we need to do this manually. Store the network namespace ID so we can remove this on
 	// close.
 	nsid string
+
+	// ownsHost indicates if this task is responsible for closing the host UVM. If
+	// false the UVM is managed elsewhere and should not be closed during task
+	// shutdown.
+	ownsHost bool
 
 	closed    chan struct{}
 	closeOnce sync.Once
@@ -188,8 +194,12 @@ func (wpst *wcowPodSandboxTask) close(ctx context.Context) {
 				log.G(ctx).WithError(err).Error("failed to cleanup networking for utility VM")
 			}
 
-			if err := wpst.host.Close(); err != nil {
-				log.G(ctx).WithError(err).Error("failed host vm shutdown")
+			// Only close the host if we own it.
+			if wpst.ownsHost {
+				log.G(ctx).Debug("wcowPodSandboxTask::waitHost closing host VM")
+				if err := wpst.host.Close(); err != nil {
+					log.G(ctx).WithError(err).Error("failed host vm shutdown")
+				}
 			}
 		}
 		// Send the `init` exec exit notification always.
@@ -289,7 +299,7 @@ func (wpst *wcowPodSandboxTask) Share(ctx context.Context, req *shimdiag.ShareRe
 	if wpst.host == nil {
 		return errTaskNotIsolated
 	}
-	return wpst.host.Share(ctx, req.HostPath, req.UvmPath, req.ReadOnly)
+	return shareOnHost(ctx, req, wpst.host)
 }
 
 func (wpst *wcowPodSandboxTask) Stats(ctx context.Context) (*stats.Statistics, error) {

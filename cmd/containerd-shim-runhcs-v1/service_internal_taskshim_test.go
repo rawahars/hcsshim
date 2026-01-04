@@ -42,16 +42,16 @@ func setupTaskServiceWithFakes(t *testing.T) (*service, *testShimTask, *testShim
 		}
 	})
 
-	task := &testShimTask{
+	task1 := &testShimTask{
 		id:    tid,
 		exec:  newTestShimExec(tid, tid, 10),
 		execs: make(map[string]*testShimExec),
 	}
 	secondExecID := strconv.Itoa(rand.Int())
 	secondExec := newTestShimExec(tid, secondExecID, 101)
-	task.execs[secondExecID] = secondExec
-	s.taskOrPod.Store(task)
-	return s, task, secondExec
+	task1.execs[secondExecID] = secondExec
+	s.tasks.Store(tid, task1)
+	return s, task1, secondExec
 }
 
 func Test_TaskShim_getTask_NotCreated_Error(t *testing.T) {

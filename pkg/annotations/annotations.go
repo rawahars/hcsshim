@@ -143,10 +143,6 @@ const (
 	// TenantSandboxID is the annotation to specify the ID of an existing tenant sandbox
 	// to use for the pod sandbox. If present, the pod will join the specified tenant sandbox. String.
 	TenantSandboxID = "io.microsoft.cri.tenant-sandbox-id"
-
-	// VirtualPodID is the annotation to specify the pod ID not associated with a shim
-	// that a container should be placed in. This is used for multipod scenarios. String.
-	VirtualPodID = "io.microsoft.cri.virtual-pod-id"
 )
 
 // LCOW integrity protection and confidential container annotations.

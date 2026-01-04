@@ -5,9 +5,7 @@ package main
 import (
 	"context"
 	"fmt"
-	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/copyfile"
@@ -28,15 +26,11 @@ import (
 )
 
 // initializeWCOWBootFiles handles the initialization of boot files for WCOW VMs
-func initializeWCOWBootFiles(ctx context.Context, wopts *uvm.OptionsWCOW, rootfs []*types.Mount, s *specs.Spec) error {
+func initializeWCOWBootFiles(ctx context.Context, wopts *uvm.OptionsWCOW, rootfs []*types.Mount, layerFolders []string) error {
 	var (
-		layerFolders []string
-		err          error
+		err error
 	)
 
-	if s.Windows != nil {
-		layerFolders = s.Windows.LayerFolders
-	}
 	log.G(ctx).WithField("options", log.Format(ctx, *wopts)).Debug("initialize WCOW boot files")
 
 	wopts.BootFiles, err = layers.GetWCOWUVMBootFilesFromLayers(ctx, rootfs, layerFolders)
@@ -132,79 +126,62 @@ type shimPod interface {
 	DeleteTask(ctx context.Context, tid string) error
 }
 
-func createPod(ctx context.Context, events publisher, req *task.CreateTaskRequest, s *specs.Spec) (_ shimPod, err error) {
-	log.G(ctx).WithField("tid", req.ID).Debug("createPod")
-
+// validatePodPreconditions checks that the spec `s` is valid to create a pod
+// with id `reqID`.
+func validatePodPreconditions(reqID string, s *specs.Spec) error {
 	if osversion.Build() < osversion.RS5 {
-		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "pod support is not available on Windows versions previous to RS5 (%d)", osversion.RS5)
+		return errors.Wrapf(errdefs.ErrFailedPrecondition, "pod support is not available on Windows versions previous to RS5 (%d)", osversion.RS5)
 	}
 
 	ct, sid, err := oci.GetSandboxTypeAndID(s.Annotations)
 	if err != nil {
-		return nil, err
+		return err
 	}
 	if ct != oci.KubernetesContainerTypeSandbox {
-		return nil, errors.Wrapf(
+		return errors.Wrapf(
 			errdefs.ErrFailedPrecondition,
 			"expected annotation: '%s': '%s' got '%s'",
 			annotations.KubernetesContainerType,
 			oci.KubernetesContainerTypeSandbox,
 			ct)
 	}
-	if sid != req.ID {
-		return nil, errors.Wrapf(
+	if sid != reqID {
+		return errors.Wrapf(
 			errdefs.ErrFailedPrecondition,
 			"expected annotation '%s': '%s' got '%s'",
 			annotations.KubernetesSandboxID,
-			req.ID,
+			reqID,
 			sid)
 	}
 
-	owner := filepath.Base(os.Args[0])
-	isWCOW := oci.IsWCOW(s)
+	if !oci.IsLCOW(s) && !oci.IsWCOW(s) {
+		return errors.Wrap(errdefs.ErrFailedPrecondition, "oci spec does not contain WCOW or LCOW spec")
+	}
+
+	return nil
+}
+
+// createPod is used to create a pod.
+func createPod(
+	ctx context.Context,
+	events publisher,
+	req *task.CreateTaskRequest,
+	s *specs.Spec,
+	parent *uvm.UtilityVM,
+	ownsHost bool,
+) (_ shimPod, err error) {
+	log.G(ctx).WithField("tid", req.ID).Debug("createPod")
 
 	p := pod{
 		events: events,
 		id:     req.ID,
 		spec:   s,
+		host:   parent,
 	}
 
-	var parent *uvm.UtilityVM
-	var lopts *uvm.OptionsLCOW
-	if oci.IsIsolated(s) {
-		// Create the UVM parent
-		opts, err := oci.SpecToUVMCreateOpts(ctx, s, fmt.Sprintf("%s@vm", req.ID), owner)
-		if err != nil {
-			return nil, err
-		}
-		switch opts.(type) {
-		case *uvm.OptionsLCOW:
-			lopts = (opts).(*uvm.OptionsLCOW)
-			lopts.BundleDirectory = req.Bundle
-			parent, err = uvm.CreateLCOW(ctx, lopts)
-			if err != nil {
-				return nil, err
-			}
-		case *uvm.OptionsWCOW:
-			wopts := (opts).(*uvm.OptionsWCOW)
-			err = initializeWCOWBootFiles(ctx, wopts, req.Rootfs, s)
-			if err != nil {
-				return nil, err
-			}
-			parent, err = uvm.CreateWCOW(ctx, wopts)
-			if err != nil {
-				return nil, err
-			}
-		}
-		err = parent.Start(ctx)
-		if err != nil {
-			parent.Close()
-			return nil, err
-		}
-
-	} else if oci.IsJobContainer(s) {
+	if oci.IsJobContainer(s) {
 		// If we're making a job container fake a task (i.e reuse the wcowPodSandbox logic)
-		p.sandboxTask = newWcowPodSandboxTask(ctx, events, req.ID, req.Bundle, parent, "")
+		p.sandboxTask = newWcowPodSandboxTask(ctx, events, req.ID, req.Bundle, parent, "", true)
 		if err := events.publishEvent(
 			ctx,
 			runtime.TaskCreateEventTopic,
@@ -225,18 +202,17 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 		}
 		p.jobContainer = true
 		return &p, nil
-	} else if !isWCOW {
-		return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "oci spec does not contain WCOW or LCOW spec")
 	}
 
 	defer func() {
 		// clean up the uvm if we fail any further operations
-		if err != nil && parent != nil {
+		// and the pod owns the host.
+		if err != nil && parent != nil && ownsHost {
 			parent.Close()
 		}
 	}()
 
-	p.host = parent
+	// Set up networking in the UVM if we have one.
 	if parent != nil {
 		cid := req.ID
 		if id, ok := s.Annotations[annotations.NcproxyContainerID]; ok {
@@ -248,7 +224,7 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 		}
 	}
 
-	// TODO: JTERRY75 - There is a bug in the compartment activation for Windows
+	// TODO: There is a bug in the compartment activation for Windows
 	// Process isolated that requires us to create the real pause container to
 	// hold the network compartment open. This is not required for Windows
 	// Hypervisor isolated. When we have a build that supports this for Windows
@@ -258,63 +234,21 @@ func createPod(ctx context.Context, events publisher, req *task.CreateTaskReques
 	// need to provision the guest network namespace if this is hypervisor
 	// isolated. Process isolated WCOW gets the namespace endpoints
 	// automatically.
-	nsid := ""
-	if isWCOW && parent != nil {
-		if s.Windows != nil && s.Windows.Network != nil {
-			nsid = s.Windows.Network.NetworkNamespace
-		}
-
-		if nsid != "" {
-			if err := parent.ConfigureNetworking(ctx, nsid); err != nil {
-				return nil, errors.Wrapf(err, "failed to setup networking for pod %q", req.ID)
-			}
-		}
-		p.sandboxTask = newWcowPodSandboxTask(ctx, events, req.ID, req.Bundle, parent, nsid)
-		// Publish the created event. We only do this for a fake WCOW task. A
-		// HCS Task will event itself based on actual process lifetime.
-		if err := events.publishEvent(
-			ctx,
-			runtime.TaskCreateEventTopic,
-			&eventstypes.TaskCreate{
-				ContainerID: req.ID,
-				Bundle:      req.Bundle,
-				Rootfs:      req.Rootfs,
-				IO: &eventstypes.TaskIO{
-					Stdin:    req.Stdin,
-					Stdout:   req.Stdout,
-					Stderr:   req.Stderr,
-					Terminal: req.Terminal,
-				},
-				Checkpoint: "",
-				Pid:        0,
-			}); err != nil {
+	if oci.IsIsolated(s) && oci.IsWCOW(s) {
+		err = p.setupWCOWPodSandboxTask(ctx, req, s, ownsHost)
+		if err != nil {
 			return nil, err
 		}
 	} else {
-		if isWCOW {
-			defaultArgs := "c:\\windows\\system32\\cmd.exe"
-			// For the default pause image, the  entrypoint
-			// used is pause.exe
-			// If the default pause image is not used for pause containers,
-			// the activation will immediately exit on Windows
-			// because there is no command. We forcibly update the command here
-			// to keep it alive only for non-default pause images.
-			// TODO: This override can be completely removed from containerd/1.7
-			if (len(s.Process.Args) == 1 && strings.EqualFold(s.Process.Args[0], defaultArgs)) ||
-				strings.EqualFold(s.Process.CommandLine, defaultArgs) {
-				log.G(ctx).Warning("Detected CMD override for pause container entrypoint." +
-					"Please consider switching to a pause image with an explicit cmd set")
-				s.Process.CommandLine = "cmd /c ping -t 127.0.0.1 > nul"
-			}
-		}
 		// LCOW (and WCOW Process Isolated for the time being) requires a real
 		// task for the sandbox.
-		lt, err := newHcsTask(ctx, events, parent, true, req, s)
+		lt, err := newHcsTask(ctx, events, parent, ownsHost, req, s, req.ID)
 		if err != nil {
 			return nil, err
 		}
 		p.sandboxTask = lt
 	}
+
 	return &p, nil
 }
 
@@ -408,7 +342,7 @@ func (p *pod) CreateTask(ctx context.Context, req *task.CreateTaskRequest, s *sp
 			sid)
 	}
 
-	st, err := newHcsTask(ctx, p.events, p.host, false, req, s)
+	st, err := newHcsTask(ctx, p.events, p.host, false, req, s, p.id)
 	if err != nil {
 		return nil, err
 	}
@@ -497,6 +431,56 @@ func (p *pod) DeleteTask(ctx context.Context, tid string) error {
 
 	if p.id != tid {
 		p.workloadTasks.Delete(tid)
+	}
+
+	return nil
+}
+
+func (p *pod) setupWCOWPodSandboxTask(
+	ctx context.Context,
+	req *task.CreateTaskRequest,
+	s *specs.Spec,
+	ownsHost bool,
+) error {
+	nsId := ""
+
+	if s.Windows.Network != nil && s.Windows.Network.NetworkNamespace != "" {
+		if err := p.host.ConfigureNetworking(
+			ctx,
+			s.Windows.Network.NetworkNamespace,
+		); err != nil {
+			return errors.Wrapf(err, "failed to setup networking for pod %q", req.ID)
+		}
+		nsId = s.Windows.Network.NetworkNamespace
+	}
+
+	p.sandboxTask = newWcowPodSandboxTask(
+		ctx,
+		p.events,
+		req.ID,
+		req.Bundle,
+		p.host,
+		nsId,
+		ownsHost)
+	// Publish the created event. We only do this for a fake WCOW task. A
+	// HCS Task will event itself based on actual process lifetime.
+	if err := p.events.publishEvent(
+		ctx,
+		runtime.TaskCreateEventTopic,
+		&eventstypes.TaskCreate{
+			ContainerID: req.ID,
+			Bundle:      req.Bundle,
+			Rootfs:      req.Rootfs,
+			IO: &eventstypes.TaskIO{
+				Stdin:    req.Stdin,
+				Stdout:   req.Stdout,
+				Stderr:   req.Stderr,
+				Terminal: req.Terminal,
+			},
+			Checkpoint: "",
+			Pid:        0,
+		}); err != nil {
+		return err
 	}
 
 	return nil

@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/sandbox_options"
 	task "github.com/containerd/containerd/api/runtime/task/v2"
 	containerd_v1_types "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/errdefs"
@@ -30,37 +31,54 @@ import (
 
 var empty = &emptypb.Empty{}
 
-// getPod returns the pod this shim is tracking or else returns `nil`. It is the
-// callers responsibility to verify that `s.isSandbox == true` before calling
-// this method.
+// getPod returns the pod with requested podID or TaskID.
 //
-// If `pod==nil` returns `errdefs.ErrFailedPrecondition`.
-func (s *service) getPod() (shimPod, error) {
-	raw := s.taskOrPod.Load()
-	if raw == nil {
-		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "task with id: '%s' must be created first", s.tid)
+// We return `errdefs.ErrFailedPrecondition` if -
+// - The id does not correspond to a task or a pod
+// - The id corresponds to a standalone task
+func (s *service) getPod(podOrTaskId string) (shimPod, error) {
+	rawPod, _ := s.pods.Load(podOrTaskId)
+	if rawPod == nil {
+		// Check if the requested podOrTaskId matches the task id.
+		raw, ok := s.tasks.Load(podOrTaskId)
+		if !ok {
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "task with id: '%s' must be created first", s.tid)
+		}
+
+		switch val := raw.(type) {
+		case shimPod:
+			return val, nil
+		case shimTask:
+			return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "standalone task found with id: '%s'", s.tid)
+		default:
+			return nil, fmt.Errorf("invalid type for task with id: '%s'", podOrTaskId)
+		}
 	}
-	return raw.(shimPod), nil
+	return rawPod.(shimPod), nil
 }
 
-// getTask returns a task matching `tid` or else returns `nil`. This properly
+// getTask returns a task matching `tid` or else returns an error. This properly
 // handles a task in a pod or a singular task shim.
 //
 // If `tid` is not found will return `errdefs.ErrNotFound`.
 func (s *service) getTask(tid string) (shimTask, error) {
-	raw := s.taskOrPod.Load()
-	if raw == nil {
+	raw, ok := s.tasks.Load(tid)
+	if !ok {
 		return nil, errors.Wrapf(errdefs.ErrNotFound, "task with id: '%s' not found", tid)
 	}
-	if s.isSandbox {
-		p := raw.(shimPod)
-		return p.GetTask(tid)
+
+	switch val := raw.(type) {
+	case shimPod:
+		return val.GetTask(tid)
+	case shimTask:
+		// When its not a sandbox only the init task is a valid id.
+		if s.tid != tid {
+			return nil, errors.Wrapf(errdefs.ErrNotFound, "task with id: '%s' is not found", s.tid)
+		}
+		return val, nil
+	default:
+		return nil, fmt.Errorf("invalid type for task with id: '%s'", tid)
 	}
-	// When its not a sandbox only the init task is a valid id.
-	if s.tid != tid {
-		return nil, errors.Wrapf(errdefs.ErrNotFound, "task with id: '%s' not found", tid)
-	}
-	return raw.(shimTask), nil
 }
 
 func (s *service) stateInternal(ctx context.Context, req *task.StateRequest) (*task.StateResponse, error) {
@@ -107,7 +125,7 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 
 	spec = oci.UpdateSpecFromOptions(spec, shimOpts)
 	// expand annotations after defaults have been loaded in from options
-	err = oci.ProcessAnnotations(ctx, &spec)
+	err = oci.ProcessAnnotations(ctx, spec.Annotations)
 	// since annotation expansion is used to toggle security features
 	// raise it rather than suppress and move on
 	if err != nil {
@@ -163,7 +181,13 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 	resp := &task.CreateTaskResponse{}
 	s.cl.Lock()
 	if s.isSandbox {
-		pod, err := s.getPod()
+		// Get the sandbox annotations and derive the sandbox-id.
+		_, sid, err := oci.GetSandboxTypeAndID(spec.Annotations)
+		if err != nil {
+			return nil, err
+		}
+
+		pod, err := s.getPod(sid)
 		if err == nil {
 			// The POD sandbox was previously created. Unlock and forward to the POD
 			s.cl.Unlock()
@@ -171,19 +195,83 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 			if err != nil {
 				return nil, err
 			}
+
+			// Save the task in the task map.
+			s.tasks.Store(req.ID, pod)
+
 			e, _ := t.GetExec("")
 			resp.Pid = uint32(e.Pid())
 			return resp, nil
 		}
-		pod, err = createPod(ctx, s.events, req, &spec)
+
+		// POD sandbox was not found, create a new one.
+
+		// Check preconditions for pod creation.
+		err = validatePodPreconditions(req.ID, &spec)
 		if err != nil {
 			s.cl.Unlock()
 			return nil, err
 		}
+
+		ownsHostSandbox := false
+		if s.sandbox.phase == sandboxUnknown {
+			// Sandbox is being created by Task API and therefore, the
+			// pod lifecycle is tied to the sandbox lifecycle.
+			ownsHostSandbox = true
+
+			// Check if a sandbox task already exists.
+			// For cases when the sandbox is created via Sandbox API,
+			// the sandbox tid will be different from req.ID.
+			if s.tid != req.ID {
+				s.cl.Unlock()
+				return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox task %q already exists", s.tid)
+			}
+
+			if oci.IsIsolated(&spec) {
+				sandboxSpec, err := sandbox_options.GenerateSandboxSpecs(shimOpts, spec.Annotations, spec.Windows.Devices)
+				if err != nil {
+					s.cl.Unlock()
+					return nil, errors.Wrapf(err, "failed to generate sandbox specs for sandbox %q", req.ID)
+				}
+
+				// Create the sandbox.
+				err = s.createSandboxInternal(ctx, req.ID, req.Rootfs, req.Bundle, sandboxSpec)
+				if err != nil {
+					s.cl.Unlock()
+					return nil, errors.Wrapf(err, "failed to create sandbox %q", req.ID)
+				}
+
+				// Start the sandbox.
+				err = s.sandbox.host.Start(ctx)
+				if err != nil {
+					s.sandbox.host.Close()
+					s.cl.Unlock()
+					return nil, fmt.Errorf("failed to start sandbox: %w", err)
+				}
+			}
+			// For non-isolated sandboxes, we consider them started.
+			s.sandbox.phase = sandboxStarted
+		}
+
+		if s.sandbox.phase != sandboxStarted {
+			s.cl.Unlock()
+			return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "sandbox not running")
+		}
+
+		pod, err = createPod(ctx, s.events, req, &spec, s.sandbox.host, ownsHostSandbox)
+		if err != nil {
+			s.cl.Unlock()
+			return nil, err
+		}
+
 		t, _ := pod.GetTask(req.ID)
 		e, _ := t.GetExec("")
 		resp.Pid = uint32(e.Pid())
-		s.taskOrPod.Store(pod)
+
+		// Store the pod and task in their corresponding maps.
+		s.pods.Store(pod.ID(), pod)
+		s.tasks.Store(req.ID, pod)
+
 	} else {
 		t, err := newHcsStandaloneTask(ctx, s.events, req, &spec)
 		if err != nil {
@@ -192,7 +280,7 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 		}
 		e, _ := t.GetExec("")
 		resp.Pid = uint32(e.Pid())
-		s.taskOrPod.Store(t)
+		s.tasks.Store(req.ID, t)
 	}
 	s.cl.Unlock()
 	return resp, nil
@@ -229,7 +317,7 @@ func (s *service) deleteInternal(ctx context.Context, req *task.DeleteRequest) (
 
 	// if the delete is for a task and not an exec, remove the pod sandbox's reference to the task
 	if s.isSandbox && req.ExecID == "" {
-		p, err := s.getPod()
+		p, err := s.getPod(req.ID)
 		if err != nil {
 			return nil, errors.Wrapf(err, "could not get pod %q to delete task %q", s.tid, req.ID)
 		}
@@ -303,7 +391,7 @@ func (s *service) checkpointInternal(ctx context.Context, req *task.CheckpointTa
 
 func (s *service) killInternal(ctx context.Context, req *task.KillRequest) (*emptypb.Empty, error) {
 	if s.isSandbox {
-		pod, err := s.getPod()
+		pod, err := s.getPod(req.ID)
 		if err != nil {
 			return nil, errors.Wrapf(errdefs.ErrNotFound, "%v: task with id: '%s' not found", err, req.ID)
 		}
@@ -349,18 +437,50 @@ func (s *service) diagExecInHostInternal(ctx context.Context, req *shimdiag.Exec
 	if req.Terminal && req.Stderr != "" {
 		return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "if using terminal, stderr must be empty")
 	}
-	t, err := s.getTask(s.tid)
-	if err != nil {
-		return nil, err
+
+	var t shimTask
+	var ec int
+	var err error
+
+	// If the sandbox is managed via sandbox APIs,
+	// we will call the internal methods directly.
+	if s.sandbox.phase == sandboxTerminated {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox is terminated")
 	}
-	ec, err := t.ExecInHost(ctx, req)
-	if err != nil {
-		return nil, err
+
+	if s.sandbox.phase == sandboxStarted {
+		ec, err = execInHost(ctx, req, s.sandbox.host)
+		if err != nil {
+			return nil, err
+		}
+	} else {
+		t, err = s.getTask(s.tid)
+		if err != nil {
+			return nil, err
+		}
+		ec, err = t.ExecInHost(ctx, req)
+		if err != nil {
+			return nil, err
+		}
 	}
+
 	return &shimdiag.ExecProcessResponse{ExitCode: int32(ec)}, nil
 }
 
 func (s *service) diagShareInternal(ctx context.Context, req *shimdiag.ShareRequest) (*shimdiag.ShareResponse, error) {
+	// If the sandbox is managed via sandbox APIs,
+	// we will call the internal methods directly.
+	if s.sandbox.phase == sandboxTerminated {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox is terminated")
+	}
+
+	if s.sandbox.phase == sandboxStarted {
+		if err := shareOnHost(ctx, req, s.sandbox.host); err != nil {
+			return nil, err
+		}
+		return &shimdiag.ShareResponse{}, nil
+	}
+
 	t, err := s.getTask(s.tid)
 	if err != nil {
 		return nil, err
@@ -384,50 +504,62 @@ func (s *service) diagListExecs(task shimTask) ([]*shimdiag.Exec, error) {
 }
 
 func (s *service) diagTasksInternal(ctx context.Context, req *shimdiag.TasksRequest) (_ *shimdiag.TasksResponse, err error) {
-	raw := s.taskOrPod.Load()
-	if raw == nil {
-		return nil, errors.Wrapf(errdefs.ErrNotFound, "task with id: '%s' not found", s.tid)
+	if s.sandbox.phase == sandboxTerminated {
+		return nil, errors.Wrapf(errdefs.ErrFailedPrecondition, "sandbox is terminated")
 	}
 
 	resp := &shimdiag.TasksResponse{}
 	if s.isSandbox {
-		p, ok := raw.(shimPod)
-		if !ok {
-			return nil, errors.New("failed to convert task to pod")
-		}
+		s.pods.Range(func(podId, rawPod any) bool {
+			p, ok := rawPod.(shimPod)
+			if !ok {
+				err = errors.New("failed to assert pod")
+				return false
+			}
 
-		tasks, err := p.ListTasks()
+			tasks, err := p.ListTasks()
+			for _, task := range tasks {
+				t := &shimdiag.Task{ID: task.ID()}
+				if req.Execs {
+					t.Execs, err = s.diagListExecs(task)
+					if err != nil {
+						return false
+					}
+				}
+				resp.Tasks = append(resp.Tasks, t)
+			}
+
+			return true
+		})
 		if err != nil {
 			return nil, err
 		}
 
-		for _, task := range tasks {
-			t := &shimdiag.Task{ID: task.ID()}
-			if req.Execs {
-				t.Execs, err = s.diagListExecs(task)
-				if err != nil {
-					return nil, err
-				}
-			}
-			resp.Tasks = append(resp.Tasks, t)
-		}
 		return resp, nil
 	}
 
-	t, ok := raw.(shimTask)
-	if !ok {
-		return nil, errors.New("failed to convert task to 'shimTask'")
-	}
-
-	task := &shimdiag.Task{ID: t.ID()}
-	if req.Execs {
-		task.Execs, err = s.diagListExecs(t)
-		if err != nil {
-			return nil, err
+	s.tasks.Range(func(taskId, raw any) bool {
+		t, ok := raw.(shimTask)
+		if !ok {
+			err = errors.New("failed to assert task")
 		}
+
+		task := &shimdiag.Task{ID: t.ID()}
+		if req.Execs {
+			task.Execs, err = s.diagListExecs(t)
+			if err != nil {
+				return false
+			}
+		}
+
+		resp.Tasks = []*shimdiag.Task{task}
+		return false
+	})
+
+	if err != nil {
+		return nil, err
 	}
 
-	resp.Tasks = []*shimdiag.Task{task}
 	return resp, nil
 }
 
