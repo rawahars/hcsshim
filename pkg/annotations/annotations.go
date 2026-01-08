@@ -134,19 +134,12 @@ const (
 	LCOWTeeLogDirMount = "io.microsoft.container.lcow.tee-log-dir-mount"
 )
 
-// LCOW multipod annotations enables multipod and warmpooling.
+// Annotations for tenant sandbox support.
+// These annotations are used to enable and configure tenant sandbox for hosting multiple pods.
 const (
-	// SkipPodNetworking is the annotation to skip networking setup for the pod.
-	// This prevents errors from being raised when the pod is created without endpoints. Boolean.
-	SkipPodNetworking = "io.microsoft.cri.skip-pod-networking"
-
 	// TenantSandboxID is the annotation to specify the ID of an existing tenant sandbox
 	// to use for the pod sandbox. If present, the pod will join the specified tenant sandbox. String.
 	TenantSandboxID = "io.microsoft.cri.tenant-sandbox-id"
-
-	// VirtualPodID is the annotation to specify the pod ID not associated with a shim
-	// that a container should be placed in. This is used for multipod scenarios. String.
-	VirtualPodID = "io.microsoft.cri.virtual-pod-id"
 )
 
 // LCOW integrity protection and confidential container annotations.

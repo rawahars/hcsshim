@@ -503,10 +503,10 @@ func (h *Host) CreateContainer(ctx context.Context, id string, settings *prot.VM
 	// Sandbox or standalone, move the networks to the container namespace
 	if criType == "sandbox" || !isCRI {
 		ns, err := getNetworkNamespace(namespaceID)
-		// skip network activity for sandbox containers marked with skip uvm networking annotation
-		if isCRI && err != nil && !strings.EqualFold(settings.OCISpecification.Annotations[annotations.SkipPodNetworking], "true") {
+		if isCRI && err != nil {
 			return nil, err
 		}
+
 		// standalone is not required to have a networking namespace setup
 		if ns != nil {
 			if err := ns.AssignContainerPid(ctx, c.container.Pid()); err != nil {
