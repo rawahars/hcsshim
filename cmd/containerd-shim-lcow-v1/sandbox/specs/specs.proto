@@ -1,0 +1,261 @@
+syntax = "proto3";
+
+package containerd.runhcs.lcow.sandbox.v1;
+
+option go_package = "github.com/Microsoft/hcsshim/cmd/containerd-shim-lcow-v1/sandbox/specs";
+
+// ----------------------------------------------------------------------------
+// Top-level
+// ----------------------------------------------------------------------------
+
+message LCOWSandboxSpec {
+  // UVM CPU topology and QoS.
+  CPUConfig         cpuConfig         = 1;
+
+  // UVM memory sizing and commit policy; MMIO aperture tuning.
+  MemoryConfig      memoryConfig      = 2;
+
+  // UVM storage QoS caps and file-share hardening.
+  StorageConfig     storageConfig     = 3;
+
+  // UVM vNUMA hints (implicit/explicit topology).
+  NUMAConfig        numaConfig        = 4;
+
+  // Boot configuration for LCOW UVM.
+  LinuxBootOptions        linuxBootOptions      = 5;
+
+  // Guest configuration for LCOW UVM.
+  LinuxGuestOptions       linuxGuestOptions     = 6;
+
+  // Device configuration for LCOW UVM.
+  LinuxDeviceOptions      linuxDeviceOptions    = 7;
+
+  // Confidential computing options for LCOW.
+  LCOWConfidentialOptions confidentialOptions   = 8;
+
+  // Misc sandbox controls: networking proxy, dump paths, HvSocket services, console pipe.
+  AdditionalConfig  additionalConfig  = 9;
+
+  // Assign the UVM to a CPU group. Mutually exclusive with resource_partition_id.
+  optional string cpu_group_id           = 10;
+
+  // Resource partition GUID to associate the UVM with (has its own CPU group).
+  // Mutually exclusive with cpu_group_id.
+  optional string resource_partition_id  = 11;
+}
+
+// ----------------------------------------------------------------------------
+// CPU
+// ----------------------------------------------------------------------------
+
+message CPUConfig {
+  // vCPU count override for the UVM. On UVM, count/limit/weight may be combined.
+  optional int32  processor_count        = 1;
+
+  // vCPU percentage cap: 1..100000 (100000 = 100%). Omitted => platform default.
+  optional int32  processor_limit        = 2;
+
+  // vCPU scheduling weight: 0..10000 (100 default). Omitted => default.
+  optional int32  processor_weight       = 3;
+
+  // architecture represents the architecture of the platform.
+  optional string architecture           = 4;
+}
+
+// ----------------------------------------------------------------------------
+// Memory
+// ----------------------------------------------------------------------------
+
+message MemoryConfig {
+  // Total UVM memory size in MB (MB units; OCI uses bytes).
+  optional uint64   memory_size_in_mb      = 1;
+
+  // MMIO aperture tuning (low gap/base/gap in MB).
+  optional uint64   low_mmio_gap_in_mb     = 2;
+  optional uint64   high_mmio_base_in_mb   = 3;
+  optional uint64   high_mmio_gap_in_mb    = 4;
+
+  // Allow virtual memory overcommit (true by default). Set false for fully physical backing.
+  optional bool     allow_overcommit       = 5;
+
+  // Enforce fully physically backed memory, including future device additions.
+  optional bool     fully_physically_backed = 6;
+
+  // Enable deferred commit for virtual memory (defaults to false).
+  optional bool     enable_deferred_commit = 7;
+}
+
+// ----------------------------------------------------------------------------
+// Storage
+// ----------------------------------------------------------------------------
+
+message StorageConfig {
+  // Max storage IOPS; 0/omitted => platform default.
+  optional int32   storage_qos_iops_maximum      = 1;
+
+  // Max storage bandwidth in bytes/sec; 0/omitted => platform default.
+  optional int32   storage_qos_bandwidth_maximum = 2;
+
+  // Disallow any writable file shares (e.g., VSMB/Plan9) to the UVM.
+  optional bool    no_writable_file_shares       = 3;
+}
+
+// ----------------------------------------------------------------------------
+// NUMA
+// ----------------------------------------------------------------------------
+
+message NUMAConfig {
+  // Implicit vNUMA: max memory per node (MB).
+  optional uint64         max_memory_size_per_numa_node   = 1;
+
+  // Implicit vNUMA: max processors per node.
+  optional uint32         max_processors_per_numa_node    = 2;
+
+  // Implicit vNUMA: preferred physical NUMA nodes.
+  repeated uint32 preferred_physical_numa_nodes  = 3;
+
+  // Explicit vNUMA: pNUMA -> vNUMA mapping by index.
+  repeated uint32 numa_mapped_physical_nodes     = 4;
+
+  // Explicit vNUMA: processor counts per vNUMA index.
+  repeated uint32 numa_processor_counts          = 5;
+
+  // Explicit vNUMA: memory block counts per vNUMA index.
+  repeated uint64 numa_memory_blocks_counts      = 6;
+}
+
+// ----------------------------------------------------------------------------
+// Additional sandbox controls
+// ----------------------------------------------------------------------------
+
+message AdditionalConfig {
+  // ncproxy service address for network setup; when set, use ncproxy.
+  optional string network_config_proxy        = 1;
+
+  // In-guest path for container process dumps; prefer a mounted volume over scratch.
+  optional string process_dump_location       = 2;
+
+  // Host directory to collect UVM crash dumps.
+  optional string dump_directory_path         = 3;
+
+  // HvSocket per-service configuration (bind/connect SDDL, wildcard, disabled).
+  map<string, HvSocketServiceConfig> additional_hyperv_config = 4;
+
+  // Serial console named pipe (e.g., \\.\pipe\<name>) for the UVM console.
+  optional string console_pipe                = 5;
+}
+
+message HvSocketServiceConfig {
+  // Host bind permission SDDL.
+  optional string bind_security_descriptor    = 1;
+
+  // Host connect permission SDDL.
+  optional string connect_security_descriptor = 2;
+
+  // Allow wildcard binds per policy.
+  optional bool   allow_wildcard_binds        = 3;
+
+  // Disable service (refuse new, cancel existing connections).
+  optional bool   disabled                    = 4;
+}
+
+// ----------------------------------------------------------------------------
+// Linux Hyper-V (LCOW)
+// ----------------------------------------------------------------------------
+
+message LinuxBootOptions {
+  // Root path for LCOW boot files.
+  optional string boot_files_path        = 1;
+
+  // Boot directly to kernel (skip UEFI).
+  optional bool   kernel_direct          = 2;
+
+  // Extra kernel cmdline options.
+  optional string kernel_boot_options    = 3;
+
+  // Preferred rootfs type selection (INITRD/VHD).
+  optional PreferredRootFSType preferred_root_fs_type = 4;
+
+  // Enable cold discard hint for trimming non‑zeroed pages.
+  optional bool   enable_cold_discard_hint = 5;
+
+  // Host Compatibility Layer toggle (presence-aware).
+  optional bool   hcl_enabled            = 6;
+}
+
+message LinuxGuestOptions {
+  // Disable LCOW time-sync service.
+  optional bool   disable_time_sync_service = 1;
+
+  // Extra vsock ports to expose.
+  repeated uint32 extra_vsock_ports         = 2;
+
+  // Enable policy-based routing in guest.
+  optional bool   policy_based_routing      = 3;
+
+  // Allow writable overlays for /var and /etc.
+  optional bool   writable_overlay_dirs     = 4;
+}
+
+message LinuxDeviceOptions {
+  // Max vPMem device count.
+  optional uint32 vp_mem_device_count     = 1;
+
+  // vPMem device size (bytes).
+  optional uint64 vp_mem_size_bytes       = 2;
+
+  // Disable LCOW vPMem layer multi-mapping.
+  optional bool   vp_mem_no_multi_mapping = 3;
+
+  // Enable PCI support in LCOW kernel.
+  optional bool   vpci_enabled            = 4;
+
+  // Assigned devices (e.g., SR-IOV).
+  repeated Device assigned_devices    = 5;
+}
+
+enum PreferredRootFSType {
+  PREFERRED_ROOT_FS_TYPE_INITRD = 0;
+  PREFERRED_ROOT_FS_TYPE_VHD    = 1;
+}
+
+message Device {
+  // Device identifier: interface class GUID, etc.
+  string id    = 1;
+
+  // Device identifier type: "class", etc.
+  string id_type = 2;
+}
+
+// ----------------------------------------------------------------------------
+// Confidential computing
+// ----------------------------------------------------------------------------
+
+message LCOWConfidentialOptions {
+  // Guest state file (VMGS) path used by confidential UVM modes.
+  optional string guest_state_file           = 1;
+
+  // Security policy to enforce inside the guest.
+  optional string security_policy            = 2;
+
+  // Security policy enforcer selection ("open-door", "standard", "rego").
+  optional string security_policy_enforcer   = 3;
+
+  // Signed UVM reference info file passed to guest.
+  optional string uvm_reference_info_file    = 4;
+
+  // no_security_hardware allows to do testing and development without requiring SNP hardware.
+  optional bool no_security_hardware         = 5;
+
+  // Rootfs VHD path with dm-verity metadata (SNP mode).
+  optional string dm_verity_root_fs_vhd      = 6;
+
+  // Enable dm-verity presentation of rootfs (standalone SCSI attachment).
+  optional bool   dm_verity_mode             = 7;
+
+  // dm-mod.create parameters for rootfs integrity.
+  optional string dm_verity_create_args      = 8;
+
+  // Encrypt LCOW scratch disks.
+  optional bool   enable_scratch_encryption = 9;
+}
