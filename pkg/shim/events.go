@@ -1,0 +1,56 @@
+//go:build windows
+
+package shim
+
+import (
+	"context"
+	"fmt"
+
+	"github.com/Microsoft/hcsshim/internal/oc"
+
+	"github.com/containerd/containerd/v2/pkg/namespaces"
+	"github.com/containerd/containerd/v2/pkg/shim"
+	"go.opencensus.io/trace"
+)
+
+// Publisher is an interface for publishing events to a remote event bus.
+type Publisher interface {
+	PublishEvent(ctx context.Context, topic string, event interface{}) (err error)
+}
+
+type eventPublisher struct {
+	namespace       string
+	remotePublisher *shim.RemoteEventsPublisher
+}
+
+var _ Publisher = &eventPublisher{}
+
+func newEventPublisher(address, namespace string) (*eventPublisher, error) {
+	p, err := shim.NewPublisher(address)
+	if err != nil {
+		return nil, err
+	}
+	return &eventPublisher{
+		namespace:       namespace,
+		remotePublisher: p,
+	}, nil
+}
+
+func (e *eventPublisher) close() error {
+	return e.remotePublisher.Close()
+}
+
+func (e *eventPublisher) PublishEvent(ctx context.Context, topic string, event interface{}) (err error) {
+	ctx, span := oc.StartSpan(ctx, "publishEvent")
+	defer span.End()
+	defer func() { oc.SetSpanStatus(span, err) }()
+	span.AddAttributes(
+		trace.StringAttribute("topic", topic),
+		trace.StringAttribute("event", fmt.Sprintf("%+v", event)))
+
+	if e == nil {
+		return nil
+	}
+
+	return e.remotePublisher.Publish(namespaces.WithNamespace(ctx, e.namespace), topic, event)
+}
