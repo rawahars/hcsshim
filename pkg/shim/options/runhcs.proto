@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package containerd.runhcs.v2;
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "github.com/Microsoft/hcsshim/pkg/shim/options";
+
+// Options are the set of customizations that can be passed to the shim.
+message Options {
+
+  enum DebugType {
+		NPIPE = 0;
+		FILE = 1;
+		ETW = 2;
+	}
+
+	// debug tracing output type
+	DebugType debug_type = 1;
+
+	// log_level specifies the logrus log level for the shim. Supported values are a string representation of the
+	// logrus log levels: "trace", "debug", "info", "warn", "error", "fatal", "panic".
+	string log_level = 2;
+
+	// scrub_logs enables removing environment variables and other potentially sensitive information from logs.
+	bool scrub_logs = 3;
+}
+
+// ProcessDetails contains additional information about a process. This is the additional
+// info returned in the Pids query.
+message ProcessDetails {
+	string image_name = 1;
+	google.protobuf.Timestamp created_at = 2;
+	uint64 kernel_time_100_ns = 3;
+	uint64 memory_commit_bytes = 4;
+	uint64 memory_working_set_private_bytes = 5;
+	uint64 memory_working_set_shared_bytes = 6;
+	uint32 process_id = 7;
+	uint64 user_time_100_ns = 8;
+	string exec_id = 9;
+}
