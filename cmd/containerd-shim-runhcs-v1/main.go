@@ -24,14 +24,14 @@ import (
 	hcsversion "github.com/Microsoft/hcsshim/internal/version"
 
 	// register common types spec with typeurl
-	_ "github.com/containerd/containerd/runtime"
+	_ "github.com/containerd/containerd/v2/core/runtime"
 )
 
 const usage = ``
 const ttrpcAddressEnv = "TTRPC_ADDRESS"
 
 // Add a manifest to get proper Windows version detection.
-//go:generate go run github.com/josephspurrier/goversioninfo/cmd/goversioninfo -platform-specific
+//go:generate go tool github.com/josephspurrier/goversioninfo/cmd/goversioninfo -platform-specific
 
 // `-ldflags '-X ...'` only works if the variable is uninitialized or set to a constant value.
 // keep empty and override with data from [internal/version] only if empty to allow

@@ -13,18 +13,21 @@ import (
 
 	oci "github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/pkg/errors"
+	"github.com/sirupsen/logrus"
 
 	"github.com/Microsoft/hcsshim/cmd/gcstools/generichook"
 	"github.com/Microsoft/hcsshim/internal/guest/storage/pci"
 	"github.com/Microsoft/hcsshim/internal/hooks"
+	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
 const nvidiaDebugFilePath = "nvidia-container.log"
 const nvidiaToolBinary = "nvidia-container-cli"
 
-// described here: https://github.com/opencontainers/runtime-spec/blob/39c287c415bf86fb5b7506528d471db5405f8ca8/config.md#posix-platform-hooks
-// addNvidiaDeviceHook builds the arguments for nvidia-container-cli and creates the prestart hook
+// addNvidiaDeviceHook builds the arguments for nvidia-container-cli and creates the createRuntime [OCI hooks].
+//
+// [OCI hooks]: https://github.com/opencontainers/runtime-spec/blob/39c287c415bf86fb5b7506528d471db5405f8ca8/config.md#posix-platform-hooks
 func addNvidiaDeviceHook(ctx context.Context, spec *oci.Spec, ociBundlePath string) error {
 	genericHookBinary := "generichook"
 	genericHookPath, err := exec.LookPath(genericHookBinary)
@@ -68,6 +71,9 @@ func addNvidiaDeviceHook(ctx context.Context, spec *oci.Spec, ociBundlePath stri
 	hookEnv := append(updateEnvWithNvidiaVariables(), hookLogDebugFileEnvOpt)
 
 	nvidiaHook := hooks.NewOCIHook(genericHookPath, args, hookEnv)
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		log.G(ctx).WithField("hook", log.Format(ctx, nvidiaHook)).Debug("adding nvidia device runtime hook")
+	}
 	return hooks.AddOCIHook(spec, hooks.CreateRuntime, nvidiaHook)
 }
 

@@ -20,7 +20,7 @@ import (
 	"go.opencensus.io/trace"
 
 	"github.com/Microsoft/hcsshim/internal/copyfile"
-	"github.com/Microsoft/hcsshim/internal/gcs"
+	"github.com/Microsoft/hcsshim/internal/gcs/prot"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
@@ -89,23 +89,19 @@ const (
 	UVMReferenceInfoFile = "reference_info.cose"
 )
 
-type ConfidentialOptions struct {
-	GuestStateFile         string // The vmgs file to load
-	UseGuestStateFile      bool   // Use a vmgs file that contains a kernel and initrd, required for SNP
-	SecurityPolicy         string // Optional security policy
-	SecurityPolicyEnabled  bool   // Set when there is a security policy to apply on actual SNP hardware, use this rathen than checking the string length
-	SecurityPolicyEnforcer string // Set which security policy enforcer to use (open door, standard or rego). This allows for better fallback mechanic.
-	UVMReferenceInfoFile   string // Filename under `BootFilesPath` for (potentially signed) UVM image reference information.
-	BundleDirectory        string // pod bundle directory
-	DmVerityRootFsVhd      string // The VHD file (bound to the vmgs file via embedded dmverity hash data file) to load.
-	DmVerityMode           bool   // override to be able to turn off dmverity for debugging
-	DmVerityCreateArgs     string // set dm-verity args when booting with verity in non-SNP mode
+type ConfidentialLCOWOptions struct {
+	*ConfidentialCommonOptions
+	UseGuestStateFile  bool   // Use a vmgs file that contains a kernel and initrd, required for SNP
+	BundleDirectory    string // pod bundle directory
+	DmVerityRootFsVhd  string // The VHD file (bound to the vmgs file via embedded dmverity hash data file) to load.
+	DmVerityMode       bool   // override to be able to turn off dmverity for debugging
+	DmVerityCreateArgs string // set dm-verity args when booting with verity in non-SNP mode
 }
 
 // OptionsLCOW are the set of options passed to CreateLCOW() to create a utility vm.
 type OptionsLCOW struct {
 	*Options
-	*ConfidentialOptions
+	*ConfidentialLCOWOptions
 
 	// Folder in which kernel and root file system reside. Defaults to \Program Files\Linux Containers.
 	//
@@ -115,8 +111,6 @@ type OptionsLCOW struct {
 	KernelDirect            bool                 // Skip UEFI and boot directly to `kernel`
 	RootFSFile              string               // Filename under `BootFilesPath` for the UVMs root file system. Defaults to `InitrdFile`
 	KernelBootOptions       string               // Additional boot options for the kernel
-	EnableGraphicsConsole   bool                 // If true, enable a graphics console for the utility VM
-	ConsolePipe             string               // The named pipe path to use for the serial console.  eg \\.\pipe\vmpipe
 	UseGuestConnection      bool                 // Whether the HCS should connect to the UVM's GCS. Defaults to true
 	ExecCommandLine         string               // The command line to exec from init. Defaults to GCS
 	ForwardStdout           bool                 // Whether stdout will be forwarded from the executed program. Defaults to false
@@ -134,6 +128,7 @@ type OptionsLCOW struct {
 	ExtraVSockPorts         []uint32             // Extra vsock ports to allow
 	AssignedDevices         []VPCIDeviceID       // AssignedDevices are devices to add on pod boot
 	PolicyBasedRouting      bool                 // Whether we should use policy based routing when configuring net interfaces in guest
+	WritableOverlayDirs     bool                 // Whether init should create writable overlay mounts for /var and /etc
 }
 
 // defaultLCOWOSBootFilesPath returns the default path used to locate the LCOW
@@ -164,8 +159,6 @@ func NewDefaultOptionsLCOW(id, owner string) *OptionsLCOW {
 		KernelDirect:            kernelDirectSupported,
 		RootFSFile:              InitrdFile,
 		KernelBootOptions:       "",
-		EnableGraphicsConsole:   false,
-		ConsolePipe:             "",
 		UseGuestConnection:      true,
 		ExecCommandLine:         fmt.Sprintf("/bin/gcs -v4 -log-format json -loglevel %s", logrus.StandardLogger().Level.String()),
 		ForwardStdout:           false,
@@ -179,9 +172,11 @@ func NewDefaultOptionsLCOW(id, owner string) *OptionsLCOW {
 		VPCIEnabled:             false,
 		EnableScratchEncryption: false,
 		DisableTimeSyncService:  false,
-		ConfidentialOptions: &ConfidentialOptions{
-			SecurityPolicyEnabled: false,
-			UVMReferenceInfoFile:  UVMReferenceInfoFile,
+		ConfidentialLCOWOptions: &ConfidentialLCOWOptions{
+			ConfidentialCommonOptions: &ConfidentialCommonOptions{
+				SecurityPolicyEnabled: false,
+				UVMReferenceInfoFile:  UVMReferenceInfoFile,
+			},
 		},
 	}
 
@@ -353,7 +348,7 @@ func makeLCOWVMGSDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ 
 	}
 
 	// The kernel and minimal initrd are combined into a single vmgs file.
-	vmgsTemplatePath := filepath.Join(opts.BootFilesPath, opts.GuestStateFile)
+	vmgsTemplatePath := filepath.Join(opts.BootFilesPath, opts.GuestStateFilePath)
 	if _, err := os.Stat(vmgsTemplatePath); os.IsNotExist(err) {
 		return nil, fmt.Errorf("the GuestState vmgs file '%s' was not found", vmgsTemplatePath)
 	}
@@ -370,7 +365,7 @@ func makeLCOWVMGSDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ 
 		return nil, err
 	}
 
-	vmgsFileFullPath := filepath.Join(opts.BundleDirectory, opts.GuestStateFile)
+	vmgsFileFullPath := filepath.Join(opts.BundleDirectory, opts.GuestStateFilePath)
 	if err := copyfile.CopyFile(ctx, vmgsTemplatePath, vmgsFileFullPath, true); err != nil {
 		return nil, fmt.Errorf("failed to copy VMGS template file: %w", err)
 	}
@@ -442,7 +437,7 @@ func makeLCOWVMGSDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ 
 	//		entropyVsockPort - 1 is the entropy port,
 	//		linuxLogVsockPort - 109 used by vsockexec to log stdout/stderr logging,
 	//		0x40000000 + 1 (LinuxGcsVsockPort + 1) is the bridge (see guestconnectiuon.go)
-	hvSockets := []uint32{entropyVsockPort, linuxLogVsockPort, gcs.LinuxGcsVsockPort, gcs.LinuxGcsVsockPort + 1}
+	hvSockets := []uint32{entropyVsockPort, linuxLogVsockPort, prot.LinuxGcsVsockPort, prot.LinuxGcsVsockPort + 1}
 	hvSockets = append(hvSockets, opts.ExtraVSockPorts...)
 	for _, whichSocket := range hvSockets {
 		key := winio.VsockServiceID(whichSocket).String()
@@ -583,7 +578,9 @@ Example JSON document produced once the hcsschema.ComputeSytem returned by makeL
 
 // Make the ComputeSystem document object that will be serialized to json to be presented to the HCS api.
 func makeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcsschema.ComputeSystem, err error) {
-	logrus.Tracef("makeLCOWDoc %v\n", opts)
+	if logrus.IsLevelEnabled(logrus.TraceLevel) {
+		log.G(ctx).WithField("options", log.Format(ctx, opts)).Trace("makeLCOWDoc")
+	}
 
 	kernelFullPath := filepath.Join(opts.BootFilesPath, opts.KernelFile)
 	if _, err := os.Stat(kernelFullPath); os.IsNotExist(err) {
@@ -600,7 +597,7 @@ func makeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcs
 		return nil, err
 	}
 
-	numa, numaProcessors, err := prepareVNumaTopology(opts.Options)
+	numa, numaProcessors, err := prepareVNumaTopology(ctx, opts.Options)
 	if err != nil {
 		return nil, err
 	}
@@ -659,6 +656,11 @@ func makeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcs
 	if numa != nil || numaProcessors != nil {
 		firmwareFallbackMeasured := hcsschema.VirtualSlitType_FIRMWARE_FALLBACK_MEASURED
 		doc.VirtualMachine.ComputeTopology.Memory.SlitType = &firmwareFallbackMeasured
+	}
+
+	if opts.ResourcePartitionID != nil {
+		// TODO (maksiman): assign pod to resource partition and potentially do an OS version check before that
+		log.G(ctx).WithField("resource-partition-id", opts.ResourcePartitionID.String()).Debug("setting resource partition ID")
 	}
 
 	// Add optional devices that were specified on the UVM spec
@@ -799,6 +801,10 @@ func makeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcs
 		}
 	}
 
+	// Explicitly disable virtio_vsock_init, to make sure that we use hv_sock transport. For kernels built without
+	// virtio-vsock this is a no-op.
+	kernelArgs += " initcall_blacklist=virtio_vsock_init"
+
 	vmDebugging := false
 	if opts.ConsolePipe != "" {
 		vmDebugging = true
@@ -863,10 +869,20 @@ func makeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcs
 		execCmdArgs += " -core-dump-location " + opts.ProcessDumpLocation
 	}
 
-	initArgs := fmt.Sprintf("%s %s", entropyArgs, execCmdArgs)
+	initArgs := entropyArgs
+	if opts.WritableOverlayDirs {
+		switch opts.PreferredRootFSType {
+		case PreferredRootFSTypeInitRd:
+			log.G(ctx).Warn("ignoring `WritableOverlayDirs` option since rootfs is already writable")
+		case PreferredRootFSTypeVHD:
+			initArgs += " -w"
+		}
+	}
 	if vmDebugging {
 		// Launch a shell on the console.
-		initArgs = entropyArgs + ` sh -c "` + execCmdArgs + ` & exec sh"`
+		initArgs += ` sh -c "` + execCmdArgs + ` & exec sh"`
+	} else {
+		initArgs += " " + execCmdArgs
 	}
 
 	kernelArgs += fmt.Sprintf(" nr_cpus=%d", opts.ProcessorCount)
@@ -910,7 +926,9 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 	}
 
 	span.AddAttributes(trace.StringAttribute(logfields.UVMID, opts.ID))
-	log.G(ctx).WithField("options", log.Format(ctx, opts)).Debug("uvm::CreateLCOW options")
+	if logrus.IsLevelEnabled(logrus.DebugLevel) {
+		log.G(ctx).WithField("options", log.Format(ctx, opts)).Debug("uvm::CreateLCOW options")
+	}
 
 	// We don't serialize OutputHandlerCreator so if it is missing we need to put it back to the default.
 	if opts.OutputHandlerCreator == nil {
@@ -931,7 +949,6 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 		vpmemMultiMapping:       !opts.VPMemNoMultiMapping,
 		encryptScratch:          opts.EnableScratchEncryption,
 		noWritableFileShares:    opts.NoWritableFileShares,
-		confidentialUVMOptions:  opts.ConfidentialOptions,
 		policyBasedRouting:      opts.PolicyBasedRouting,
 	}
 
@@ -955,10 +972,20 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 	var doc *hcsschema.ComputeSystem
 	if opts.SecurityPolicyEnabled {
 		doc, err = makeLCOWSecurityDoc(ctx, opts, uvm)
-		log.G(ctx).Tracef("create_lcow::CreateLCOW makeLCOWSecurityDoc result doc: %v err %v", doc, err)
+		if logrus.IsLevelEnabled(logrus.TraceLevel) {
+			log.G(ctx).WithFields(logrus.Fields{
+				"doc":           log.Format(ctx, doc),
+				logrus.ErrorKey: err,
+			}).Trace("create_lcow::CreateLCOW makeLCOWSecurityDoc result")
+		}
 	} else {
 		doc, err = makeLCOWDoc(ctx, opts, uvm)
-		log.G(ctx).Tracef("create_lcow::CreateLCOW makeLCOWDoc result doc: %v err %v", doc, err)
+		if logrus.IsLevelEnabled(logrus.TraceLevel) {
+			log.G(ctx).WithFields(logrus.Fields{
+				"doc":           log.Format(ctx, doc),
+				logrus.ErrorKey: err,
+			}).Trace("create_lcow::CreateLCOW makeLCOWDoc result")
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -967,7 +994,9 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 	if err = uvm.create(ctx, doc); err != nil {
 		return nil, fmt.Errorf("error while creating the compute system: %w", err)
 	}
-	log.G(ctx).WithField("uvm", uvm).Trace("create_lcow::CreateLCOW uvm.create result")
+	if logrus.IsLevelEnabled(logrus.TraceLevel) {
+		log.G(ctx).WithField("uvm", log.Format(ctx, uvm)).Trace("create_lcow::CreateLCOW uvm.create result")
+	}
 
 	// Create a socket to inject entropy during boot.
 	uvm.entropyListener, err = uvm.listenVsock(entropyVsockPort)
@@ -988,7 +1017,7 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 
 	if opts.UseGuestConnection {
 		log.G(ctx).WithField("vmID", uvm.runtimeID).Debug("Using external GCS bridge")
-		l, err := uvm.listenVsock(gcs.LinuxGcsVsockPort)
+		l, err := uvm.listenVsock(prot.LinuxGcsVsockPort)
 		if err != nil {
 			return nil, err
 		}

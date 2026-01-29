@@ -14,7 +14,7 @@ import (
 	eventstypes "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types"
-	"github.com/containerd/containerd/runtime"
+	"github.com/containerd/containerd/v2/core/runtime"
 	"github.com/containerd/errdefs"
 	"github.com/containerd/typeurl/v2"
 	"github.com/opencontainers/runtime-spec/specs-go"
@@ -446,7 +446,7 @@ func (ht *hcsTask) KillExec(ctx context.Context, eid string, signal uint32, all 
 	if signal == 0x9 && eid == "" && ht.host != nil {
 		// If this is a SIGKILL against the init process we start a background
 		// timer and wait on either the timer expiring or the process exiting
-		// cleanly. If the timer exires first we forcibly close the UVM as we
+		// cleanly. If the timer expires first we forcibly close the UVM as we
 		// assume the guest is misbehaving for some reason.
 		go func() {
 			t := time.NewTimer(30 * time.Second)
@@ -988,10 +988,12 @@ func isMountTypeSupported(hostPath, mountType string) bool {
 		hcsoci.MountTypeVirtualDisk, hcsoci.MountTypeExtensibleVirtualDisk:
 		return false
 	default:
-		// Ensure that host path is not sandbox://, hugepages://
+		// Ensure that host path is not sandbox://, sandbox-tmp://, hugepages://, \\.\pipe, uvm://
 		if strings.HasPrefix(hostPath, guestpath.SandboxMountPrefix) ||
+			strings.HasPrefix(hostPath, guestpath.SandboxTmpfsMountPrefix) ||
 			strings.HasPrefix(hostPath, guestpath.HugePagesMountPrefix) ||
-			strings.HasPrefix(hostPath, guestpath.PipePrefix) {
+			strings.HasPrefix(hostPath, guestpath.PipePrefix) ||
+			strings.HasPrefix(hostPath, guestpath.UVMMountPrefix) {
 			return false
 		} else {
 			// hcsshim treats mountType == "" as a normal directory mount

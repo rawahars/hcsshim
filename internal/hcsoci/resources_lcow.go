@@ -61,6 +61,7 @@ func allocateLinuxResources(ctx context.Context, coi *createOptionsInternal, r *
 		case MountTypeBind:
 		case MountTypePhysicalDisk:
 		case MountTypeVirtualDisk:
+		case MountTypeExtensibleVirtualDisk:
 		default:
 			// Unknown mount type
 			continue
@@ -129,9 +130,33 @@ func allocateLinuxResources(ctx context.Context, coi *createOptionsInternal, r *
 					mt = "bind"
 				}
 				coi.Spec.Mounts[i].Type = mt
-			} else if strings.HasPrefix(mount.Source, guestpath.SandboxMountPrefix) {
-				// Mounts that map to a path in UVM are specified with 'sandbox://' prefix.
-				// example: sandbox:///a/dirInUvm destination:/b/dirInContainer
+			} else if mount.Type == MountTypeExtensibleVirtualDisk {
+				l.Debug("hcsshim::allocateLinuxResources Hot-adding ExtensbleVirtualDisk")
+				scsiMount, err := coi.HostingSystem.SCSIManager.AddExtensibleVirtualDisk(
+					ctx,
+					hostPath,
+					readOnly,
+					"",
+					&scsi.MountConfig{Options: mount.Options, BlockDev: isBlockDev},
+				)
+				if err != nil {
+					return fmt.Errorf("adding Extensible virtual disk mount %+v: %w", mount, err)
+				}
+				r.Add(scsiMount)
+				uvmPathForFile = scsiMount.GuestPath()
+				mt := "none"
+				if isBlockDev {
+					mt = "bind"
+				}
+				coi.Spec.Mounts[i].Type = mt
+			} else if strings.HasPrefix(mount.Source, guestpath.SandboxMountPrefix) ||
+				strings.HasPrefix(mount.Source, guestpath.SandboxTmpfsMountPrefix) ||
+				strings.HasPrefix(mount.Source, guestpath.UVMMountPrefix) {
+				// Mounts that map to a path in UVM are specified with a 'sandbox://', 'sandbox-tmp://', or 'uvm://' prefix.
+				// examples:
+				//  - sandbox:///a/dirInUvm destination:/b/dirInContainer
+				//  - sandbox-tmp:///a/dirInUvm destination:/b/dirInContainer
+				//  - uvm:///a/dirInUvm destination:/b/dirInContainer
 				uvmPathForFile = mount.Source
 			} else if strings.HasPrefix(mount.Source, guestpath.HugePagesMountPrefix) {
 				// currently we only support 2M hugepage size

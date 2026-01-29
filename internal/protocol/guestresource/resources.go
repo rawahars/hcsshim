@@ -4,6 +4,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/opencontainers/runtime-spec/specs-go"
 
+	"github.com/Microsoft/go-winio/pkg/guid"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 )
 
@@ -26,6 +27,10 @@ const (
 	// ResourceTypeMappedVirtualDisk is the modify resource type for mapped
 	// virtual disks
 	ResourceTypeMappedVirtualDisk guestrequest.ResourceType = "MappedVirtualDisk"
+	// ResourceTypeMappedVirtualDiskForContainerScratch is the modify resource type
+	// specifically for refs formatting and mounting scratch vhds for c-wcow cases only.
+	ResourceTypeMappedVirtualDiskForContainerScratch guestrequest.ResourceType = "MappedVirtualDiskForContainerScratch"
+	ResourceTypeWCOWBlockCims                        guestrequest.ResourceType = "WCOWBlockCims"
 	// ResourceTypeNetwork is the modify resource type for the `NetworkAdapterV2`
 	// device.
 	ResourceTypeNetwork          guestrequest.ResourceType = "Network"
@@ -33,6 +38,10 @@ const (
 	// ResourceTypeCombinedLayers is the modify resource type for combined
 	// layers
 	ResourceTypeCombinedLayers guestrequest.ResourceType = "CombinedLayers"
+	// ResourceTypeCWCOWCombinedLayers is the modify resource type for combined
+	// layers call for cwcow cases. This resource type wraps containerID around
+	// ResourceTypeCombinedLayers.
+	ResourceTypeCWCOWCombinedLayers guestrequest.ResourceType = "CWCOWCombinedLayers"
 	// ResourceTypeVPMemDevice is the modify resource type for VPMem devices
 	ResourceTypeVPMemDevice guestrequest.ResourceType = "VPMemDevice"
 	// ResourceTypeVPCIDevice is the modify resource type for vpci devices
@@ -62,9 +71,20 @@ type LCOWCombinedLayers struct {
 }
 
 type WCOWCombinedLayers struct {
-	ContainerRootPath string            `json:"ContainerRootPath,omitempty"`
-	Layers            []hcsschema.Layer `json:"Layers,omitempty"`
-	ScratchPath       string            `json:"ScratchPath,omitempty"`
+	ContainerRootPath string                         `json:"ContainerRootPath,omitempty"`
+	Layers            []hcsschema.Layer              `json:"Layers,omitempty"`
+	ScratchPath       string                         `json:"ScratchPath,omitempty"`
+	FilterType        hcsschema.FileSystemFilterType `json:"FilterType,omitempty"`
+}
+
+type CWCOWCombinedLayers struct {
+	ContainerID    string             `json:"ContainerID,omitempty"`
+	CombinedLayers WCOWCombinedLayers `json:"CombinedLayers,omitempty"`
+}
+
+type CWCOWHostedSystem struct {
+	Spec              specs.Spec
+	CWCOWHostedSystem hcsschema.HostedSystem
 }
 
 // Defines the schema for hosted settings passed to GCS and/or OpenGCS
@@ -90,6 +110,19 @@ type LCOWMappedVirtualDisk struct {
 	VerityInfo       *DeviceVerityInfo `json:"VerityInfo,omitempty"`
 	EnsureFilesystem bool              `json:"EnsureFilesystem,omitempty"`
 	Filesystem       string            `json:"Filesystem,omitempty"`
+}
+
+type BlockCIMDevice struct {
+	CimName string
+	Lun     int32
+}
+
+type CWCOWBlockCIMMounts struct {
+	// BlockCIMs should be ordered from merged CIM followed by Layer n .. layer 1
+	BlockCIMs   []BlockCIMDevice `json:"BlockCIMs,omitempty"`
+	VolumeGUID  guid.GUID        `json:"VolumeGUID,omitempty"`
+	MountFlags  uint32           `json:"MountFlags,omitempty"`
+	ContainerID string           `json:"ContainerID,omitempty"`
 }
 
 type WCOWMappedVirtualDisk struct {
@@ -196,14 +229,14 @@ type SignalProcessOptionsWCOW struct {
 	Signal guestrequest.SignalValueWCOW `json:",omitempty"`
 }
 
-// LCOWConfidentialOptions is used to set various confidential container specific
+// ConfidentialOptions is used to set various confidential container specific
 // options.
-type LCOWConfidentialOptions struct {
+type ConfidentialOptions struct {
 	EnforcerType          string `json:"EnforcerType,omitempty"`
 	EncodedSecurityPolicy string `json:"EncodedSecurityPolicy,omitempty"`
 	EncodedUVMReference   string `json:"EncodedUVMReference,omitempty"`
 }
 
-type LCOWSecurityPolicyFragment struct {
+type SecurityPolicyFragment struct {
 	Fragment string `json:"Fragment,omitempty"`
 }

@@ -21,6 +21,7 @@ import (
 	"go.opencensus.io/trace"
 	"go.opencensus.io/trace/tracestate"
 
+	"github.com/Microsoft/hcsshim/internal/gcs/prot"
 	"github.com/Microsoft/hcsshim/internal/oc"
 )
 
@@ -55,24 +56,24 @@ func simpleGcsLoop(t *testing.T, rw io.ReadWriter) error {
 			}
 			return err
 		}
-		switch proc := rpcProc(typ &^ msgTypeRequest); proc {
-		case rpcNegotiateProtocol:
-			err := sendJSON(t, rw, msgTypeResponse|msgType(proc), id, &negotiateProtocolResponse{
+		switch proc := prot.RPCProc(typ &^ prot.MsgTypeRequest); proc {
+		case prot.RPCNegotiateProtocol:
+			err := sendJSON(t, rw, prot.MsgTypeResponse|prot.MsgType(proc), id, &prot.NegotiateProtocolResponse{
 				Version: protocolVersion,
-				Capabilities: gcsCapabilities{
+				Capabilities: prot.GcsCapabilities{
 					RuntimeOsType: "linux",
 				},
 			})
 			if err != nil {
 				return err
 			}
-		case rpcCreate:
-			err := sendJSON(t, rw, msgTypeResponse|msgType(proc), id, &containerCreateResponse{})
+		case prot.RPCCreate:
+			err := sendJSON(t, rw, prot.MsgTypeResponse|prot.MsgType(proc), id, &prot.ContainerCreateResponse{})
 			if err != nil {
 				return err
 			}
-		case rpcExecuteProcess:
-			var req containerExecuteProcess
+		case prot.RPCExecuteProcess:
+			var req prot.ContainerExecuteProcess
 			var params baseProcessParams
 			req.Settings.ProcessParameters.Value = &params
 			err := json.Unmarshal(b, &req)
@@ -111,27 +112,27 @@ func simpleGcsLoop(t *testing.T, rw io.ReadWriter) error {
 					stdout.Close()
 				}()
 			}
-			err = sendJSON(t, rw, msgTypeResponse|msgType(proc), id, &containerExecuteProcessResponse{
+			err = sendJSON(t, rw, prot.MsgTypeResponse|prot.MsgType(proc), id, &prot.ContainerExecuteProcessResponse{
 				ProcessID: 42,
 			})
 			if err != nil {
 				return err
 			}
-		case rpcWaitForProcess:
+		case prot.RPCWaitForProcess:
 			// nothing
-		case rpcShutdownForced:
-			var req requestBase
+		case prot.RPCShutdownForced:
+			var req prot.RequestBase
 			err = json.Unmarshal(b, &req)
 			if err != nil {
 				return err
 			}
-			err = sendJSON(t, rw, msgTypeResponse|msgType(proc), id, &responseBase{})
+			err = sendJSON(t, rw, prot.MsgTypeResponse|prot.MsgType(proc), id, &prot.ResponseBase{})
 			if err != nil {
 				return err
 			}
 			time.Sleep(50 * time.Millisecond)
-			err = sendJSON(t, rw, msgType(msgTypeNotify|notifyContainer), 0, &containerNotification{
-				requestBase: requestBase{
+			err = sendJSON(t, rw, prot.MsgType(prot.MsgTypeNotify|prot.ComputeSystem|prot.NotifyContainer), 0, &prot.ContainerNotification{
+				RequestBase: prot.RequestBase{
 					ContainerID: req.ContainerID,
 				},
 			})
@@ -255,9 +256,19 @@ func TestGcsWaitProcessBridgeTerminated(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer p.Close()
+
+	// There is a race condition here. gc.CreateProcess starts an AsyncRPC to wait on
+	// the created process. However, the AsyncRPC sends the request message on rpcCh
+	// and returns immediately (after the sendLoop reads that message). The test then
+	// sometimes ends up canceling the context (which closes the communication pipes)
+	// before the request message on rpcCh is processes and written on the pipe by
+	// `sendRPC`. In that case we receive the "bridge write failed" error instead of
+	// "bridge closed" error. To avoid this we put a small sleep here.
+	time.Sleep(1 * time.Second)
+
 	cancel()
 	err = p.Wait()
-	if err == nil || !strings.Contains(err.Error(), "bridge closed") {
+	if err == nil || (!strings.Contains(err.Error(), "bridge closed") && !strings.Contains(err.Error(), "bridge write")) {
 		t.Fatal("unexpected: ", err)
 	}
 }

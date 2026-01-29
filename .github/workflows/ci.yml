@@ -23,7 +23,7 @@ jobs:
 
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 
@@ -34,9 +34,9 @@ jobs:
           cache: false
 
       - name: Run golangci-lint
-        uses: golangci/golangci-lint-action@v6
+        uses: golangci/golangci-lint-action@v9
         with:
-          version: v1.64
+          version: v2.1
           args: >-
             --verbose
             --max-issues-per-linter=0
@@ -59,7 +59,7 @@ jobs:
       # protobuild requires the code to be in $GOPATH to translate from github.com/Microsoft/hcsshim
       # to the correct path on disk
       - name: Checkout hcsshim
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: "${{ github.workspace }}/go/src/github.com/Microsoft/hcsshim"
           show-progress: false
@@ -117,7 +117,7 @@ jobs:
       GOPROXY: "https://proxy.golang.org,direct"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 
@@ -182,7 +182,7 @@ jobs:
     runs-on: "windows-2022"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 
@@ -237,7 +237,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 
@@ -248,9 +248,6 @@ jobs:
 
       - name: Install gotestsum
         run: go install gotest.tools/gotestsum@${{ env.GOTESTSUM_VERSION }}
-
-      - name: Test standard security policy
-        run: ${{ env.GOTESTSUM_CMD }} -timeout=30m -gcflags=all=-d=checkptr ./pkg/securitypolicy/...
 
       - name: Test rego security policy
         run: ${{ env.GOTESTSUM_CMD }} -tags=rego -timeout=30m -gcflags=all=-d=checkptr ./pkg/securitypolicy/...
@@ -273,15 +270,13 @@ jobs:
       fail-fast: false
       matrix:
         name:
-          [windows-2022, windows-2019]
-        include: 
-          - name: "windows-2019"
-            runner: [self-hosted, 1ES.Pool=containerplat-github-runner-pool-east-us-2, 1ES.ImageOverride=github-mms-ws2019-containers-enabled]
+          [windows-2022]
+        include:
           - name: "windows-2022"
             runner: [self-hosted, 1ES.Pool=containerplat-github-runner-pool-east-us-2, 1ES.ImageOverride=github-mms-ws2022-containers-enabled]
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 
@@ -313,9 +308,12 @@ jobs:
           }
 
           # accept the eula
-          & '${{ github.workspace }}/bin/psexec' -accepteula -nobanner cmd /c "exit 0" 2>$null
+          & '${{ github.workspace }}/bin/psexec' -accepteula -nobanner cmd /c "exit 0"
 
       # run tests
+      - name: Test rego security policy
+        run: ${{ env.GOTESTSUM_CMD }} -tags=rego -timeout=30m -gcflags=all=-d=checkptr ./pkg/securitypolicy/...
+
       - name: Test repo
         run: ${{ env.GOTESTSUM_CMD }} -gcflags=all=-d=checkptr -tags admin -timeout=20m ./...
 
@@ -326,10 +324,10 @@ jobs:
       - name: Build and run containerd-shim-runhcs-v1 tests
         shell: powershell
         run: |
-          pwsh {
-            cd '..'
-            ${{ env.GO_BUILD_CMD }} -o ./test ./cmd/containerd-shim-runhcs-v1 2>&1
-          }
+          Push-Location '..'
+          ${{ env.GO_BUILD_CMD }} -o ./test ./cmd/containerd-shim-runhcs-v1 2>&1
+          Pop-Location
+
           if ( $LASTEXITCODE ) {
             Write-Output '::error::Could not build containerd-shim-runhcs-v1.exe'
             exit $LASTEXITCODE
@@ -360,9 +358,18 @@ jobs:
             exit $LASTEXITCODE
           }
 
+          # Resolve go.exe path
+          $go = Get-Command -Name 'go' -CommandType Application -ErrorAction Stop |
+          Select-Object -First 1 -ExpandProperty Source
+          if ([string]::IsNullOrEmpty($go)) {
+            Write-Output '::error::Could not find go.exe path'
+            exit 1
+          }
+
           # Don't run Linux uVM (ie, nested virt) or LCOW integrity tests. Windows uVM tests will be run on 1ES runner pool.
           $cmd = '${{ env.GOTESTSUM_CMD_RAW }} ./functional.test.exe -exclude=LCOW,LCOWIntegrity -test.timeout=1h -test.v -log-level=info'
-          $cmd = $cmd -replace 'gotestsum', $gotestsum
+          $cmd = $cmd -replace '\bgo\b', $go
+          $cmd = $cmd -replace '\bgotestsum\b', $gotestsum
           Write-Host "gotestsum command: $cmd"
 
           # Apparently, in a GH runner, PsExec always runs noninteractively (even with `-i`)
@@ -387,7 +394,7 @@ jobs:
         run: ${{ env.GO_BUILD_CMD }} -mod=mod -o sample-logging-driver.exe ./cri-containerd/helpers/log.go
         working-directory: test
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: ${{ github.event_name == 'pull_request' }}
         with:
           name: test_binaries_${{ matrix.name }}
@@ -404,11 +411,11 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2019, windows-2022]
+        os: [windows-2022]
 
     steps:
       - name: Checkout hcsshim
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: src/github.com/Microsoft/hcsshim
           show-progress: false
@@ -429,7 +436,7 @@ jobs:
       - name: Get containerd ref
         shell: powershell
         run: |
-          $v = go list -m -f '{{ .Version }}' 'github.com/containerd/containerd' 2>&1
+          $v = go list -m -f '{{ .Version }}' 'github.com/containerd/containerd/v2' 2>&1
           if ( $LASTEXITCODE ) {
             Write-Output '::error::Could not retrieve containerd version.'
             exit $LASTEXITCODE
@@ -440,7 +447,7 @@ jobs:
         working-directory: src/github.com/Microsoft/hcsshim
 
       - name: Checkout containerd
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           path: src/github.com/containerd/containerd
           repository: "containerd/containerd"
@@ -536,8 +543,8 @@ jobs:
         working-directory: src/github.com/containerd/containerd
         env:
           TEST_IMAGE_LIST: ${{github.workspace}}/repolist.toml
-          BUSYBOX_TESTING_IMAGE_REF: "k8s.gcr.io/e2e-test-images/busybox:1.29-2"
-          RESOURCE_CONSUMER_TESTING_IMAGE_REF: "k8s.gcr.io/e2e-test-images/resource-consumer:1.10"
+          BUSYBOX_TESTING_IMAGE_REF: "registry.k8s.io/e2e-test-images/busybox:1.29-2"
+          RESOURCE_CONSUMER_TESTING_IMAGE_REF: "registry.k8s.io/e2e-test-images/resource-consumer:1.10"
           CGO_ENABLED: 1
         run: |
           cat > "${{ env.TEST_IMAGE_LIST }}" << EOF
@@ -611,7 +618,7 @@ jobs:
     runs-on: "windows-2022"
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 
@@ -632,20 +639,32 @@ jobs:
 
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/containerd-shim-runhcs-v1
         name: Build containerd-shim-runhcs-v1.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./cmd/device-util
+        name: Build device-util.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./cmd/jobobject-util
+        name: Build jobobject-util.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./cmd/mkuvmcim
+        name: Build mkuvmcim.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./cmd/ncproxy
+        name: Build ncproxy.exe
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/runhcs
         name: Build runhcs.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./cmd/shimdiag
+        name: Build shimdiag.exe
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/tar2ext4
         name: Build tar2ext4.exe
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/wclayer
         name: Build wclayer.exe
-      - run: ${{ env.GO_BUILD_CMD }} ./cmd/device-util
-        name: Build device-util.exe
-      - run: ${{ env.GO_BUILD_CMD }} ./cmd/ncproxy
-        name: Build ncproxy.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./cmd/gcs-sidecar
+        name: Build gcs-sidecar.exe
       - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/grantvmgroupaccess
         name: Build grantvmgroupaccess.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/hvsocketaddr
+        name: Build hvsocketaddr.exe
       - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/networkagent
         name: Build networkagent.exe
+      - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/rootfs
+        name: Build rootfs.exe
       - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/securitypolicy
         name: Build securitypolicy.exe
       - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/securitypolicy
@@ -658,7 +677,7 @@ jobs:
       - run: ${{ env.GO_BUILD_CMD }} ./internal/tools/zapdir
         name: Build zapdir.exe
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v6
         if: ${{ github.event_name == 'pull_request' }}
         with:
           name: binaries
@@ -667,8 +686,10 @@ jobs:
             runhcs.exe
             tar2ext4.exe
             wclayer.exe
+            gcs-sidecar.exe
             device-util.exe
             ncproxy.exe
+            hvsocketaddr.exe
             grantvmgroupaccess.exe
             networkagent.exe
             securitypolicy.exe
@@ -681,7 +702,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
         with:
           show-progress: false
 

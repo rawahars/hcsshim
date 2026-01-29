@@ -137,11 +137,15 @@ type UtilityVM struct {
 	// This only applies for WCOW.
 	noInheritHostTimezone bool
 
-	// confidentialUVMOptions hold confidential UVM specific options
-	confidentialUVMOptions *ConfidentialOptions
-
 	// LCOW only. Indicates whether to use policy based routing when configuring net interfaces in the guest.
 	policyBasedRouting bool
+
+	// ref counting for block CIMs
+	blockCIMMounts    map[string]*UVMMountedBlockCIMs
+	blockCIMMountLock sync.Mutex
+
+	forwardLogs bool   // Indicates whether to forward logs from the UVM to the host
+	logSources  string // ETW providers to enable for log forwarding
 }
 
 func (uvm *UtilityVM) ScratchEncryptionEnabled() bool {
@@ -153,12 +157,43 @@ type OutputHandler func(io.Reader)
 
 type OutputHandlerCreator func(*Options) OutputHandler
 
+type WCOWBootFilesType uint8
+
+const (
+	VmbFSBoot WCOWBootFilesType = iota
+	BlockCIMBoot
+)
+
+// WCOWBootFiles provides the files paths (and other data) required to configure boot of
+// an UVM.  This struct (more like a union) maintains a type variable to specify what kind
+// of boot we are doing and then the struct applicable to that boot type will have the
+// necessary data. All other fields should be null.  (Maybe we can make this into an
+// interface with a method that configures boot given the UVM HCS doc, but configuring
+// boot requires access to the uvm struct itself to update the used SCSI mounts etc. and
+// then the interface gets ugly...)
 type WCOWBootFiles struct {
+	BootType      WCOWBootFilesType
+	VmbFSFiles    *VmbFSBootFiles
+	BlockCIMFiles *BlockCIMBootFiles
+}
+
+// files required to boot an UVM with layer files stored on NTFS in legacy (WCIFS) format.
+type VmbFSBootFiles struct {
 	// Path to the directory that contains the OS files.
 	OSFilesPath string
 	// Path of the boot directory relative to the `OSFilesPath`. This boot directory MUST
 	// contain the BCD & bootmgfw.efi files.
 	OSRelativeBootDirPath string
 	// Path for the scratch VHD of thef UVM
+	ScratchVHDPath string
+}
+
+// files required to boot an UVM with the layer files stored in a block CIM.
+type BlockCIMBootFiles struct {
+	// Path to the VHD that has a block CIM (which contains the OS files) on it.
+	BootCIMVHDPath string
+	// VHD that contains the EFI partition
+	EFIVHDPath string
+	// A non formatted scratch VHD
 	ScratchVHDPath string
 }

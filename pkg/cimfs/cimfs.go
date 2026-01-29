@@ -4,6 +4,7 @@
 package cimfs
 
 import (
+	"github.com/Microsoft/hcsshim/internal/winapi"
 	"path/filepath"
 
 	"github.com/Microsoft/hcsshim/osversion"
@@ -18,7 +19,7 @@ func IsCimFSSupported() bool {
 	build := osversion.Build()
 	// CimFS support is backported to LTSC2022 starting with revision 2031 and should
 	// otherwise be available on all builds >= V25H1Server
-	return build >= osversion.V25H1Server || (build == osversion.V21H2Server && rv >= 2031)
+	return (build >= osversion.V25H1Server || (build == osversion.V21H2Server && rv >= 2031)) && winapi.CimFsSupported()
 }
 
 // IsBlockCimSupported returns true if block formatted CIMs (i.e block device CIM &
@@ -28,7 +29,16 @@ func IsBlockCimSupported() bool {
 	// TODO(ambarve): Currently we are checking against a higher build number since there is no
 	// official build with block CIM support yet. Once we have that build, we should
 	// update the build number here.
-	return build >= 27766
+	return build >= 27766 && winapi.CimFsSupported()
+}
+
+// IsVerifiedCimSupported returns true if block CIM format supports also writing verification information in the CIM.
+func IsVerifiedCimSupported() bool {
+	build := osversion.Build()
+	// TODO(ambarve): Currently we are checking against a higher build number since there is no
+	// official build with block CIM support yet. Once we have that build, we should
+	// update the build number here.
+	return build >= 27800 && winapi.CimFsSupported()
 }
 
 func IsMergedCimSupported() bool {
@@ -49,6 +59,7 @@ const (
 	CimMountFlagEnableDax  uint32 = 0x2
 	CimMountBlockDeviceCim uint32 = 0x10
 	CimMountSingleFileCim  uint32 = 0x20
+	CimMountVerifiedCim    uint32 = 0x80
 
 	CimCreateFlagNone                uint32 = 0x0
 	CimCreateFlagDoNotExpandPEImages uint32 = 0x1
@@ -56,10 +67,12 @@ const (
 	CimCreateFlagBlockDeviceCim      uint32 = 0x4
 	CimCreateFlagSingleFileCim       uint32 = 0x8
 	CimCreateFlagConsistentCim       uint32 = 0x10
+	CimCreateFlagVerifiedCim         uint32 = 0x40
 
 	CimMergeFlagNone        uint32 = 0x0
 	CimMergeFlagSingleFile  uint32 = 0x1
 	CimMergeFlagBlockDevice uint32 = 0x2
+	CimMergeFlagVerifiedCim uint32 = 0x4
 )
 
 // BlockCIM represents a CIM stored in a block formatted way.

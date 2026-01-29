@@ -5,9 +5,11 @@ package cimfs
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"syscall"
 
 	"os"
@@ -50,6 +52,14 @@ type testBlockCIM struct {
 }
 
 func (t *testBlockCIM) cimPath() string {
+	return filepath.Join(t.BlockPath, t.CimName)
+}
+
+type testVerifiedBlockCIM struct {
+	BlockCIM
+}
+
+func (t *testVerifiedBlockCIM) cimPath() string {
 	return filepath.Join(t.BlockPath, t.CimName)
 }
 
@@ -99,6 +109,8 @@ func openNewCIM(t *testing.T, newCIM testCIM) *CimFsWriter {
 		writer, err = Create(val.imageDir, val.parentName, val.imageName)
 	case *testBlockCIM:
 		writer, err = CreateBlockCIM(val.BlockPath, val.CimName, val.Type)
+	case *testVerifiedBlockCIM:
+		writer, err = CreateBlockCIMWithOptions(context.Background(), &val.BlockCIM, WithDataIntegrity())
 	}
 	if err != nil {
 		t.Fatalf("failed while creating a cim: %s", err)
@@ -664,5 +676,193 @@ func TestMergedLinksInMergedBlockCIMs(rootT *testing.T) {
 	}
 	if !bytes.Equal(data, testContents[0].fileContents) {
 		rootT.Logf("file contents don't match!")
+	}
+}
+
+func TestVerifiedSingleFileBlockCIMMount(t *testing.T) {
+	if !IsVerifiedCimSupported() {
+		t.Skipf("verified CIMs are not supported")
+	}
+
+	// contents to write to the CIM
+	testContents := []tuple{
+		{"foo.txt", []byte("foo1"), false},
+		{"bar.txt", []byte("bar"), false},
+	}
+
+	root := t.TempDir()
+	blockPath := filepath.Join(root, "layer.bcim")
+	tc := &testVerifiedBlockCIM{
+		BlockCIM: BlockCIM{
+			Type:      BlockCIMTypeSingleFile,
+			BlockPath: blockPath,
+			CimName:   "layer.cim",
+		}}
+	writer := openNewCIM(t, tc)
+	writeCIM(t, writer, testContents)
+
+	rootHash, err := GetVerificationInfo(blockPath)
+	if err != nil {
+		t.Fatalf("failed to get verification info: %s", err)
+	}
+
+	// mount and read the contents of the cim
+	volumeGUID, err := guid.NewV4()
+	if err != nil {
+		t.Fatalf("generate cim mount GUID: %s", err)
+	}
+
+	mountvol, err := MountVerifiedBlockCIM(&tc.BlockCIM, CimMountSingleFileCim, volumeGUID, rootHash)
+	if err != nil {
+		t.Fatalf("mount verified cim : %s", err)
+	}
+	t.Cleanup(func() {
+		if err := Unmount(mountvol); err != nil {
+			t.Logf("CIM unmount failed: %s", err)
+		}
+	})
+	compareContent(t, mountvol, testContents)
+}
+
+func TestVerifiedSingleFileBlockCIMMountReadFailure(t *testing.T) {
+	if !IsVerifiedCimSupported() {
+		t.Skipf("verified CIMs are not supported")
+	}
+
+	// contents to write to the CIM
+	testContents := []tuple{
+		{"foo.txt", []byte("foo1"), false},
+		{"bar.txt", []byte("bar"), false},
+	}
+
+	root := t.TempDir()
+	blockPath := filepath.Join(root, "layer.bcim")
+	tc := &testVerifiedBlockCIM{
+		BlockCIM: BlockCIM{
+			Type:      BlockCIMTypeSingleFile,
+			BlockPath: blockPath,
+			CimName:   "layer.cim",
+		}}
+	writer := openNewCIM(t, tc)
+	writeCIM(t, writer, testContents)
+
+	rootHash, err := GetVerificationInfo(blockPath)
+	if err != nil {
+		t.Fatalf("failed to get verification info: %s", err)
+	}
+
+	// mount and read the contents of the cim
+	volumeGUID, err := guid.NewV4()
+	if err != nil {
+		t.Fatalf("generate cim mount GUID: %s", err)
+	}
+
+	// change the rootHash slightly, this may cause the mount to fail due to integrity check.
+	rootHash[0] = rootHash[0] + 1
+
+	_, err = MountVerifiedBlockCIM(&tc.BlockCIM, CimMountSingleFileCim, volumeGUID, rootHash)
+	if err == nil {
+		t.Fatalf("mount verified cim should fail with integrity error")
+	} else if !strings.Contains(err.Error(), "integrity violation") {
+		t.Fatalf("expected integrity violation error")
+	}
+}
+
+func TestMergedVerifiedBlockCIMs(rootT *testing.T) {
+	if !IsVerifiedCimSupported() {
+		rootT.Skipf("verified BlockCIMs are not supported")
+	}
+
+	// A slice of 3 slices, 1 slice for contents of each CIM
+	testContents := [][]tuple{
+		{{"foo.txt", []byte("foo1"), false}},
+		{{"bar.txt", []byte("bar"), false}},
+		{{"foo.txt", []byte("foo2"), false}},
+	}
+	// create 3 separate block CIMs
+	nCIMs := len(testContents)
+
+	// test merging for both SingleFile & BlockDevice type of block CIMs
+	type testBlock struct {
+		name               string
+		blockType          BlockCIMType
+		mountFlag          uint32
+		blockPathGenerator func(t *testing.T, dir string) string
+	}
+
+	tests := []testBlock{
+		{
+			name:      "single file",
+			blockType: BlockCIMTypeSingleFile,
+			mountFlag: CimMountSingleFileCim,
+			blockPathGenerator: func(t *testing.T, dir string) string {
+				t.Helper()
+				return filepath.Join(dir, "layer.bcim")
+			},
+		},
+		{
+			name:      "block device",
+			blockType: BlockCIMTypeDevice,
+			mountFlag: CimMountBlockDeviceCim,
+			blockPathGenerator: func(t *testing.T, dir string) string {
+				t.Helper()
+				return createBlockDevice(t, dir)
+			},
+		},
+	}
+
+	for _, test := range tests {
+		rootT.Run(test.name, func(t *testing.T) {
+			sourceCIMs := make([]*BlockCIM, 0, nCIMs)
+			for i := 0; i < nCIMs; i++ {
+				root := t.TempDir()
+				blockPath := test.blockPathGenerator(t, root)
+				tc := &testVerifiedBlockCIM{
+					BlockCIM: BlockCIM{
+						Type:      test.blockType,
+						BlockPath: blockPath,
+						CimName:   "layer.cim",
+					}}
+				writer := openNewCIM(t, tc)
+				writeCIM(t, writer, testContents[i])
+				sourceCIMs = append(sourceCIMs, &tc.BlockCIM)
+			}
+
+			mergedBlockPath := test.blockPathGenerator(t, t.TempDir())
+			// prepare a merged CIM
+			mergedCIM := &BlockCIM{
+				Type:      test.blockType,
+				BlockPath: mergedBlockPath,
+				CimName:   "merged.cim",
+			}
+
+			if err := MergeBlockCIMsWithOpts(context.Background(), mergedCIM, sourceCIMs, WithDataIntegrity()); err != nil {
+				t.Fatalf("failed to merge block CIMs: %s", err)
+			}
+
+			rootHash, err := GetVerificationInfo(mergedBlockPath)
+			if err != nil {
+				t.Fatalf("failed to get verification info: %s", err)
+			}
+
+			// mount and read the contents of the cim
+			volumeGUID, err := guid.NewV4()
+			if err != nil {
+				t.Fatalf("generate cim mount GUID: %s", err)
+			}
+
+			mountvol, err := MountMergedVerifiedBlockCIMs(mergedCIM, sourceCIMs, test.mountFlag, volumeGUID, rootHash)
+			if err != nil {
+				t.Fatalf("failed to mount merged block CIMs: %s\n", err)
+			}
+			defer func() {
+				if err := Unmount(mountvol); err != nil {
+					t.Logf("CIM unmount failed: %s", err)
+				}
+			}()
+			// since we are merging, only 1 foo.txt (from the 1st CIM) should
+			// show up
+			compareContent(t, mountvol, []tuple{testContents[0][0], testContents[1][0]})
+		})
 	}
 }

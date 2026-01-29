@@ -14,21 +14,41 @@ import (
 // container file system.
 //
 // Note: `layerPaths` and `containerRootPath` are paths from within the UVM.
-func (uvm *UtilityVM) CombineLayersWCOW(ctx context.Context, layerPaths []hcsschema.Layer, containerRootPath string) error {
+func (uvm *UtilityVM) CombineLayersWCOW(ctx context.Context, layerPaths []hcsschema.Layer, containerRootPath string, filterType hcsschema.FileSystemFilterType, containerID string) error {
 	if uvm.operatingSystem != "windows" {
 		return errNotSupported
 	}
-	msr := &hcsschema.ModifySettingRequest{
-		GuestRequest: guestrequest.ModificationRequest{
-			ResourceType: guestresource.ResourceTypeCombinedLayers,
-			RequestType:  guestrequest.RequestTypeAdd,
-			Settings: guestresource.WCOWCombinedLayers{
-				ContainerRootPath: containerRootPath,
-				Layers:            layerPaths,
+
+	var modifyRequest *hcsschema.ModifySettingRequest
+	if uvm.HasConfidentialPolicy() {
+		modifyRequest = &hcsschema.ModifySettingRequest{
+			GuestRequest: guestrequest.ModificationRequest{
+				ResourceType: guestresource.ResourceTypeCWCOWCombinedLayers,
+				RequestType:  guestrequest.RequestTypeAdd,
+				Settings: guestresource.CWCOWCombinedLayers{
+					ContainerID: containerID,
+					CombinedLayers: guestresource.WCOWCombinedLayers{
+						ContainerRootPath: containerRootPath,
+						Layers:            layerPaths,
+						FilterType:        filterType,
+					},
+				},
 			},
-		},
+		}
+	} else {
+		modifyRequest = &hcsschema.ModifySettingRequest{
+			GuestRequest: guestrequest.ModificationRequest{
+				ResourceType: guestresource.ResourceTypeCombinedLayers,
+				RequestType:  guestrequest.RequestTypeAdd,
+				Settings: guestresource.WCOWCombinedLayers{
+					ContainerRootPath: containerRootPath,
+					Layers:            layerPaths,
+					FilterType:        filterType,
+				},
+			},
+		}
 	}
-	return uvm.modify(ctx, msr)
+	return uvm.modify(ctx, modifyRequest)
 }
 
 // CombineLayersLCOW combines `layerPaths` and optionally `scratchPath` into an
@@ -65,15 +85,32 @@ func (uvm *UtilityVM) CombineLayersLCOW(ctx context.Context, containerID string,
 //
 // NOTE: `rootfsPath` is the path from within the UVM.
 func (uvm *UtilityVM) RemoveCombinedLayersWCOW(ctx context.Context, rootfsPath string) error {
-	msr := &hcsschema.ModifySettingRequest{
-		GuestRequest: guestrequest.ModificationRequest{
-			ResourceType: guestresource.ResourceTypeCombinedLayers,
-			RequestType:  guestrequest.RequestTypeRemove,
-			Settings: guestresource.WCOWCombinedLayers{
-				ContainerRootPath: rootfsPath,
+	var msr *hcsschema.ModifySettingRequest
+
+	if uvm.HasConfidentialPolicy() {
+		msr = &hcsschema.ModifySettingRequest{
+			GuestRequest: guestrequest.ModificationRequest{
+				ResourceType: guestresource.ResourceTypeCWCOWCombinedLayers,
+				RequestType:  guestrequest.RequestTypeRemove,
+				Settings: guestresource.CWCOWCombinedLayers{
+					CombinedLayers: guestresource.WCOWCombinedLayers{
+						ContainerRootPath: rootfsPath,
+					},
+				},
 			},
-		},
+		}
+	} else {
+		msr = &hcsschema.ModifySettingRequest{
+			GuestRequest: guestrequest.ModificationRequest{
+				ResourceType: guestresource.ResourceTypeCombinedLayers,
+				RequestType:  guestrequest.RequestTypeRemove,
+				Settings: guestresource.WCOWCombinedLayers{
+					ContainerRootPath: rootfsPath,
+				},
+			},
+		}
 	}
+
 	return uvm.modify(ctx, msr)
 }
 

@@ -18,10 +18,10 @@ import (
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
 
-	"github.com/Microsoft/hcsshim/internal/guest/gcserr"
+	"github.com/Microsoft/hcsshim/internal/bridgeutils/gcserr"
 	"github.com/Microsoft/hcsshim/internal/guest/prot"
 	"github.com/Microsoft/hcsshim/internal/guest/runtime"
-	specInternal "github.com/Microsoft/hcsshim/internal/guest/spec"
+	specGuest "github.com/Microsoft/hcsshim/internal/guest/spec"
 	"github.com/Microsoft/hcsshim/internal/guest/stdio"
 	"github.com/Microsoft/hcsshim/internal/guest/storage"
 	"github.com/Microsoft/hcsshim/internal/guest/transport"
@@ -30,6 +30,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/oc"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
+	"github.com/Microsoft/hcsshim/pkg/annotations"
 )
 
 // containerStatus has been introduced to enable parallel container creation
@@ -45,8 +46,11 @@ const (
 )
 
 type Container struct {
-	id    string
-	vsock transport.Transport
+	id string
+
+	vsock   transport.Transport
+	logPath string   // path to [logFile].
+	logFile *os.File // file to redirect container's stdio to.
 
 	spec          *oci.Spec
 	ociBundlePath string
@@ -75,12 +79,42 @@ type Container struct {
 	scratchDirPath string
 }
 
-func (c *Container) Start(ctx context.Context, conSettings stdio.ConnectionSettings) (int, error) {
-	log.G(ctx).WithField(logfields.ContainerID, c.id).Info("opengcs::Container::Start")
-	stdioSet, err := stdio.Connect(c.vsock, conSettings)
+func (c *Container) Start(ctx context.Context, conSettings stdio.ConnectionSettings) (_ int, err error) {
+	entity := log.G(ctx).WithField(logfields.ContainerID, c.id)
+	entity.Info("opengcs::Container::Start")
+
+	// only use the logfile for the init process, since we don't want to tee stdio of execs
+	t := c.vsock
+	if c.logPath != "" {
+		// don't use [os.Create] since that truncates an existing file, which is not desired
+		if c.logFile, err = os.OpenFile(c.logPath, os.O_RDWR|os.O_CREATE|os.O_APPEND, 0666); err != nil {
+			return -1, fmt.Errorf("failed to open log file: %s: %w", c.logPath, err)
+		}
+		go func() {
+			// initProcess is already created in [(*Host).CreateContainer], and is, therefore, "waitable"
+			// wait in `writersWg`, which is closed after process is cleaned up (including io Relays)
+			//
+			// Note: [PipeRelay] and [TtyRelay] are not safe to call multiple times, so it is safer to wait
+			// on the parent (init) process.
+			c.initProcess.writersWg.Wait()
+
+			if lfErr := c.logFile.Close(); lfErr != nil {
+				entity.WithFields(logrus.Fields{
+					logrus.ErrorKey: lfErr,
+					logfields.Path:  c.logFile.Name(),
+				}).Warn("failed to close log file")
+			}
+			c.logFile = nil
+		}()
+
+		t = transport.NewMultiWriter(c.vsock, c.logFile)
+	}
+
+	stdioSet, err := stdio.Connect(t, conSettings)
 	if err != nil {
 		return -1, err
 	}
+
 	if c.initProcess.spec.Terminal {
 		ttyr := c.container.Tty()
 		ttyr.ReplaceConnectionSet(stdioSet)
@@ -115,7 +149,7 @@ func (c *Container) ExecProcess(ctx context.Context, process *oci.Process, conSe
 	// assign the uid:gid from the container.
 	if process.User.Username != "" {
 		// The exec provided a user string of it's own. Grab the uid:gid pairing for the string (if one exists).
-		if err := setUserStr(&oci.Spec{Root: c.spec.Root, Process: process}, process.User.Username); err != nil {
+		if err := specGuest.SetUserStr(&oci.Spec{Root: c.spec.Root, Process: process}, process.User.Username); err != nil {
 			return -1, err
 		}
 		// Runc doesn't care about this, and just to be safe clear it.
@@ -180,7 +214,10 @@ func (c *Container) GetAllProcessPids(ctx context.Context) ([]int, error) {
 
 // Kill sends 'signal' to the container process.
 func (c *Container) Kill(ctx context.Context, signal syscall.Signal) error {
-	log.G(ctx).WithField(logfields.ContainerID, c.id).Info("opengcs::Container::Kill")
+	log.G(ctx).WithFields(logrus.Fields{
+		logfields.ContainerID: c.id,
+		"signal":              signal.String(),
+	}).Info("opengcs::Container::Kill")
 	err := c.container.Kill(signal)
 	if err != nil {
 		return err
@@ -193,13 +230,24 @@ func (c *Container) Delete(ctx context.Context) error {
 	entity := log.G(ctx).WithField(logfields.ContainerID, c.id)
 	entity.Info("opengcs::Container::Delete")
 	if c.isSandbox {
-		// remove user mounts in sandbox container
-		if err := storage.UnmountAllInPath(ctx, specInternal.SandboxMountsDir(c.id), true); err != nil {
+		// Check if this is a virtual pod
+		virtualSandboxID := ""
+		if c.spec != nil && c.spec.Annotations != nil {
+			virtualSandboxID = c.spec.Annotations[annotations.VirtualPodID]
+		}
+
+		// remove user mounts in sandbox container - use virtual pod aware paths
+		if err := storage.UnmountAllInPath(ctx, specGuest.VirtualPodAwareSandboxMountsDir(c.id, virtualSandboxID), true); err != nil {
 			entity.WithError(err).Error("failed to unmount sandbox mounts")
 		}
 
-		// remove hugepages mounts in sandbox container
-		if err := storage.UnmountAllInPath(ctx, specInternal.HugePagesMountsDir(c.id), true); err != nil {
+		// remove user mounts in tmpfs sandbox container - use virtual pod aware paths
+		if err := storage.UnmountAllInPath(ctx, specGuest.VirtualPodAwareSandboxTmpfsMountsDir(c.id, virtualSandboxID), true); err != nil {
+			entity.WithError(err).Error("failed to unmount tmpfs sandbox mounts")
+		}
+
+		// remove hugepages mounts in sandbox container - use virtual pod aware paths
+		if err := storage.UnmountAllInPath(ctx, specGuest.VirtualPodAwareHugePagesMountsDir(c.id, virtualSandboxID), true); err != nil {
 			entity.WithError(err).Error("failed to unmount hugepages mounts")
 		}
 	}
@@ -251,9 +299,10 @@ func (c *Container) setExitType(signal syscall.Signal) {
 	c.etL.Lock()
 	defer c.etL.Unlock()
 
-	if signal == syscall.SIGTERM {
+	switch signal {
+	case syscall.SIGTERM:
 		c.exitType = prot.NtGracefulExit
-	} else if signal == syscall.SIGKILL {
+	case syscall.SIGKILL:
 		c.exitType = prot.NtForcedExit
 	}
 }

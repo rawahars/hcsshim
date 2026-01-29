@@ -84,6 +84,10 @@ type Options struct {
 	// CPUGroupID set the ID of a CPUGroup on the host that the UVM should be added to on start.
 	// Defaults to an empty string which indicates the UVM should not be added to any CPUGroup.
 	CPUGroupID string
+
+	// ResourcePartitionID holds the resource partition guid.GUID the UVM should be assigned to.
+	ResourcePartitionID *guid.GUID
+
 	// NetworkConfigProxy holds the address of the network config proxy service.
 	// This != "" determines whether to start the ComputeAgent TTRPC service
 	// that receives the UVMs set of NICs from this proxy instead of enumerating
@@ -108,8 +112,8 @@ type Options struct {
 	AdditionalHyperVConfig map[string]hcsschema.HvSocketServiceConfig
 
 	// The following options are for implicit vNUMA topology settings.
-	// MaxSizePerNode is the maximum size of memory per vNUMA node.
-	MaxSizePerNode uint64
+	// MaxMemorySizePerNumaNode is the maximum size of memory (in MiB) per vNUMA node.
+	MaxMemorySizePerNumaNode uint64
 	// MaxProcessorsPerNumaNode is the maximum number of processors per vNUMA node.
 	MaxProcessorsPerNumaNode uint32
 	// PhysicalNumaNodes are the preferred physical NUMA nodes to map to vNUMA nodes.
@@ -122,6 +126,36 @@ type Options struct {
 	NumaProcessorCounts []uint32
 	// NumaMemoryBlocksCounts are the number of memory blocks per vNUMA node.
 	NumaMemoryBlocksCounts []uint64
+
+	EnableGraphicsConsole bool   // If true, enable a graphics console for the utility VM
+	ConsolePipe           string // The named pipe path to use for the serial console (COM1).  eg \\.\pipe\vmpipe
+}
+
+type ConfidentialCommonOptions struct {
+	GuestStateFilePath     string // The vmgs file path to load
+	SecurityPolicy         string // Optional security policy
+	SecurityPolicyEnabled  bool   // Set when there is a security policy to apply on actual SNP hardware, use this rathen than checking the string length
+	SecurityPolicyEnforcer string // Set which security policy enforcer to use (open door or rego). This allows for better fallback mechanic.
+	UVMReferenceInfoFile   string // Path to the file that contains the signed UVM measurements
+}
+
+func verifyWCOWBootFiles(bootFiles *WCOWBootFiles) error {
+	if bootFiles == nil {
+		return fmt.Errorf("boot files is nil")
+	}
+	switch bootFiles.BootType {
+	case VmbFSBoot:
+		if bootFiles.VmbFSFiles == nil {
+			return fmt.Errorf("VmbFS boot files is empty")
+		}
+	case BlockCIMBoot:
+		if bootFiles.BlockCIMFiles == nil {
+			return fmt.Errorf("confidential boot files is empty")
+		}
+	default:
+		return fmt.Errorf("invalid boot type (%d) specified", bootFiles.BootType)
+	}
+	return nil
 }
 
 // Verifies that the final UVM options are correct and supported.
@@ -149,12 +183,31 @@ func verifyOptions(_ context.Context, options interface{}) error {
 		if opts.EnableColdDiscardHint && osversion.Build() < 18967 {
 			return errors.New("EnableColdDiscardHint is not supported on builds older than 18967")
 		}
+		if opts.ResourcePartitionID != nil {
+			if opts.CPUGroupID != "" {
+				return errors.New("resource partition ID and CPU group ID cannot be set at the same time")
+			}
+		}
 	case *OptionsWCOW:
 		if opts.EnableDeferredCommit && !opts.AllowOvercommit {
 			return errors.New("EnableDeferredCommit is not supported on physically backed VMs")
 		}
 		if opts.SCSIControllerCount != 1 {
 			return errors.New("exactly 1 SCSI controller is required for WCOW")
+		}
+		if err := verifyWCOWBootFiles(opts.BootFiles); err != nil {
+			return err
+		}
+		if opts.SecurityPolicyEnabled && opts.GuestStateFilePath == "" {
+			return fmt.Errorf("GuestStateFilePath must be provided when enabling security policy")
+		}
+		if opts.IsolationType == "SecureNestedPaging" && opts.EnableGraphicsConsole {
+			return fmt.Errorf("graphics console cannot be enabled with SecureNestedPaging isolation mode")
+		}
+		if opts.ResourcePartitionID != nil {
+			if opts.CPUGroupID != "" {
+				return errors.New("resource partition ID and CPU group ID cannot be set at the same time")
+			}
 		}
 	}
 	return nil
@@ -278,8 +331,8 @@ func (uvm *UtilityVM) CloseCtx(ctx context.Context) (err error) {
 		_ = uvm.WaitCtx(ctx)
 	}
 
-	if uvm.confidentialUVMOptions != nil && uvm.confidentialUVMOptions.GuestStateFile != "" {
-		vmgsFullPath := filepath.Join(uvm.confidentialUVMOptions.BundleDirectory, uvm.confidentialUVMOptions.GuestStateFile)
+	if lopts, ok := uvm.createOpts.(*OptionsLCOW); ok && uvm.HasConfidentialPolicy() && lopts.GuestStateFilePath != "" {
+		vmgsFullPath := filepath.Join(lopts.BundleDirectory, lopts.GuestStateFilePath)
 		e := log.G(ctx).WithField("VMGS file", vmgsFullPath)
 		e.Debug("removing VMGS file")
 		if err := os.Remove(vmgsFullPath); err != nil {

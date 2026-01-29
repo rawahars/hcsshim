@@ -11,13 +11,16 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/sirupsen/logrus"
+	"golang.org/x/net/netutil"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/windows"
 
 	"github.com/Microsoft/hcsshim/internal/gcs"
+	"github.com/Microsoft/hcsshim/internal/gcs/prot"
 	"github.com/Microsoft/hcsshim/internal/hcs"
 	"github.com/Microsoft/hcsshim/internal/hcs/schema1"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
@@ -25,6 +28,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestrequest"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
+	"github.com/Microsoft/hcsshim/internal/timeout"
 	"github.com/Microsoft/hcsshim/internal/uvm/scsi"
 )
 
@@ -62,6 +66,17 @@ func (e *gcsLogEntry) UnmarshalJSON(b []byte) error {
 	// Do not allow fatal or panic level errors to propagate.
 	if e.Level < logrus.ErrorLevel {
 		e.Level = logrus.ErrorLevel
+	}
+	if e.Fields["Source"] == "ETW" {
+		// Windows ETW log entry
+		// Original ETW Event Data may have "message" or "Message" field instead of "msg"
+		if msg, ok := e.Fields["message"].(string); ok {
+			e.Message = msg
+			delete(e.Fields, "message")
+		} else if msg, ok := e.Fields["Message"].(string); ok {
+			e.Message = msg
+			delete(e.Fields, "Message")
+		}
 	}
 	// Clear special fields.
 	delete(e.Fields, "time")
@@ -134,7 +149,7 @@ func (uvm *UtilityVM) configureHvSocketForGCS(ctx context.Context) (err error) {
 
 	hvsocketAddress := &hcsschema.HvSocketAddress{
 		LocalAddress:  uvm.runtimeID.String(),
-		ParentAddress: gcs.WindowsGcsHvHostID.String(),
+		ParentAddress: prot.WindowsGcsHvHostID.String(),
 	}
 
 	conSetupReq := &hcsschema.ModifySettingRequest{
@@ -156,7 +171,9 @@ func (uvm *UtilityVM) configureHvSocketForGCS(ctx context.Context) (err error) {
 func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 	// save parent context, without timeout to use in terminate
 	pCtx := ctx
-	ctx, cancel := context.WithTimeout(pCtx, 2*time.Minute)
+	ctx, cancel := context.WithTimeout(pCtx, timeout.GCSConnectionTimeout)
+	log.G(ctx).Debugf("using gcs connection timeout: %s\n", timeout.GCSConnectionTimeout)
+
 	g, gctx := errgroup.WithContext(ctx)
 	defer func() {
 		_ = g.Wait()
@@ -178,7 +195,7 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 	// until the host accepts and closes the entropy connection.
 	if uvm.entropyListener != nil {
 		g.Go(func() error {
-			conn, err := uvm.acceptAndClose(gctx, uvm.entropyListener)
+			conn, err := uvm.accept(gctx, uvm.entropyListener, true)
 			uvm.entropyListener = nil
 			if err != nil {
 				e.WithError(err).Error("failed to connect to entropy socket")
@@ -195,22 +212,56 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 	}
 
 	if uvm.outputListener != nil {
-		g.Go(func() error {
-			conn, err := uvm.acceptAndClose(gctx, uvm.outputListener)
-			uvm.outputListener = nil
-			if err != nil {
-				e.WithError(err).Error("failed to connect to log socket")
-				close(uvm.outputProcessingDone)
-				return fmt.Errorf("failed to connect to log socket: %w", err)
-			}
+		switch uvm.operatingSystem {
+		case "windows":
+			// Windows specific handling
+			// For windows, the Listener can recieve a connection later, so we
+			// start the output handler in a goroutine with a non-timeout context.
+			// This allows the output handler to run independently of the UVM Create's
+			// lifecycle. The approach potentially allows to wait for reconnections too,
+			// while limiting the number of concurrent connections to 1.
+			// This is useful for the case when logging service is restarted.
 			go func() {
-				e.Trace("uvm output handler starting")
-				uvm.outputHandler(conn)
-				close(uvm.outputProcessingDone)
-				e.Debug("uvm output handler finished")
+				var wg sync.WaitGroup
+				uvm.outputListener = netutil.LimitListener(uvm.outputListener, 1)
+				for {
+					conn, err := uvm.accept(context.WithoutCancel(ctx), uvm.outputListener, false)
+					if err != nil {
+						e.WithError(err).Error("failed to connect to log socket")
+						break
+					}
+					wg.Add(1)
+					go func() {
+						defer wg.Done()
+						e.Info("uvm output handler starting")
+						uvm.outputHandler(conn)
+					}()
+					e.Info("uvm output handler finished")
+				}
+				wg.Wait()
+				if _, ok := <-uvm.outputProcessingDone; ok {
+					close(uvm.outputProcessingDone)
+				}
 			}()
-			return nil
-		})
+		default:
+			// Default handling
+			g.Go(func() error {
+				conn, err := uvm.accept(gctx, uvm.outputListener, true)
+				uvm.outputListener = nil
+				if err != nil {
+					e.WithError(err).Error("failed to connect to log socket")
+					close(uvm.outputProcessingDone)
+					return fmt.Errorf("failed to connect to log socket: %w", err)
+				}
+				go func() {
+					e.Trace("uvm output handler starting")
+					uvm.outputHandler(conn)
+					close(uvm.outputProcessingDone)
+					e.Debug("uvm output handler finished")
+				}()
+				return nil
+			})
+		}
 	}
 
 	err = uvm.hcsSystem.Start(ctx)
@@ -247,7 +298,7 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 
 	if uvm.gcListener != nil {
 		// Accept the GCS connection.
-		conn, err := uvm.acceptAndClose(ctx, uvm.gcListener)
+		conn, err := uvm.accept(ctx, uvm.gcListener, true)
 		uvm.gcListener = nil
 		if err != nil {
 			return fmt.Errorf("failed to connect to GCS: %w", err)
@@ -322,24 +373,46 @@ func (uvm *UtilityVM) Start(ctx context.Context) (err error) {
 	}
 	uvm.SCSIManager = mgr
 
-	if uvm.confidentialUVMOptions != nil && uvm.OS() == "linux" {
+	if uvm.HasConfidentialPolicy() {
+		var policy, enforcer, referenceInfoFileRoot, referenceInfoFilePath string
+		if uvm.OS() == "linux" {
+			policy = uvm.createOpts.(*OptionsLCOW).SecurityPolicy
+			enforcer = uvm.createOpts.(*OptionsLCOW).SecurityPolicyEnforcer
+			referenceInfoFilePath = uvm.createOpts.(*OptionsLCOW).UVMReferenceInfoFile
+			referenceInfoFileRoot = defaultLCOWOSBootFilesPath()
+		} else if uvm.OS() == "windows" {
+			policy = uvm.createOpts.(*OptionsWCOW).SecurityPolicy
+			enforcer = uvm.createOpts.(*OptionsWCOW).SecurityPolicyEnforcer
+			referenceInfoFilePath = uvm.createOpts.(*OptionsWCOW).UVMReferenceInfoFile
+		}
 		copts := []ConfidentialUVMOpt{
-			WithSecurityPolicy(uvm.confidentialUVMOptions.SecurityPolicy),
-			WithSecurityPolicyEnforcer(uvm.confidentialUVMOptions.SecurityPolicyEnforcer),
-			WithUVMReferenceInfo(defaultLCOWOSBootFilesPath(), uvm.confidentialUVMOptions.UVMReferenceInfoFile),
+			WithSecurityPolicy(policy),
+			WithSecurityPolicyEnforcer(enforcer),
+			WithUVMReferenceInfo(referenceInfoFileRoot, referenceInfoFilePath),
 		}
 		if err := uvm.SetConfidentialUVMOptions(ctx, copts...); err != nil {
 			return err
 		}
 	}
 
+	if uvm.OS() == "windows" && uvm.forwardLogs {
+		// If the UVM is Windows and log forwarding is enabled, set the log sources
+		// and start the log forwarding service.
+		if err := uvm.SetLogSources(ctx); err != nil {
+			e.WithError(err).Error("failed to set log sources")
+		}
+		if err := uvm.StartLogForwarding(ctx); err != nil {
+			e.WithError(err).Error("failed to start log forwarding")
+		}
+	}
+
 	return nil
 }
 
-// acceptAndClose accepts a connection and then closes a listener. If the
+// accept accepts a connection and then closes a listener. If the
 // context becomes done or the utility VM terminates, the operation will be
 // cancelled (but the listener will still be closed).
-func (uvm *UtilityVM) acceptAndClose(ctx context.Context, l net.Listener) (net.Conn, error) {
+func (uvm *UtilityVM) accept(ctx context.Context, l net.Listener, closeListener bool) (net.Conn, error) {
 	var conn net.Conn
 	ch := make(chan error)
 	go func() {
@@ -349,7 +422,9 @@ func (uvm *UtilityVM) acceptAndClose(ctx context.Context, l net.Listener) (net.C
 	}()
 	select {
 	case err := <-ch:
-		l.Close()
+		if closeListener {
+			l.Close()
+		}
 		return conn, err
 	case <-ctx.Done():
 	case <-uvm.exitCh:

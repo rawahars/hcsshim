@@ -16,11 +16,11 @@ import (
 	"github.com/Microsoft/hcsshim/pkg/ctrdtaskapi"
 )
 
-type ConfidentialUVMOpt func(ctx context.Context, r *guestresource.LCOWConfidentialOptions) error
+type ConfidentialUVMOpt func(ctx context.Context, r *guestresource.ConfidentialOptions) error
 
 // WithSecurityPolicy sets the desired security policy for the resource.
 func WithSecurityPolicy(policy string) ConfidentialUVMOpt {
-	return func(ctx context.Context, r *guestresource.LCOWConfidentialOptions) error {
+	return func(ctx context.Context, r *guestresource.ConfidentialOptions) error {
 		r.EncodedSecurityPolicy = policy
 		return nil
 	}
@@ -28,7 +28,7 @@ func WithSecurityPolicy(policy string) ConfidentialUVMOpt {
 
 // WithSecurityPolicyEnforcer sets the desired enforcer type for the resource.
 func WithSecurityPolicyEnforcer(enforcer string) ConfidentialUVMOpt {
-	return func(ctx context.Context, r *guestresource.LCOWConfidentialOptions) error {
+	return func(ctx context.Context, r *guestresource.ConfidentialOptions) error {
 		r.EnforcerType = enforcer
 		return nil
 	}
@@ -49,7 +49,7 @@ func base64EncodeFileContents(filePath string) (string, error) {
 // content before setting it for the resource. This is no-op if the
 // `referenceName` is empty or the file doesn't exist.
 func WithUVMReferenceInfo(referenceRoot string, referenceName string) ConfidentialUVMOpt {
-	return func(ctx context.Context, r *guestresource.LCOWConfidentialOptions) error {
+	return func(ctx context.Context, r *guestresource.ConfidentialOptions) error {
 		if referenceName == "" {
 			return nil
 		}
@@ -74,14 +74,10 @@ func WithUVMReferenceInfo(referenceRoot string, referenceName string) Confidenti
 // This has to happen before we start mounting things or generally changing
 // the state of the UVM after is has been measured at startup
 func (uvm *UtilityVM) SetConfidentialUVMOptions(ctx context.Context, opts ...ConfidentialUVMOpt) error {
-	if uvm.operatingSystem != "linux" {
-		return errNotSupported
-	}
-
 	uvm.m.Lock()
 	defer uvm.m.Unlock()
 
-	confOpts := &guestresource.LCOWConfidentialOptions{}
+	confOpts := &guestresource.ConfidentialOptions{}
 	for _, o := range opts {
 		if err := o(ctx, confOpts); err != nil {
 			return err
@@ -105,18 +101,28 @@ func (uvm *UtilityVM) SetConfidentialUVMOptions(ctx context.Context, opts ...Con
 
 // InjectPolicyFragment sends policy fragment to GCS.
 func (uvm *UtilityVM) InjectPolicyFragment(ctx context.Context, fragment *ctrdtaskapi.PolicyFragment) error {
-	if uvm.operatingSystem != "linux" {
-		return errNotSupported
-	}
+
 	mod := &hcsschema.ModifySettingRequest{
 		RequestType: guestrequest.RequestTypeUpdate,
 		GuestRequest: guestrequest.ModificationRequest{
 			ResourceType: guestresource.ResourceTypePolicyFragment,
 			RequestType:  guestrequest.RequestTypeAdd,
-			Settings: guestresource.LCOWSecurityPolicyFragment{
+			Settings: guestresource.SecurityPolicyFragment{
 				Fragment: fragment.Fragment,
 			},
 		},
 	}
 	return uvm.modify(ctx, mod)
+}
+
+// returns if this instance of the UtilityVM is created with confidential policy
+func (uvm *UtilityVM) HasConfidentialPolicy() bool {
+	switch opts := uvm.createOpts.(type) {
+	case *OptionsWCOW:
+		return opts.SecurityPolicyEnabled
+	case *OptionsLCOW:
+		return opts.SecurityPolicyEnabled
+	default:
+		panic("unexpected options type")
+	}
 }

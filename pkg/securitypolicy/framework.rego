@@ -57,6 +57,14 @@ layerPaths_ok(layers) {
     }
 }
 
+layerHashes_ok(layers) {
+    length := count(layers)
+    count(input.layerHashes) == length
+    every i, hash in input.layerHashes {
+        layers[(length - i) - 1] == hash
+    }
+}
+
 default overlay_exists := false
 
 overlay_exists {
@@ -93,6 +101,25 @@ candidate_containers := containers {
     ]
 
     containers := array.concat(policy_containers, fragment_containers)
+}
+
+default mount_cims := {"allowed": false}
+
+mount_cims := {"metadata": [addMatches], "allowed": true} {
+    not overlay_exists
+
+    containers := [container |
+        container := candidate_containers[_]
+        layerHashes_ok(container.layers)
+    ]
+
+    count(containers) > 0
+    addMatches := {
+        "name": "matches",
+        "action": "add",
+        "key": input.containerID,
+        "value": containers,
+    }
 }
 
 default mount_overlay := {"allowed": false}
@@ -144,7 +171,30 @@ env_ok(pattern, "string", value) {
 }
 
 env_ok(pattern, "re2", value) {
-    regex.match(pattern, value)
+    anchored := anchor_pattern(pattern)
+    regex.match(anchored, value)
+}
+
+anchor_pattern(p) := anchored {
+    startswith_leading := startswith(p, "^")
+    endswith_trailing := endswith(p, "$")
+
+    anchored = sprintf("%s%s%s", [
+        add_leading_trailing_chars(startswith_leading, "", "^"),  # Add ^ only if missing
+        p,
+        add_leading_trailing_chars(endswith_trailing, "", "$")     # Add $ only if missing
+    ])
+}
+
+# Function to return one of two values depending on a boolean condition
+add_leading_trailing_chars(cond, ifTrue, ifFalse) := result {
+    cond
+    result = ifTrue
+}
+
+add_leading_trailing_chars(cond, ifTrue, ifFalse) := result {
+    not cond
+    result = ifFalse
 }
 
 rule_ok(rule, env) {
@@ -223,21 +273,34 @@ workingDirectory_ok(working_dir) {
 }
 
 privileged_ok(elevation_allowed) {
+    is_linux
     not input.privileged
 }
 
 privileged_ok(elevation_allowed) {
+    is_linux
     input.privileged
     input.privileged == elevation_allowed
 }
 
+privileged_ok(no_new_privileges) {
+    # no-op for windows
+    is_windows
+}
+
 noNewPrivileges_ok(no_new_privileges) {
+    is_linux
     no_new_privileges
     input.noNewPrivileges
 }
 
 noNewPrivileges_ok(no_new_privileges) {
-    no_new_privileges == false
+    is_linux
+    not no_new_privileges
+}
+
+noNewPrivileges_ok(obj) {
+    is_windows
 }
 
 idName_ok(pattern, "any", value) {
@@ -257,6 +320,7 @@ idName_ok(pattern, "re2", value) {
 }
 
 user_ok(user) {
+    is_linux
     user.umask == input.umask
     idName_ok(user.user_idname.pattern, user.user_idname.strategy, input.user)
     every group in input.groups {
@@ -265,8 +329,18 @@ user_ok(user) {
     }
 }
 
+user_ok(user) {
+    is_windows
+    input.user == user
+}
+
 seccomp_ok(seccomp_profile_sha256) {
+    is_linux
     input.seccompProfileSHA256 == seccomp_profile_sha256
+}
+
+seccomp_ok(seccomp_profile_sha256) {
+    is_windows
 }
 
 default container_started := false
@@ -278,6 +352,7 @@ container_started {
 default container_privileged := false
 
 container_privileged {
+    is_linux
     data.metadata.started[input.containerID].privileged
 }
 
@@ -378,6 +453,7 @@ all_caps_sets_are_equal(sets) := caps {
 }
 
 valid_caps_for_all(containers, privileged) := caps {
+    is_linux
     allow_capability_dropping
 
     # find largest matching capabilities sets aka "the most specific"
@@ -389,6 +465,7 @@ valid_caps_for_all(containers, privileged) := caps {
 }
 
 valid_caps_for_all(containers, privileged) := caps {
+    is_linux
     not allow_capability_dropping
 
     # no dropping allowed, so we just return the input
@@ -396,11 +473,16 @@ valid_caps_for_all(containers, privileged) := caps {
 }
 
 caps_ok(allowed_caps, requested_caps) {
+    is_linux
     capsList_ok(allowed_caps.bounding, requested_caps.bounding)
     capsList_ok(allowed_caps.effective, requested_caps.effective)
     capsList_ok(allowed_caps.inheritable, requested_caps.inheritable)
     capsList_ok(allowed_caps.permitted, requested_caps.permitted)
     capsList_ok(allowed_caps.ambient, requested_caps.ambient)
+}
+
+caps_ok(allowed_caps, requested_caps) {
+    is_windows
 }
 
 get_capabilities(container, privileged) := capabilities {
@@ -455,6 +537,7 @@ create_container := {"metadata": [updateMatches, addStarted],
                      "caps_list": caps_list,
                      "allow_stdio_access": allow_stdio_access,
                      "allowed": true} {
+    is_linux
     not container_started
 
     # narrow the matches based upon command, working directory, and
@@ -524,6 +607,78 @@ create_container := {"metadata": [updateMatches, addStarted],
     }
 }
 
+create_container := {"metadata": [updateMatches, addStarted],
+                     "env_list": env_list,
+                     "allow_stdio_access": allow_stdio_access,
+                     "allowed": true} {
+    is_windows
+    not container_started
+
+    # narrow the matches based upon command, working directory, and
+    # mount list
+    possible_after_initial_containers := [container |
+        container := data.metadata.matches[input.containerID][_]
+        # NB any change to these narrowing conditions should be reflected in
+        # the error handling, such that error messaging correctly reflects
+        # the narrowing process.
+        user_ok(container.user)
+        workingDirectory_ok(container.working_dir)
+        command_ok(container.command)
+    ]
+
+    count(possible_after_initial_containers) > 0
+
+    # check to see if the environment variables match, dropping
+    # them if allowed (and necessary)
+    env_list := valid_envs_for_all(possible_after_initial_containers)
+    possible_after_env_containers := [container |
+        container := possible_after_initial_containers[_]
+        envList_ok(container.env_rules, env_list)
+    ]
+
+    count(possible_after_env_containers) > 0
+
+    # set final container list
+    containers := possible_after_env_containers
+
+    # we can't do narrowing based on allowing stdio access so at this point
+    # every container from the policy that might match this create request
+    # must have the same allow stdio value otherwise, we are in an undecidable
+    # state
+    allow_stdio_access := containers[0].allow_stdio_access
+    every c in containers {
+        c.allow_stdio_access == allow_stdio_access
+    }
+
+    updateMatches := {
+        "name": "matches",
+        "action": "update",
+        "key": input.containerID,
+        "value": containers,
+    }
+
+    addStarted := {
+        "name": "started",
+        "action": "add",
+        "key": input.containerID,
+        "value": {
+            "privileged": false,
+        },
+    }
+}
+
+security_ok(current_container) {
+    is_linux
+    noNewPrivileges_ok(current_container.no_new_privileges)
+    privileged_ok(current_container.allow_elevated)
+    seccomp_ok(current_container.seccomp_profile_sha256)
+    mountList_ok(current_container.mounts, current_container.allow_elevated)
+}
+
+security_ok(current_container) {
+    is_windows
+}
+
 mountSource_ok(constraint, source) {
     startswith(constraint, data.sandboxPrefix)
     newConstraint := replace(constraint, data.sandboxPrefix, input.sandboxDir)
@@ -585,9 +740,22 @@ mount_ok(mounts, allow_elevated, mount) {
 }
 
 mountList_ok(mounts, allow_elevated) {
+    is_linux
     every mount in input.mounts {
         mount_ok(mounts, allow_elevated, mount)
     }
+}
+mountList_ok(mounts, allow_elevated) {
+    # no-op for windows
+    is_windows
+}
+
+is_linux {
+    data.metadata.operatingsystem[ostype] == "linux"
+}
+
+is_windows {
+    data.metadata.operatingsystem[ostype] == "windows"
 }
 
 default exec_in_container := {"allowed": false}
@@ -596,6 +764,7 @@ exec_in_container := {"metadata": [updateMatches],
                       "env_list": env_list,
                       "caps_list": caps_list,
                       "allowed": true} {
+    is_linux
     container_started
 
     # narrow our matches based upon the process requested
@@ -635,6 +804,48 @@ exec_in_container := {"metadata": [updateMatches],
 
     # set final container list
     containers := possible_after_caps_containers
+
+    updateMatches := {
+        "name": "matches",
+        "action": "update",
+        "key": input.containerID,
+        "value": containers,
+    }
+}
+
+exec_in_container := {"metadata": [updateMatches],
+                      "env_list": env_list,
+                      "allowed": true} {
+
+    is_windows
+    container_started
+
+    # narrow our matches based upon the process requested
+    possible_after_initial_containers := [container |
+        container := data.metadata.matches[input.containerID][_]
+        # NB any change to these narrowing conditions should be reflected in
+        # the error handling, such that error messaging correctly reflects
+        # the narrowing process.
+        workingDirectory_ok(container.working_dir)
+        user_ok(container.user)
+        some process in container.exec_processes
+        command_ok(process.command)
+    ]
+
+    count(possible_after_initial_containers) > 0
+
+    # check to see if the environment variables match, dropping
+    # them if allowed (and necessary)
+    env_list := valid_envs_for_all(possible_after_initial_containers)
+    possible_after_env_containers := [container |
+        container := possible_after_initial_containers[_]
+        envList_ok(container.env_rules, env_list)
+    ]
+
+    count(possible_after_env_containers) > 0
+
+    # set final container list
+    containers := possible_after_env_containers
 
     updateMatches := {
         "name": "matches",
@@ -1085,6 +1296,7 @@ privileged_matches {
 }
 
 errors["privileged escalation not allowed"] {
+    is_linux
     input.rule in ["create_container"]
     not privileged_matches
 }
@@ -1262,6 +1474,7 @@ mount_matches(mount) {
 }
 
 errors[mountError] {
+    is_linux
     input.rule == "create_container"
     bad_mounts := [mount.destination |
         mount := input.mounts[_]
@@ -1275,11 +1488,13 @@ errors[mountError] {
 default signal_allowed := false
 
 signal_allowed {
+    input.isInitProcess
     some container in data.metadata.matches[input.containerID]
     signal_ok(container.signals)
 }
 
 signal_allowed {
+    not input.isInitProcess
     some container in data.metadata.matches[input.containerID]
     some process in container.exec_processes
     command_ok(process.command)
@@ -1410,9 +1625,13 @@ errors[fragment_framework_version_error] {
 }
 
 errors["containers only distinguishable by allow_stdio_access"] {
+    is_linux
     input.rule == "create_container"
 
-    not container_started
+     not container_started
+
+    # narrow the matches based upon command, working directory, and
+    # mount list
     possible_after_initial_containers := [container |
         container := data.metadata.matches[input.containerID][_]
         noNewPrivileges_ok(container.no_new_privileges)
@@ -1448,6 +1667,44 @@ errors["containers only distinguishable by allow_stdio_access"] {
 
     # set final container list
     containers := possible_after_caps_containers
+
+    allow_stdio_access := containers[0].allow_stdio_access
+    some c in containers
+    c.allow_stdio_access != allow_stdio_access
+}
+
+errors["containers only distinguishable by allow_stdio_access"] {
+    is_windows
+    input.rule == "create_container"
+
+    not container_started
+
+    # narrow the matches based upon command, working directory, and
+    # mount list
+    possible_after_initial_containers := [container |
+        container := data.metadata.matches[input.containerID][_]
+        # NB any change to these narrowing conditions should be reflected in
+        # the error handling, such that error messaging correctly reflects
+        # the narrowing process.
+        user_ok(container.user)
+        workingDirectory_ok(container.working_dir)
+        command_ok(container.command)
+    ]
+
+    count(possible_after_initial_containers) > 0
+
+    # check to see if the environment variables match, dropping
+    # them if allowed (and necessary)
+    env_list := valid_envs_for_all(possible_after_initial_containers)
+    possible_after_env_containers := [container |
+        container := possible_after_initial_containers[_]
+        envList_ok(container.env_rules, env_list)
+    ]
+
+    count(possible_after_env_containers) > 0
+
+    # set final container list
+    containers := possible_after_env_containers
 
     allow_stdio_access := containers[0].allow_stdio_access
     some c in containers
@@ -1499,6 +1756,7 @@ noNewPrivileges_matches {
 }
 
 errors["invalid noNewPrivileges"] {
+    is_linux
     input.rule in ["create_container", "exec_in_container"]
     not noNewPrivileges_matches
 }
@@ -1526,6 +1784,7 @@ errors["invalid user"] {
 }
 
 errors["capabilities don't match"] {
+    is_linux
     input.rule == "create_container"
 
     not container_started
@@ -1565,6 +1824,7 @@ errors["capabilities don't match"] {
 }
 
 errors["capabilities don't match"] {
+    is_linux
     input.rule == "exec_in_container"
 
     container_started
@@ -1604,6 +1864,7 @@ errors["capabilities don't match"] {
 # covers exec_in_container as well. it shouldn't be possible to ever get
 # an exec_in_container as it "inherits" capabilities rules from create_container
 errors["containers only distinguishable by capabilties"] {
+    is_linux
     input.rule == "create_container"
 
     allow_capability_dropping
@@ -1649,6 +1910,7 @@ seccomp_matches {
 }
 
 errors["invalid seccomp"] {
+    is_linux
     input.rule == "create_container"
     not seccomp_matches
 }
@@ -1700,7 +1962,7 @@ check_container(raw_container, framework_version) := container {
         "allow_elevated": raw_container.allow_elevated,
         "working_dir": raw_container.working_dir,
         "exec_processes": raw_container.exec_processes,
-        "signals": raw_container.signals,
+        "signals": check_signals(raw_container, framework_version),
         "allow_stdio_access": raw_container.allow_stdio_access,
         # Additional fields need to have default logic applied
         "no_new_privileges": check_no_new_privileges(raw_container, framework_version),
@@ -1764,6 +2026,16 @@ check_seccomp_profile_sha256(raw_container, framework_version) := seccomp_profil
 check_seccomp_profile_sha256(raw_container, framework_version) := seccomp_profile_sha256 {
     semver.compare(framework_version, "0.2.3") < 0
     seccomp_profile_sha256 := ""
+}
+
+check_signals(raw_container, framework_version) := signals {
+    semver.compare(framework_version, "0.4.1") >= 0
+    signals := raw_container.signals
+}
+
+check_signals(raw_container, framework_version) := signals {
+    semver.compare(framework_version, "0.4.1") < 0
+    signals := array.concat(raw_container.signals, [9, 15])
 }
 
 check_external_process(raw_process, framework_version) := process {

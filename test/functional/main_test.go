@@ -21,7 +21,7 @@ import (
 
 	"github.com/Microsoft/go-winio/pkg/etw"
 	"github.com/Microsoft/go-winio/pkg/etwlogrus"
-	"github.com/containerd/containerd/namespaces"
+	"github.com/containerd/containerd/v2/pkg/namespaces"
 	"github.com/sirupsen/logrus"
 	"github.com/urfave/cli/v2"
 	"go.opencensus.io/trace"
@@ -40,6 +40,8 @@ import (
 	"github.com/Microsoft/hcsshim/test/pkg/require"
 	testuvm "github.com/Microsoft/hcsshim/test/pkg/uvm"
 )
+
+// TODO(go1.24): use [(*"testing".B).Loop()] instead of `for i := 0; i < b.N; i++ { }`
 
 // owner field for uVMs.
 const hcsOwner = "hcsshim-functional-tests"
@@ -301,7 +303,7 @@ func defaultWCOWOptions(ctx context.Context, tb testing.TB) *uvm.OptionsWCOW {
 func testName(tb testing.TB, xs ...any) string {
 	tb.Helper()
 
-	return util.CleanName(tb.Name()) + util.RandNameSuffix(xs...)
+	return util.CleanName(tb) + util.RandNameSuffix(xs...)
 }
 
 // linuxImageLayers returns image layer paths appropriate for use as a container rootfs.
