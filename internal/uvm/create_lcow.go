@@ -815,7 +815,7 @@ func MakeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcs
 		kernelArgs += " " + opts.KernelBootOptions
 	}
 
-	if runtime.GOARCH != "arm64" && !opts.VPCIEnabled {
+	if !opts.VPCIEnabled {
 		kernelArgs += ` pci=off`
 	}
 
