@@ -986,10 +986,13 @@ func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Cont
 			options.MemoryTransport = hcsschema.MigrationMemoryTransportTCP
 		}
 		options.CancelIfBlackoutThresholdExceeds = opt.CancelIfBlackoutThresholdExceeds
-		options.PerfTracingEnabled = opt.PerfTracingEnabled
-		options.ChecksumVerification = opt.ChecksumVerification
+		//options.PerfTracingEnabled = opt.PerfTracingEnabled
+		//options.ChecksumVerification = opt.ChecksumVerification
 		options.PrepareMemoryTransferMode = opt.PrepareMemoryTransferMode
 	}
+	//knagendra Hardcoding these values to enable checksum verification in canary
+	options.PerfTracingEnabled = true
+	options.ChecksumVerification = true
 
 	optionsRaw, err := json.Marshal(options)
 	if err != nil {

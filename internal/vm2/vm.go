@@ -172,6 +172,8 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 				CompatibilityData: &hcsschema.CompatibilityInfo{
 					Data: oc.compatData,
 				},
+				ChecksumVerification: true,
+				PerfTracingEnabled:  true,
 			}
 		}
 
