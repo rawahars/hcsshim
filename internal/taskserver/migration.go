@@ -59,9 +59,11 @@ type migrationState struct {
 var _ lmproto.MigrationService = (*service)(nil)
 
 func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandboxRequest) (*lmproto.PrepareSandboxResponse, error) {
-	if err := enableChecksumValidationRegKeys(); err != nil {
-        logrus.WithError(err).Warn("failed to set checksum validation registry keys")
-    }
+	if req.GetInitializeOptions().GetChecksumVerification() {
+		if err := enableChecksumValidationRegKeys(); err != nil {
+			logrus.WithError(err).Warn("failed to set checksum validation registry keys")
+		}
+	}
 	sandboxState, resources, err := s.sandbox.Sandbox.(core.Migratable).LMPrepare(ctx, req.InitializeOptions)
 	if err != nil {
 		return nil, fmt.Errorf("prepare sandbox for migration: %w", err)
@@ -128,7 +130,7 @@ func (s *service) newSandboxLM(ctx context.Context, shimOpts *runhcsopts.Options
 		resources.Layers = append(resources.Layers, &core.LayersResource{ResourceID: resource.Id, ContainerID: resource.TaskId})
 	}
 
-	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations, &core.Replacements{Layers: replacements}, resources)
+	migrator, err := linuxvm.NewMigrator(ctx, req.ID, config.Sandbox, spec.Netns, spec.Annotations, &core.Replacements{Layers: replacements}, resources, spec.ChecksumVerification, spec.PerfTracingEnabled)
 	if err != nil {
 		return err
 	}
@@ -545,21 +547,21 @@ func (s *service) CreateDuplicateSocket(ctx context.Context, req *lmproto.Create
 }
 
 func enableChecksumValidationRegKeys() error {
-    k, _, err := registry.CreateKey(
-        registry.LOCAL_MACHINE,
-        `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\Migration`,
-        registry.SET_VALUE,
-    )
-    if err != nil {
-        return fmt.Errorf("open migration registry key: %w", err)
-    }
-    defer k.Close()
+	k, _, err := registry.CreateKey(
+		registry.LOCAL_MACHINE,
+		`SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\Migration`,
+		registry.SET_VALUE,
+	)
+	if err != nil {
+		return fmt.Errorf("open migration registry key: %w", err)
+	}
+	defer k.Close()
 
-    if err := k.SetDWordValue("Test_UseSkippedForProtectionBitmapsInCrcCheck", 0); err != nil {
-        return fmt.Errorf("set Test_UseSkippedForProtectionBitmapsInCrcCheck: %w", err)
-    }
-    if err := k.SetDWordValue("Test_TransferMemoryAfterVdevPowerOff", 1); err != nil {
-        return fmt.Errorf("set Test_TransferMemoryAfterVdevPowerOff: %w", err)
-    }
-    return nil
+	if err := k.SetDWordValue("Test_UseSkippedForProtectionBitmapsInCrcCheck", 0); err != nil {
+		return fmt.Errorf("set Test_UseSkippedForProtectionBitmapsInCrcCheck: %w", err)
+	}
+	if err := k.SetDWordValue("Test_TransferMemoryAfterVdevPowerOff", 1); err != nil {
+		return fmt.Errorf("set Test_TransferMemoryAfterVdevPowerOff: %w", err)
+	}
+	return nil
 }

@@ -23,9 +23,19 @@ import (
 )
 
 var prepareCommand = cli.Command{
-	Name:           "prepare",
-	Usage:          "Prepares the sandbox for migration",
-	ArgsUsage:      "[flags] <pipe> <config output file> <resources output file>",
+	Name:      "prepare",
+	Usage:     "Prepares the sandbox for migration",
+	ArgsUsage: "[flags] <pipe> <config output file> <resources output file>",
+	Flags: []cli.Flag{
+		cli.BoolFlag{
+			Name:  "checksum-verification",
+			Usage: "Enable memory checksum verification during live migration",
+		},
+		cli.BoolFlag{
+			Name:  "perf-tracing",
+			Usage: "Enable HCS performance tracing for migration",
+		},
+	},
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String, appargs.String, appargs.String),
 	Action: func(clictx *cli.Context) error {
@@ -44,7 +54,12 @@ var prepareCommand = cli.Command{
 
 		ctx := context.Background()
 
-		resp, err := svc.PrepareSandbox(ctx, &lmproto.PrepareSandboxRequest{})
+		resp, err := svc.PrepareSandbox(ctx, &lmproto.PrepareSandboxRequest{
+			InitializeOptions: &lmproto.InitializeOptions{
+				ChecksumVerification: clictx.Bool("checksum-verification"),
+				PerfTracingEnabled:   clictx.Bool("perf-tracing"),
+			},
+		})
 		if err != nil {
 			return err
 		}
@@ -260,6 +275,14 @@ var specCommand = cli.Command{
 		cli.StringSliceFlag{
 			Name: "anno",
 		},
+		cli.BoolFlag{
+			Name:  "checksum-verification",
+			Usage: "Enable memory checksum verification during live migration",
+		},
+		cli.BoolFlag{
+			Name:  "perf-tracing",
+			Usage: "Enable HCS performance tracing for migration",
+		},
 	},
 	SkipArgReorder: true,
 	Before:         appargs.Validate(appargs.String, appargs.String),
@@ -295,10 +318,12 @@ var specCommand = cli.Command{
 		}
 
 		spec := &lmproto.SandboxLMSpec{
-			Config:      &config,
-			Resources:   &resources,
-			Netns:       clictx.String("netns"),
-			Annotations: make(map[string]string),
+			Config:               &config,
+			Resources:            &resources,
+			Netns:                clictx.String("netns"),
+			Annotations:          make(map[string]string),
+			ChecksumVerification: clictx.Bool("checksum-verification"),
+			PerfTracingEnabled:   clictx.Bool("perf-tracing"),
 		}
 		for _, anno := range clictx.StringSlice("anno") {
 			fields := strings.SplitN(anno, "=", 2)

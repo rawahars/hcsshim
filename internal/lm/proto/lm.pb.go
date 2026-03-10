@@ -398,6 +398,10 @@ type SandboxLMSpec struct {
 	// Adjusted resources (only rootfs supported for now).
 	Resources   *DestinationResources `protobuf:"bytes,5,opt,name=resources,proto3" json:"resources,omitempty"`
 	Annotations map[string]string     `protobuf:"bytes,4,rep,name=annotations,proto3" json:"annotations,omitempty" protobuf_key:"bytes,1,opt,name=key,proto3" protobuf_val:"bytes,2,opt,name=value,proto3"`
+	// Enable memory checksum verification during live migration.
+	ChecksumVerification bool `protobuf:"varint,6,opt,name=checksum_verification,json=checksumVerification,proto3" json:"checksum_verification,omitempty"`
+	// Enable HCS performance tracing for migration.
+	PerfTracingEnabled bool `protobuf:"varint,7,opt,name=perf_tracing_enabled,json=perfTracingEnabled,proto3" json:"perf_tracing_enabled,omitempty"`
 }
 
 func (x *SandboxLMSpec) Reset() {
@@ -458,6 +462,20 @@ func (x *SandboxLMSpec) GetAnnotations() map[string]string {
 		return x.Annotations
 	}
 	return nil
+}
+
+func (x *SandboxLMSpec) GetChecksumVerification() bool {
+	if x != nil {
+		return x.ChecksumVerification
+	}
+	return false
+}
+
+func (x *SandboxLMSpec) GetPerfTracingEnabled() bool {
+	if x != nil {
+		return x.PerfTracingEnabled
+	}
+	return false
 }
 
 type DestinationResources struct {
