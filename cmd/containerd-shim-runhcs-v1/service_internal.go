@@ -63,6 +63,7 @@ func (s *service) getTask(tid string) (shimTask, error) {
 	return raw.(shimTask), nil
 }
 
+// done
 func (s *service) stateInternal(ctx context.Context, req *task.StateRequest) (*task.StateResponse, error) {
 	t, err := s.getTask(req.ID)
 	if err != nil {
@@ -75,6 +76,7 @@ func (s *service) stateInternal(ctx context.Context, req *task.StateRequest) (*t
 	return e.Status(), nil
 }
 
+// done
 func (s *service) createInternal(ctx context.Context, req *task.CreateTaskRequest) (*task.CreateTaskResponse, error) {
 	setupDebuggerEvent()
 
@@ -198,6 +200,7 @@ func (s *service) createInternal(ctx context.Context, req *task.CreateTaskReques
 	return resp, nil
 }
 
+// done
 func (s *service) startInternal(ctx context.Context, req *task.StartRequest) (*task.StartResponse, error) {
 	t, err := s.getTask(req.ID)
 	if err != nil {
@@ -273,6 +276,7 @@ func (s *service) pidsInternal(ctx context.Context, req *task.PidsRequest) (*tas
 	}, nil
 }
 
+// done
 func (s *service) pauseInternal(ctx context.Context, req *task.PauseRequest) (*emptypb.Empty, error) {
 	/*
 		s.events <- cdevent{
@@ -285,6 +289,7 @@ func (s *service) pauseInternal(ctx context.Context, req *task.PauseRequest) (*e
 	return nil, errdefs.ErrNotImplemented
 }
 
+// done
 func (s *service) resumeInternal(ctx context.Context, req *task.ResumeRequest) (*emptypb.Empty, error) {
 	/*
 		s.events <- cdevent{
@@ -297,6 +302,7 @@ func (s *service) resumeInternal(ctx context.Context, req *task.ResumeRequest) (
 	return nil, errdefs.ErrNotImplemented
 }
 
+// done
 func (s *service) checkpointInternal(ctx context.Context, req *task.CheckpointTaskRequest) (*emptypb.Empty, error) {
 	return nil, errdefs.ErrNotImplemented
 }
@@ -326,6 +332,7 @@ func (s *service) killInternal(ctx context.Context, req *task.KillRequest) (*emp
 	return empty, nil
 }
 
+// done
 func (s *service) execInternal(ctx context.Context, req *task.ExecProcessRequest) (*emptypb.Empty, error) {
 	t, err := s.getTask(req.ID)
 	if err != nil {
@@ -345,6 +352,7 @@ func (s *service) execInternal(ctx context.Context, req *task.ExecProcessRequest
 	return empty, nil
 }
 
+// done
 func (s *service) diagExecInHostInternal(ctx context.Context, req *shimdiag.ExecProcessRequest) (*shimdiag.ExecProcessResponse, error) {
 	if req.Terminal && req.Stderr != "" {
 		return nil, errors.Wrap(errdefs.ErrFailedPrecondition, "if using terminal, stderr must be empty")
@@ -431,6 +439,7 @@ func (s *service) diagTasksInternal(ctx context.Context, req *shimdiag.TasksRequ
 	return resp, nil
 }
 
+// done
 func (s *service) resizePtyInternal(ctx context.Context, req *task.ResizePtyRequest) (*emptypb.Empty, error) {
 	t, err := s.getTask(req.ID)
 	if err != nil {

@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/builder/vm/lcow"
+	"github.com/Microsoft/hcsshim/internal/controller/pod"
 	"github.com/Microsoft/hcsshim/internal/controller/vm"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/shim"
@@ -43,7 +44,14 @@ type Service struct {
 	vmController vm.Controller
 
 	// podControllers maps podID -> PodController for each active pod.
-	podControllers sync.Map
+	// TODO: Phase B/Pod-delete – wire CreateTask / Delete to create/remove entries here.
+	podControllers map[string]pod.Controller
+
+	// containerPodMapping maps containerID -> podID, allowing callers to look up
+	// which pod a container belongs to and then retrieve the corresponding controller
+	// from podControllers.
+	// Protected by mu.
+	containerPodMapping map[string]string
 
 	// shutdown manages graceful shutdown operations and allows registration of cleanup callbacks.
 	shutdown shutdown.Service

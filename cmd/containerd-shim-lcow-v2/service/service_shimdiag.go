@@ -79,7 +79,7 @@ func (s *Service) DiagStacks(ctx context.Context, request *shimdiag.StacksReques
 
 	span.AddAttributes(trace.StringAttribute(logfields.SandboxID, s.sandboxID))
 
-	r, e := s.diagStacksInternal(ctx, request)
+	r, e := s.diagStacksInternal(ctx)
 	return r, errgrpc.ToGRPC(e)
 }
 

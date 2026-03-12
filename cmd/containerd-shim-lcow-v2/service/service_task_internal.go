@@ -95,6 +95,9 @@ func (s *Service) waitInternal(ctx context.Context, request *task.WaitRequest) (
 }
 
 func (s *Service) statsInternal(ctx context.Context, request *task.StatsRequest) (*task.StatsResponse, error) {
+	// todo: Here check if the ID in request is same as the podID but the container does not exist.
+	// In such a case fetch stats from vmController. If container is present, then fetch it from Container.
+	// Alternatively, just fetch container stats from container and VM stats from vmController and return both in response.
 	_ = ctx
 	_ = request
 	return nil, errdefs.ErrNotImplemented
