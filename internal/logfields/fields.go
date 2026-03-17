@@ -14,6 +14,7 @@ const (
 	TaskID      = "tid"
 	UVMID       = "uvm-id"
 	SandboxID   = "sandbox-id"
+	PodID       = "pod-id"
 
 	// networking and IO
 
