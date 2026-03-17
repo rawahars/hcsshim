@@ -4,7 +4,6 @@ package uvm
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"slices"
@@ -14,7 +13,6 @@ import (
 	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/containerd/ttrpc"
 	"github.com/pkg/errors"
-	"github.com/samber/lo"
 	"github.com/sirupsen/logrus"
 
 	"github.com/Microsoft/hcsshim/hcn"
@@ -554,71 +552,6 @@ func getNetworkModifyRequest(adapterID string, requestType guestrequest.RequestT
 	}
 }
 
-// convertToLCOWReq converts the HCN endpoint type to the guestresource.LCOWNetworkAdapter type that is
-// passed to the GCS for a request.
-func convertToLCOWReq(id string, endpoint *hcn.HostComputeEndpoint, policyBasedRouting bool) (*guestresource.LCOWNetworkAdapter, error) {
-	req := &guestresource.LCOWNetworkAdapter{
-		NamespaceID: endpoint.HostComputeNamespace,
-		ID:          id,
-		MacAddress:  endpoint.MacAddress,
-		IPConfigs:   make([]guestresource.LCOWIPConfig, 0, len(endpoint.IpConfigurations)),
-		Routes:      make([]guestresource.LCOWRoute, 0, len(endpoint.Routes)),
-	}
-
-	for _, i := range endpoint.IpConfigurations {
-		ipConfig := guestresource.LCOWIPConfig{
-			IPAddress:    i.IpAddress,
-			PrefixLength: i.PrefixLength,
-		}
-		req.IPConfigs = append(req.IPConfigs, ipConfig)
-	}
-
-	for _, r := range endpoint.Routes {
-		newRoute := guestresource.LCOWRoute{
-			DestinationPrefix: r.DestinationPrefix,
-			NextHop:           r.NextHop,
-			Metric:            r.Metric,
-		}
-		req.Routes = append(req.Routes, newRoute)
-	}
-
-	// !NOTE:
-	// the `DNSSuffix` field is explicitly used as the search list for host-name lookup in
-	// the guest's `resolv.conf`, and not as the DNS suffix.
-	// The name is a legacy hold over.
-
-	// use DNS domain as the first (default) search value, if it is provided
-	searches := endpoint.Dns.Search
-	if endpoint.Dns.Domain != "" {
-		searches = append([]string{endpoint.Dns.Domain}, searches...)
-	}
-
-	// canonicalize the DNS config
-	canon := func(s string, _ int) string {
-		// zone identifiers in IPv6 addresses really, really shouldn't be case sensitive, but ... *shrug*
-		return strings.ToLower(s)
-	}
-	servers := lo.Map(endpoint.Dns.ServerList, canon)
-	searches = lo.Map(searches, canon)
-
-	req.DNSSuffix = strings.Join(searches, ",")
-	req.DNSServerList = strings.Join(servers, ",")
-
-	for _, p := range endpoint.Policies {
-		if p.Type == hcn.EncapOverhead {
-			var settings hcn.EncapOverheadEndpointPolicySetting
-			if err := json.Unmarshal(p.Settings, &settings); err != nil {
-				return nil, fmt.Errorf("unmarshal encap overhead policy setting: %w", err)
-			}
-			req.EncapOverhead = settings.Overhead
-		}
-	}
-
-	req.PolicyBasedRouting = policyBasedRouting
-
-	return req, nil
-}
-
 // addNIC adds a nic to the Utility VM.
 func (uvm *UtilityVM) addNIC(ctx context.Context, id string, endpoint *hcn.HostComputeEndpoint) error {
 	// First a pre-add. This is a guest-only request and is only done on Windows.
@@ -658,7 +591,7 @@ func (uvm *UtilityVM) addNIC(ctx context.Context, id string, endpoint *hcn.HostC
 				nil),
 		}
 	} else {
-		s, err := convertToLCOWReq(id, endpoint, uvm.policyBasedRouting)
+		s, err := guestresource.BuildLCOWNetworkAdapter(id, endpoint, uvm.policyBasedRouting)
 		if err != nil {
 			return err
 		}
