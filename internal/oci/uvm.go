@@ -419,12 +419,14 @@ func SpecToUVMCreateOpts(ctx context.Context, s *specs.Spec, id, owner string) (
 		if err := handleWCOWSecurityPolicy(ctx, s.Annotations, wopts); err != nil {
 			return nil, err
 		}
-		// If security policy is enable, wopts.ForwardLogs default value should be false
+		// If security policy is enable, wopts.LogForwardingEnabled default value should be false (CWCOW should not allow log forwarding by default)
 		if wopts.SecurityPolicyEnabled {
-			wopts.ForwardLogs = false
+			wopts.LogForwardingEnabled = false
 		}
 		wopts.LogSources = ParseAnnotationsString(s.Annotations, annotations.LogSources, wopts.LogSources)
-		wopts.ForwardLogs = ParseAnnotationsBool(ctx, s.Annotations, annotations.ForwardLogs, wopts.ForwardLogs)
+		wopts.LogForwardingEnabled = ParseAnnotationsBool(ctx, s.Annotations, annotations.LogForwardingEnabled, wopts.LogForwardingEnabled)
+		wopts.DefaultLogSourcesEnabled = ParseAnnotationsBool(ctx, s.Annotations, annotations.DefaultLogSourcesEnabled, wopts.DefaultLogSourcesEnabled)
+
 		return wopts, nil
 	}
 	return nil, errors.New("cannot create UVM opts spec is not LCOW or WCOW")
