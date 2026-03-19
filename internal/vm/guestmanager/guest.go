@@ -5,6 +5,7 @@ package guestmanager
 import (
 	"context"
 	"fmt"
+	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/gcs"
 	"github.com/Microsoft/hcsshim/internal/log"
@@ -18,6 +19,10 @@ import (
 
 // Guest manages the GCS connection and guest-side operations for a utility VM.
 type Guest struct {
+	// mu serializes all operations that interact with the guest connection (gc).
+	// This prevents parallel operations on the guest from racing on the GCS connection.
+	mu sync.RWMutex
+
 	log *logrus.Entry
 	// uvm is the utility VM that this GuestManager is managing.
 	// We restrict access to just lifetime manager and VMSocket manager.
@@ -55,6 +60,14 @@ func WithInitializationState(state *gcs.InitialGuestState) ConfigOption {
 
 // CreateConnection accepts the GCS connection and performs initial setup.
 func (gm *Guest) CreateConnection(ctx context.Context, GCSServiceID guid.GUID, opts ...ConfigOption) error {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+
+	// Return early if a connection is already active.
+	if gm.gc != nil {
+		return nil
+	}
+
 	// The guest needs to connect to predefined GCS port.
 	// The host must already be listening on these port before the guest attempts to connect,
 	// otherwise the connection would fail.
@@ -97,6 +110,9 @@ func (gm *Guest) CreateConnection(ctx context.Context, GCSServiceID guid.GUID, o
 
 // CloseConnection closes any active GCS connection and listener.
 func (gm *Guest) CloseConnection() error {
+	gm.mu.Lock()
+	defer gm.mu.Unlock()
+
 	var err error
 
 	if gm.gc != nil {
