@@ -8,30 +8,46 @@
 //
 // # Lifecycle
 //
-// Each disk attachment progresses through the states below:
+// Each disk attachment progresses through the states below.
+// The happy path runs down the left column; the error path is on the right.
 //
-//	┌──────────────────────┐
-//	│  attachmentAttached  │◄── [Manager.AttachDiskToVM] succeeds
-//	└──────────┬───────────┘
-//	           │ unplugFromGuest succeeds
-//	           ▼
-//	┌──────────────────────┐
-//	│ attachmentUnplugged  │
-//	└──────────┬───────────┘
+//	Allocate slot for the disk
+//	            │
+//	            ▼
+//	┌─────────────────────┐
+//	│  attachmentPending  │
+//	└──────────┬──────────┘
+//	           │
+//	   ┌───────┴────────────────────────────────┐
+//	   │ AddSCSIDisk succeeds                   │ AddSCSIDisk fails
+//	   ▼                                        ▼
+//	┌─────────────────────┐         ┌──────────────────────┐
+//	│ attachmentAttached  │         │  attachmentInvalid   │
+//	└──────────┬──────────┘         └──────────┬───────────┘
+//	           │ unplugFromGuest                │ DetachFromVM
+//	           │   succeeds                     │   (refCount → 0)
+//	           ▼                                ▼
+//	┌─────────────────────┐          (removed from map)
+//	│ attachmentUnplugged │
+//	└──────────┬──────────┘
 //	           │ RemoveSCSIDisk succeeds
 //	           ▼
-//	┌──────────────────────┐
-//	│  attachmentDetached  │  (terminal — slot freed)
-//	└──────────────────────┘
+//	┌─────────────────────┐
+//	│ attachmentDetached  │  ← terminal; entry removed from map
+//	└─────────────────────┘
 //
-//	┌──────────────────────┐
-//	│  attachmentReserved  │  (no transitions — pre-reserved at construction)
-//	└──────────────────────┘
+//	┌─────────────────────┐
+//	│ attachmentReserved  │  ← no transitions; pre-reserved at construction
+//	└─────────────────────┘
 //
 // State descriptions:
 //
+//   - [attachmentPending]: entered when a new slot is allocated.
+//     The disk has not yet been added to the SCSI bus.
 //   - [attachmentAttached]: entered once [AddSCSIDisk] succeeds;
 //     the disk is on the SCSI bus and available for guest mounts.
+//   - [attachmentInvalid]: entered when [AddSCSIDisk] fails;
+//     the caller must call [Manager.DetachFromVM] to free the slot.
 //   - [attachmentUnplugged]: entered once the guest-side unplug completes;
 //     the guest has released the device but the host has not yet removed it.
 //   - [attachmentDetached]: terminal state entered once [RemoveSCSIDisk] succeeds.
@@ -58,7 +74,7 @@
 //
 // # Usage
 //
-//	mgr := scsi.New(vmScsiManager, linuxGuestMgr, numControllers, reservedSlots)
+//	mgr := scsi.New(vmSCSI, linuxGuestSCSI, numControllers, reservedSlots)
 //
 //	slot, err := mgr.AttachDiskToVM(ctx, "/path/to/disk.vhdx", scsi.DiskTypeVirtualDisk, false)
 //	if err != nil {
