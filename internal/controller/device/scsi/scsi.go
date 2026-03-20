@@ -12,8 +12,6 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
-	"github.com/Microsoft/hcsshim/internal/vm/guestmanager"
-	"github.com/Microsoft/hcsshim/internal/vm/vmmanager"
 
 	"github.com/sirupsen/logrus"
 )
@@ -21,23 +19,23 @@ import (
 // Manager implements [Controller] and manages SCSI disk attachment across
 // one or more controllers on a Hyper-V VM.
 type Manager struct {
-	// mu guards attachments and all mutable fields of every [vmAttachment] in the map.
-	mu sync.Mutex
+	// globalMu protects the attachments map and serializes slot allocation across concurrent callers.
+	globalMu sync.Mutex
 
 	// numControllers is the number of SCSI controllers available on the VM.
 	// It bounds the (controller, lun) search space when allocating a free slot.
 	numControllers int
 
 	// attachments tracks every disk currently being attached or already attached
-	// to the VM. Key = (controller, lun) hardware address.
-	// Access must be guarded by mu.
-	attachments map[VMSlot]*vmAttachment
+	// to the VM. Indexed as attachments[controller][lun].
+	// A nil entry means the slot is free. Access must be guarded by globalMu.
+	attachments [][]*vmAttachment
 
-	// vmScsiManager is the host-side SCSI manager used to add and remove disks from the VM.
-	vmScsiManager vmmanager.SCSIManager
+	// vmSCSI is the host-side SCSI manager used to add and remove disks from the VM.
+	vmSCSI vmSCSI
 
-	// linuxGuestMgr is used to perform the guest-side unplug on LCOW prior to detach.
-	linuxGuestMgr guestmanager.LCOWScsiManager
+	// linuxGuestSCSI is used to perform the guest-side unplug on LCOW prior to detach.
+	linuxGuestSCSI linuxGuestSCSI
 }
 
 var _ Controller = (*Manager)(nil)
@@ -45,21 +43,26 @@ var _ Controller = (*Manager)(nil)
 // New creates a new [Manager] instance conforming to [Controller] interface.
 // ReservedSlots are never allocated to new disks.
 func New(
-	vmScsiManager vmmanager.SCSIManager,
-	linuxGuest guestmanager.LCOWScsiManager,
+	vmScsi vmSCSI,
+	linuxGuestScsi linuxGuestSCSI,
 	numControllers int,
 	reservedSlots []VMSlot,
 ) *Manager {
+	attachments := make([][]*vmAttachment, numControllers)
+	for i := range attachments {
+		attachments[i] = make([]*vmAttachment, numLUNsPerController)
+	}
+
 	m := &Manager{
 		numControllers: numControllers,
-		attachments:    make(map[VMSlot]*vmAttachment, len(reservedSlots)),
-		vmScsiManager:  vmScsiManager,
-		linuxGuestMgr:  linuxGuest,
+		attachments:    attachments,
+		vmSCSI:         vmScsi,
+		linuxGuestSCSI: linuxGuestScsi,
 	}
 
 	// Pre-populate attachments with reserved slots so they are never allocated to new disks.
 	for _, s := range reservedSlots {
-		m.attachments[s] = &vmAttachment{
+		m.attachments[s.Controller][s.LUN] = &vmAttachment{
 			controller: s.Controller,
 			lun:        s.LUN,
 			refCount:   1,
@@ -79,7 +82,6 @@ func (m *Manager) AttachDiskToVM(
 	diskType DiskType,
 	readOnly bool,
 ) (VMSlot, error) {
-	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Operation, "AttachDiskToVM"))
 
 	log.G(ctx).WithFields(logrus.Fields{
 		logfields.HostPath: hostPath,
@@ -108,96 +110,104 @@ func (m *Manager) AttachDiskToVM(
 }
 
 // attachDiskToVM is the internal implementation of [Manager.AttachDiskToVM].
-// It calls trackAttachment to either reuse an in-flight attachment or
-// claim a new slot, then drives the HCS add-disk call.
+// It calls [Manager.trackAttachment] to reuse an existing slot or allocate a new one,
+// then drives the HCS add-disk call. On failure the attachment is marked invalid and
+// the caller must invoke [Manager.DetachFromVM] to clean up the entry.
 func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlot, error) {
-	// Track the attachment and get the slot to attach to.
-	att, existed, err := m.trackAttachment(ctx, config)
+	// Track the attachment and get the slot for attachment.
+	// The attachment may be Pending, Attached, or Invalid.
+	m.globalMu.Lock()
+	att, err := m.trackAttachment(ctx, config)
 	if err != nil {
+		m.globalMu.Unlock()
 		return VMSlot{}, err
 	}
 
-	// ==============================================================================
-	// Found an existing attachment.
-	// ==============================================================================
-	if existed {
-		// Another goroutine is already attaching (or has attached) the same disk.
-		// Wait for it to finish, honoring context cancellation.
-		select {
-		case <-ctx.Done():
-			// Undo the refCount bump from trackAttachment so the
-			// attachment can eventually reach zero and be torn down.
-			m.mu.Lock()
-			att.refCount--
-			m.mu.Unlock()
-			return VMSlot{}, ctx.Err()
-		case <-att.waitCh:
-			if att.waitErr != nil {
-				// The original attach failed.
-				// The attachment will be removed from the map.
-				return VMSlot{}, att.waitErr
-			}
+	// Acquire the attachment mutex to check the state and potentially drive the attach operation.
+	att.mu.Lock()
+	// Release the global lock.
+	m.globalMu.Unlock()
+	defer att.mu.Unlock()
+
+	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{
+		logfields.Controller: att.controller,
+		logfields.LUN:        att.lun,
+	}))
+
+	log.G(ctx).Debug("received attachment for disk, checking state")
+
+	switch att.state {
+	case attachmentAttached:
+		// ==============================================================================
+		// Found an existing attachment.
+		// ==============================================================================
+		att.refCount++
+		slot := VMSlot{Controller: att.controller, LUN: att.lun}
+
+		log.G(ctx).Debug("disk already attached to VM, reusing existing slot")
+
+		return slot, nil
+	case attachmentPending:
+		// ==============================================================================
+		// New attachment — we own the slot.
+		// Other callers requesting this attachment will block on
+		// att.mu until we transition the state out of Pending.
+		// ==============================================================================
+
+		log.G(ctx).Debug("performing AddSCSIDisk call to add disk to VM")
+
+		// Perform the host-side HCS call to add the disk at the allocated (controller, lun) slot.
+		if err = m.vmSCSI.AddSCSIDisk(ctx, hcsschema.Attachment{
+			Path:                      config.hostPath,
+			Type_:                     string(config.typ),
+			ReadOnly:                  config.readOnly,
+			ExtensibleVirtualDiskType: config.evdType,
+		}, att.controller, att.lun); err != nil {
+
+			// Move the state to Invalid so that other goroutines waiting on
+			// the same attachment see the real failure reason via stateErr.
+			// The caller must call DetachFromVM to remove the map entry.
+			att.state = attachmentInvalid
+			att.stateErr = err
+
+			return VMSlot{Controller: att.controller, LUN: att.lun},
+				fmt.Errorf("add scsi disk %q to vm at controller=%d lun=%d: %w",
+					config.hostPath, att.controller, att.lun, err)
 		}
 
-		log.G(ctx).WithFields(logrus.Fields{
-			logfields.Controller: att.controller,
-			logfields.LUN:        att.lun,
-		}).Debug("reusing existing SCSI VM attachment")
+		// Mark the attachment as attached so that future callers can reuse it.
+		att.state = attachmentAttached
+		att.refCount++
+
+		log.G(ctx).Debug("SCSI disk attached to VM")
 
 		return VMSlot{Controller: att.controller, LUN: att.lun}, nil
+	case attachmentInvalid:
+		// ==============================================================================
+		// Found an attachment which failed during HCS operation.
+		// ==============================================================================
+
+		// Return the original error along with the slot so the caller can
+		// call DetachFromVM to clean up the entry.
+		return VMSlot{Controller: att.controller, LUN: att.lun},
+			fmt.Errorf("previous attempt to attach disk to VM at controller=%d lun=%d failed: %w",
+				att.controller, att.lun, att.stateErr)
+	default:
+		// Unlikely state that should never be observed here.
+		return VMSlot{}, fmt.Errorf("disk in unexpected state %s during attach", att.state)
 	}
-
-	// ==============================================================================
-	// New attachment — we own the slot.
-	// ==============================================================================
-
-	// Perform the host-side HCS call to add the disk at the allocated (controller, lun) slot.
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.Controller: att.controller,
-		logfields.LUN:        att.lun,
-	}).Debug("performing AddSCSIDisk call to add disk to VM")
-
-	err = m.vmScsiManager.AddSCSIDisk(ctx, hcsschema.Attachment{
-		Path:                      config.hostPath,
-		Type_:                     string(config.typ),
-		ReadOnly:                  config.readOnly,
-		ExtensibleVirtualDiskType: config.evdType,
-	}, att.controller, att.lun)
-
-	// Signal completion to any goroutines waiting on the same disk.
-	att.waitErr = err
-	close(att.waitCh)
-
-	// Clean up on failure.
-	if err != nil {
-		m.mu.Lock()
-		delete(m.attachments, VMSlot{att.controller, att.lun})
-		m.mu.Unlock()
-
-		return VMSlot{}, fmt.Errorf("add scsi disk %q to vm at controller=%d lun=%d: %w",
-			config.hostPath, att.controller, att.lun, err)
-	}
-
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.Controller: att.controller,
-		logfields.LUN:        att.lun,
-	}).Debug("SCSI disk attached to VM")
-
-	return VMSlot{Controller: att.controller, LUN: att.lun}, nil
 }
 
 // trackAttachment either reuses an existing [vmAttachment] for the same disk config,
 // incrementing its reference count, or allocates the first free (controller, lun) slot
 // and registers a new [vmAttachment] in the internal map.
-func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmAttachment, bool, error) {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmAttachment, error) {
 	// Reuse an existing attachment for the same disk.
-	for _, existing := range m.attachments {
-		if existing.config != nil && *existing.config == *config {
-			existing.refCount++
-			return existing, true, nil
+	for _, row := range m.attachments {
+		for _, existing := range row {
+			if existing != nil && existing.config != nil && *existing.config == *config {
+				return existing, nil
+			}
 		}
 	}
 
@@ -206,9 +216,8 @@ func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmA
 	// Find the first free (controller, lun) pair.
 	for ctrl := uint(0); ctrl < uint(m.numControllers); ctrl++ {
 		for lun := uint(0); lun < numLUNsPerController; lun++ {
-			key := VMSlot{ctrl, lun}
 			// if the slot is occupied, then continue to next slot.
-			if _, occupied := m.attachments[key]; occupied {
+			if m.attachments[ctrl][lun] != nil {
 				continue
 			}
 
@@ -222,16 +231,16 @@ func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmA
 				config:     config,
 				controller: ctrl,
 				lun:        lun,
-				refCount:   1,
-				state:      attachmentAttached,
-				waitCh:     make(chan struct{}),
+				// Refcount is 0 here since the attachment has not been claimed yet.
+				refCount: 0,
+				state:    attachmentPending,
 			}
-			m.attachments[key] = att
-			return att, false, nil
+			m.attachments[ctrl][lun] = att
+			return att, nil
 		}
 	}
 
-	return nil, false, errors.New("no available scsi slot")
+	return nil, errors.New("no available scsi slot")
 }
 
 // DetachFromVM detaches the disk at slot from the VM, unplugging it from the guest first.
@@ -242,61 +251,88 @@ func (m *Manager) DetachFromVM(
 	slot VMSlot,
 ) error {
 	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{
-		logfields.Operation:  "DetachFromVM",
 		logfields.Controller: slot.Controller,
 		logfields.LUN:        slot.LUN,
 	}))
 
 	log.G(ctx).Debug("Detaching from VM")
 
-	m.mu.Lock()
-	defer m.mu.Unlock()
+	// Under global lock, find the attachment and lock it before releasing
+	// globalMu. This prevents a concurrent AttachDiskToVM from observing the
+	// attachment and incrementing its refCount between our globalMu.Unlock and
+	// att.mu.Lock.
+	m.globalMu.Lock()
 
-	existing, ok := m.attachments[slot]
-	if !ok {
+	// Ensure the slot is valid.
+	if slot.Controller >= uint(m.numControllers) || slot.LUN >= numLUNsPerController {
+		m.globalMu.Unlock()
+		return fmt.Errorf("invalid slot: controller=%d lun=%d", slot.Controller, slot.LUN)
+	}
+
+	att := m.attachments[slot.Controller][slot.LUN]
+	if att == nil {
+		m.globalMu.Unlock()
 		return fmt.Errorf("no existing attachment found for controller=%d lun=%d", slot.Controller, slot.LUN)
 	}
 
-	if existing.state == attachmentReserved {
+	if att.state == attachmentReserved {
+		m.globalMu.Unlock()
 		return fmt.Errorf("cannot release reserved attachment at controller=%d lun=%d", slot.Controller, slot.LUN)
 	}
 
-	if existing.refCount > 0 {
-		existing.refCount--
+	// Lock the attachment while still holding globalMu to close the race window.
+	att.mu.Lock()
+	m.globalMu.Unlock()
+	defer att.mu.Unlock()
+
+	if att.refCount > 0 {
+		att.refCount--
 	}
-	if existing.refCount > 0 {
+	if att.refCount > 0 {
 		// Other callers still hold a reference to this disk.
 		log.G(ctx).Debug("disk still in use by other callers, not detaching from VM")
+		return nil
+	}
+
+	// If the disk attach failed (AddSCSIDisk never succeeded), just remove the map
+	// entry — there is nothing to unplug or detach on the host.
+	if att.state == attachmentInvalid {
+		log.G(ctx).WithError(att.stateErr).Error("previous attach attempt failed, cleaning up invalid attachment")
+
+		m.globalMu.Lock()
+		m.attachments[slot.Controller][slot.LUN] = nil
+		m.globalMu.Unlock()
+
 		return nil
 	}
 
 	// Unplug the device from the guest before removing it from the VM.
 	// Skip if already unplugged from a previous attempt where RemoveSCSIDisk
 	// failed after a successful unplug.
-	if existing.state == attachmentAttached {
+	if att.state == attachmentAttached {
 		if err := m.unplugFromGuest(ctx, slot.Controller, slot.LUN); err != nil {
 			return fmt.Errorf("unplug scsi disk at controller=%d lun=%d from guest: %w",
 				slot.Controller, slot.LUN, err)
 		}
-		existing.state = attachmentUnplugged
+		att.state = attachmentUnplugged
 
 		log.G(ctx).Debug("disk unplugged from guest")
 	}
 
-	if existing.state == attachmentUnplugged {
-		if err := m.vmScsiManager.RemoveSCSIDisk(ctx, slot.Controller, slot.LUN); err != nil {
+	if att.state == attachmentUnplugged {
+		if err := m.vmSCSI.RemoveSCSIDisk(ctx, slot.Controller, slot.LUN); err != nil {
 			return fmt.Errorf("remove scsi disk at controller=%d lun=%d from vm: %w",
 				slot.Controller, slot.LUN, err)
 		}
-		existing.state = attachmentDetached
+		att.state = attachmentDetached
 	}
 
-	delete(m.attachments, slot)
+	// Re-acquire globalMu to safely remove the entry from the map.
+	m.globalMu.Lock()
+	m.attachments[slot.Controller][slot.LUN] = nil
+	m.globalMu.Unlock()
 
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.Controller: slot.Controller,
-		logfields.LUN:        slot.LUN,
-	}).Debug("SCSI disk detached from VM")
+	log.G(ctx).Debug("SCSI disk detached from VM")
 
 	return nil
 }
@@ -305,6 +341,10 @@ func (m *Manager) DetachFromVM(
 // its EVD provider type and the underlying mount path.
 // Returns an error if the path does not conform to this scheme.
 func parseEVDPath(hostPath string) (evdType, mountPath string, err error) {
+	if !strings.HasPrefix(hostPath, "evd://") {
+		return "", "", fmt.Errorf("invalid extensible vhd path: %q", hostPath)
+	}
+
 	trimmedPath := strings.TrimPrefix(hostPath, "evd://")
 	separatorIndex := strings.Index(trimmedPath, "/")
 	if separatorIndex <= 0 {

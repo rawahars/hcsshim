@@ -23,7 +23,7 @@ func (m *Manager) unplugFromGuest(ctx context.Context, controller, lun uint) err
 	// writing "1" to /sys/bus/scsi/devices/<id>/delete. That sysfs write is a
 	// guest-initiated hot-unplug: the kernel removes the device from its bus and
 	// flushes any in-flight I/O before the host removes the disk from the VM.
-	if err := m.linuxGuestMgr.RemoveSCSIDevice(ctx, settings); err != nil {
+	if err := m.linuxGuestSCSI.RemoveSCSIDevice(ctx, settings); err != nil {
 		return fmt.Errorf("remove scsi device at controller=%d lun=%d from lcow guest: %w", controller, lun, err)
 	}
 	return nil

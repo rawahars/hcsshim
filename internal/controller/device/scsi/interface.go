@@ -2,7 +2,13 @@
 
 package scsi
 
-import "context"
+import (
+	"context"
+	"sync"
+
+	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
+)
 
 // DiskType identifies the attachment protocol used when adding a disk to the VM's SCSI bus.
 type DiskType string
@@ -37,6 +43,25 @@ type VMSlot struct {
 	LUN uint
 }
 
+// vmSCSI manages adding and removing SCSI devices for a Utility VM.
+type vmSCSI interface {
+	// AddSCSIDisk hot adds a SCSI disk to the Utility VM.
+	AddSCSIDisk(ctx context.Context, disk hcsschema.Attachment, controller uint, lun uint) error
+
+	// RemoveSCSIDisk removes a SCSI disk from a Utility VM.
+	RemoveSCSIDisk(ctx context.Context, controller uint, lun uint) error
+}
+
+// linuxGuestSCSI exposes mapped virtual disk and SCSI device operations in the LCOW guest.
+type linuxGuestSCSI interface {
+	// AddLCOWMappedVirtualDisk maps a virtual disk into the LCOW guest.
+	AddLCOWMappedVirtualDisk(ctx context.Context, settings guestresource.LCOWMappedVirtualDisk) error
+	// RemoveLCOWMappedVirtualDisk unmaps a virtual disk from the LCOW guest.
+	RemoveLCOWMappedVirtualDisk(ctx context.Context, settings guestresource.LCOWMappedVirtualDisk) error
+	// RemoveSCSIDevice removes a SCSI device from the guest.
+	RemoveSCSIDevice(ctx context.Context, settings guestresource.SCSIDevice) error
+}
+
 // ==============================================================================
 // INTERNAL DATA STRUCTURES
 // Types and constants below this line are unexported and used for state tracking.
@@ -56,6 +81,9 @@ type diskConfig struct {
 
 // vmAttachment records one disk's full attachment state and reference count.
 type vmAttachment struct {
+	// mu serializes state transitions and broadcasts completion to concurrent waiters.
+	mu sync.Mutex
+
 	// config is the immutable disk parameters used to match duplicate attach requests.
 	config *diskConfig
 
@@ -71,8 +99,8 @@ type vmAttachment struct {
 	// Access must be guarded by [Manager.mu].
 	state attachmentState
 
-	// waitCh is closed (with waitErr set) once the HCS attach call for this
-	// attachment has finished.
-	waitCh  chan struct{}
-	waitErr error
+	// stateErr records the error that caused a transition to [attachmentInvalid].
+	// Waiters that find the attachment in the invalid state return this error so
+	// that every caller sees the original failure reason.
+	stateErr error
 }
