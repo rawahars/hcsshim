@@ -34,8 +34,6 @@ func (m *Manager) addNetNSInsideGuest(ctx context.Context, hcnNamespace *hcn.Hos
 
 // removeNetNSInsideGuest removes the HCN namespace from the WCOW guest via GCS/GNS.
 func (m *Manager) removeNetNSInsideGuest(ctx context.Context, namespaceID string) error {
-	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Namespace, namespaceID))
-
 	if m.isNamespaceSupportedByGuest {
 		log.G(ctx).Info("removing network namespace from guest")
 
@@ -55,7 +53,6 @@ func (m *Manager) removeNetNSInsideGuest(ctx context.Context, namespaceID string
 // addEndpointToGuestNamespace wires an HCN endpoint into the WCOW guest in three steps:
 // pre-add (guest notification), host-side hot-add, and guest-side finalisation.
 func (m *Manager) addEndpointToGuestNamespace(ctx context.Context, nicID string, endpoint *hcn.HostComputeEndpoint, _ bool) error {
-	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{"nicID": nicID, "endpointID": endpoint.Id}))
 	log.G(ctx).Info("adding network endpoint to guest namespace")
 
 	// 1. Guest pre-add: informs WCOW guest that a NIC is about to arrive.
@@ -101,7 +98,6 @@ func (m *Manager) addEndpointToGuestNamespace(ctx context.Context, nicID string,
 // removeEndpointFromGuestNamespace removes an endpoint from the WCOW guest and then
 // hot-removes the NIC from the host.
 func (m *Manager) removeEndpointFromGuestNamespace(ctx context.Context, nicID string, endpoint *hcn.HostComputeEndpoint) error {
-	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{"nicID": nicID, "endpointID": endpoint.Id}))
 	log.G(ctx).Info("removing network endpoint from guest namespace")
 
 	// 1. Guest-side removal.

@@ -11,16 +11,6 @@ import (
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 )
 
-// LCOWNetworkManager exposes guest network operations.
-type LCOWNetworkManager interface {
-	// AddLCOWNetworkInterface adds a network interface to the LCOW guest.
-	AddLCOWNetworkInterface(ctx context.Context, settings *guestresource.LCOWNetworkAdapter) error
-	// RemoveLCOWNetworkInterface removes a network interface from the LCOW guest.
-	RemoveLCOWNetworkInterface(ctx context.Context, settings *guestresource.LCOWNetworkAdapter) error
-}
-
-var _ LCOWNetworkManager = (*Guest)(nil)
-
 // AddLCOWNetworkInterface adds a network interface to the LCOW guest.
 func (gm *Guest) AddLCOWNetworkInterface(ctx context.Context, settings *guestresource.LCOWNetworkAdapter) error {
 	modifyRequest := &hcsschema.ModifySettingRequest{
