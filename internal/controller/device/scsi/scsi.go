@@ -106,8 +106,8 @@ func (m *Manager) AttachDiskToVM(
 
 // attachDiskToVM is the internal implementation of [Manager.AttachDiskToVM].
 // It calls [Manager.getOrAllocateSlot] to reuse an existing slot or allocate a new one,
-// then drives the HCS add-disk call. On failure the attachment is marked invalid and
-// the caller must invoke [Manager.DetachFromVM] to clean up the entry.
+// then drives the HCS add-disk call. On failure the attachment is removed from
+// the internal map and the error is returned.
 func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlot, error) {
 	// Track the attachment and get the slot for attachment.
 	// The attachment may be Pending, Attached, or Invalid.
@@ -157,13 +157,17 @@ func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlo
 
 			// Move the state to Invalid so that other goroutines waiting on
 			// the same attachment see the real failure reason via stateErr.
-			// The caller must call DetachFromVM to remove the map entry.
 			att.state = attachmentInvalid
 			att.stateErr = err
 
-			return VMSlot{Controller: att.controller, LUN: att.lun},
-				fmt.Errorf("add scsi disk %q to vm at controller=%d lun=%d: %w",
-					config.hostPath, att.controller, att.lun, err)
+			// Delete from the map. Any callers waiting on this attachment
+			// will see the invalid state and receive the original error.
+			m.globalMu.Lock()
+			delete(m.attachments, VMSlot{Controller: att.controller, LUN: att.lun})
+			m.globalMu.Unlock()
+
+			return VMSlot{}, fmt.Errorf("add scsi disk %q to vm at controller=%d lun=%d: %w",
+				config.hostPath, att.controller, att.lun, err)
 		}
 
 		// Mark the attachment as attached so that future callers can reuse it.
@@ -178,11 +182,10 @@ func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlo
 		// Found an attachment which failed during HCS operation.
 		// ==============================================================================
 
-		// Return the original error along with the slot so the caller can
-		// call DetachFromVM to clean up the entry.
-		return VMSlot{Controller: att.controller, LUN: att.lun},
-			fmt.Errorf("previous attempt to attach disk to VM at controller=%d lun=%d failed: %w",
-				att.controller, att.lun, att.stateErr)
+		// Return the original error. The map entry has already been removed
+		// by the goroutine that drove the failed attach.
+		return VMSlot{}, fmt.Errorf("previous attempt to attach disk to VM at controller=%d lun=%d failed: %w",
+			att.controller, att.lun, att.stateErr)
 	default:
 		// Unlikely state that should never be observed here.
 		return VMSlot{}, fmt.Errorf("disk in unexpected state %s during attach", att.state)
@@ -258,8 +261,9 @@ func (m *Manager) DetachFromVM(
 	att := m.attachments[slot]
 	m.globalMu.Unlock()
 
+	// If there is no attachment, then the slot is already free and there is nothing to detach.
 	if att == nil {
-		return fmt.Errorf("no existing attachment found for controller=%d lun=%d", slot.Controller, slot.LUN)
+		return nil
 	}
 
 	if att.state == attachmentReserved {
@@ -269,20 +273,16 @@ func (m *Manager) DetachFromVM(
 	att.mu.Lock()
 	defer att.mu.Unlock()
 
-	if att.refCount > 0 {
+	if att.refCount > 1 {
 		att.refCount--
-	}
-	if att.refCount > 0 {
 		// Other callers still hold a reference to this disk.
 		log.G(ctx).Debug("disk still in use by other callers, not detaching from VM")
-		return nil
+		return
 	}
 
-	// If the disk attach failed (AddSCSIDisk never succeeded), just remove the map
-	// entry — there is nothing to unplug or detach on the host.
+	// If the disk attach failed (AddSCSIDisk never succeeded), but we got the
+	// entry just prior to removal from map, then state would be invalid.
 	if att.state == attachmentInvalid {
-		delete(m.attachments, slot)
-		log.G(ctx).WithError(att.stateErr).Error("previous attach attempt failed, cleaning up invalid attachment")
 		return nil
 	}
 
@@ -308,7 +308,9 @@ func (m *Manager) DetachFromVM(
 	}
 
 	// Cleanup from the map.
+	m.globalMu.Lock()
 	delete(m.attachments, slot)
+	m.globalMu.Unlock()
 
 	log.G(ctx).Debug("SCSI disk detached from VM")
 

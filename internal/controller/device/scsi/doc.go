@@ -24,9 +24,9 @@
 //	┌─────────────────────┐         ┌──────────────────────┐
 //	│ attachmentAttached  │         │  attachmentInvalid   │
 //	└──────────┬──────────┘         └──────────┬───────────┘
-//	           │ unplugFromGuest                │ DetachFromVM
-//	           │   succeeds                     │   (refCount → 0)
-//	           ▼                                ▼
+//	           │ unplugFromGuest               │ (auto-removed
+//	           │   succeeds                    │  from map)
+//	           ▼                               ▼
 //	┌─────────────────────┐          (removed from map)
 //	│ attachmentUnplugged │
 //	└──────────┬──────────┘
@@ -47,7 +47,7 @@
 //   - [attachmentAttached]: entered once [AddSCSIDisk] succeeds;
 //     the disk is on the SCSI bus and available for guest mounts.
 //   - [attachmentInvalid]: entered when [AddSCSIDisk] fails;
-//     the caller must call [Manager.DetachFromVM] to free the slot.
+//     the map entry is removed.
 //   - [attachmentUnplugged]: entered once the guest-side unplug completes;
 //     the guest has released the device but the host has not yet removed it.
 //   - [attachmentDetached]: terminal state entered once [RemoveSCSIDisk] succeeds.
