@@ -28,6 +28,12 @@ const (
 	Attempt = "attemptNo"
 	JSON    = "json"
 
+	// SCSI Constants
+
+	Controller = "controller"
+	LUN        = "lun"
+	DiskType   = "disk-type"
+
 	// Time
 
 	StartTime = "startTime"
