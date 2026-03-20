@@ -10,8 +10,6 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
-
-	"github.com/sirupsen/logrus"
 )
 
 // addNetNSInsideGuest maps a host network namespace into the guest as a managed Guest Network Namespace.
@@ -30,7 +28,6 @@ func (m *Manager) removeNetNSInsideGuest(_ context.Context, _ string) error {
 // addEndpointToGuestNamespace hot-adds an HCN endpoint to the UVM and,
 // configures it inside the LCOW guest.
 func (m *Manager) addEndpointToGuestNamespace(ctx context.Context, nicID string, endpoint *hcn.HostComputeEndpoint, isPolicyBasedRoutingSupported bool) error {
-	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{"nicID": nicID, "endpointID": endpoint.Id}))
 	log.G(ctx).Info("adding endpoint to guest namespace")
 
 	// 1. Host-side hot-add.
@@ -68,7 +65,6 @@ func (m *Manager) addEndpointToGuestNamespace(ctx context.Context, nicID string,
 // removeEndpointFromGuestNamespace removes an endpoint from the LCOW guest
 // and then hot-removes the NIC from the host.
 func (m *Manager) removeEndpointFromGuestNamespace(ctx context.Context, nicID string, endpoint *hcn.HostComputeEndpoint) error {
-	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{"nicID": nicID, "endpointID": endpoint.Id}))
 	log.G(ctx).Info("removing endpoint from guest namespace")
 
 	if m.isNamespaceSupportedByGuest {
