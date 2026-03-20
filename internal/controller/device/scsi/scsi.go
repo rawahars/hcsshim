@@ -27,9 +27,9 @@ type Manager struct {
 	numControllers int
 
 	// attachments tracks every disk currently being attached or already attached
-	// to the VM. Indexed as attachments[controller][lun].
-	// A nil entry means the slot is free. Access must be guarded by globalMu.
-	attachments [][]*vmAttachment
+	// to the VM. Keyed by VMSlot{Controller, LUN}.
+	// An absent entry means the slot is free. Access must be guarded by globalMu.
+	attachments map[VMSlot]*vmAttachment
 
 	// vmSCSI is the host-side SCSI manager used to add and remove disks from the VM.
 	vmSCSI vmSCSI
@@ -48,21 +48,16 @@ func New(
 	numControllers int,
 	reservedSlots []VMSlot,
 ) *Manager {
-	attachments := make([][]*vmAttachment, numControllers)
-	for i := range attachments {
-		attachments[i] = make([]*vmAttachment, numLUNsPerController)
-	}
-
 	m := &Manager{
 		numControllers: numControllers,
-		attachments:    attachments,
+		attachments:    make(map[VMSlot]*vmAttachment),
 		vmSCSI:         vmScsi,
 		linuxGuestSCSI: linuxGuestScsi,
 	}
 
 	// Pre-populate attachments with reserved slots so they are never allocated to new disks.
 	for _, s := range reservedSlots {
-		m.attachments[s.Controller][s.LUN] = &vmAttachment{
+		m.attachments[s] = &vmAttachment{
 			controller: s.Controller,
 			lun:        s.LUN,
 			refCount:   1,
@@ -110,23 +105,19 @@ func (m *Manager) AttachDiskToVM(
 }
 
 // attachDiskToVM is the internal implementation of [Manager.AttachDiskToVM].
-// It calls [Manager.trackAttachment] to reuse an existing slot or allocate a new one,
+// It calls [Manager.getOrAllocateSlot] to reuse an existing slot or allocate a new one,
 // then drives the HCS add-disk call. On failure the attachment is marked invalid and
 // the caller must invoke [Manager.DetachFromVM] to clean up the entry.
 func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlot, error) {
 	// Track the attachment and get the slot for attachment.
 	// The attachment may be Pending, Attached, or Invalid.
-	m.globalMu.Lock()
-	att, err := m.trackAttachment(ctx, config)
+	att, err := m.getOrAllocateSlot(ctx, config)
 	if err != nil {
-		m.globalMu.Unlock()
 		return VMSlot{}, err
 	}
 
 	// Acquire the attachment mutex to check the state and potentially drive the attach operation.
 	att.mu.Lock()
-	// Release the global lock.
-	m.globalMu.Unlock()
 	defer att.mu.Unlock()
 
 	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{
@@ -198,26 +189,29 @@ func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlo
 	}
 }
 
-// trackAttachment either reuses an existing [vmAttachment] for the same disk config,
+// getOrAllocateSlot either reuses an existing [vmAttachment] for the same disk config,
 // incrementing its reference count, or allocates the first free (controller, lun) slot
 // and registers a new [vmAttachment] in the internal map.
-func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmAttachment, error) {
+func (m *Manager) getOrAllocateSlot(ctx context.Context, config *diskConfig) (*vmAttachment, error) {
+	m.globalMu.Lock()
+	defer m.globalMu.Unlock()
+
 	// Reuse an existing attachment for the same disk.
-	for _, row := range m.attachments {
-		for _, existing := range row {
-			if existing != nil && existing.config != nil && *existing.config == *config {
-				return existing, nil
-			}
+	for _, existing := range m.attachments {
+		if existing != nil && existing.config != nil && existing.config.hostPath == config.hostPath {
+			return existing, nil
 		}
 	}
 
 	log.G(ctx).Debug("no existing attachment found for disk, allocating new slot")
 
 	// Find the first free (controller, lun) pair.
-	for ctrl := uint(0); ctrl < uint(m.numControllers); ctrl++ {
-		for lun := uint(0); lun < numLUNsPerController; lun++ {
+	for ctrl := range m.numControllers {
+		for lun := range numLUNsPerController {
+			slot := VMSlot{Controller: uint(ctrl), LUN: uint(lun)}
+
 			// if the slot is occupied, then continue to next slot.
-			if m.attachments[ctrl][lun] != nil {
+			if _, occupied := m.attachments[slot]; occupied {
 				continue
 			}
 
@@ -229,13 +223,13 @@ func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmA
 
 			att := &vmAttachment{
 				config:     config,
-				controller: ctrl,
-				lun:        lun,
+				controller: uint(ctrl),
+				lun:        uint(lun),
 				// Refcount is 0 here since the attachment has not been claimed yet.
 				refCount: 0,
 				state:    attachmentPending,
 			}
-			m.attachments[ctrl][lun] = att
+			m.attachments[slot] = att
 			return att, nil
 		}
 	}
@@ -249,7 +243,8 @@ func (m *Manager) trackAttachment(ctx context.Context, config *diskConfig) (*vmA
 func (m *Manager) DetachFromVM(
 	ctx context.Context,
 	slot VMSlot,
-) error {
+) (err error) {
+
 	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{
 		logfields.Controller: slot.Controller,
 		logfields.LUN:        slot.LUN,
@@ -257,32 +252,21 @@ func (m *Manager) DetachFromVM(
 
 	log.G(ctx).Debug("Detaching from VM")
 
-	// Under global lock, find the attachment and lock it before releasing
-	// globalMu. This prevents a concurrent AttachDiskToVM from observing the
-	// attachment and incrementing its refCount between our globalMu.Unlock and
-	// att.mu.Lock.
+	// Under global lock, find the attachment.
 	m.globalMu.Lock()
+	// Get the attachment for this slot and unlock global lock.
+	att := m.attachments[slot]
+	m.globalMu.Unlock()
 
-	// Ensure the slot is valid.
-	if slot.Controller >= uint(m.numControllers) || slot.LUN >= numLUNsPerController {
-		m.globalMu.Unlock()
-		return fmt.Errorf("invalid slot: controller=%d lun=%d", slot.Controller, slot.LUN)
-	}
-
-	att := m.attachments[slot.Controller][slot.LUN]
 	if att == nil {
-		m.globalMu.Unlock()
 		return fmt.Errorf("no existing attachment found for controller=%d lun=%d", slot.Controller, slot.LUN)
 	}
 
 	if att.state == attachmentReserved {
-		m.globalMu.Unlock()
 		return fmt.Errorf("cannot release reserved attachment at controller=%d lun=%d", slot.Controller, slot.LUN)
 	}
 
-	// Lock the attachment while still holding globalMu to close the race window.
 	att.mu.Lock()
-	m.globalMu.Unlock()
 	defer att.mu.Unlock()
 
 	if att.refCount > 0 {
@@ -297,12 +281,8 @@ func (m *Manager) DetachFromVM(
 	// If the disk attach failed (AddSCSIDisk never succeeded), just remove the map
 	// entry — there is nothing to unplug or detach on the host.
 	if att.state == attachmentInvalid {
+		delete(m.attachments, slot)
 		log.G(ctx).WithError(att.stateErr).Error("previous attach attempt failed, cleaning up invalid attachment")
-
-		m.globalMu.Lock()
-		m.attachments[slot.Controller][slot.LUN] = nil
-		m.globalMu.Unlock()
-
 		return nil
 	}
 
@@ -327,10 +307,8 @@ func (m *Manager) DetachFromVM(
 		att.state = attachmentDetached
 	}
 
-	// Re-acquire globalMu to safely remove the entry from the map.
-	m.globalMu.Lock()
-	m.attachments[slot.Controller][slot.LUN] = nil
-	m.globalMu.Unlock()
+	// Cleanup from the map.
+	delete(m.attachments, slot)
 
 	log.G(ctx).Debug("SCSI disk detached from VM")
 
