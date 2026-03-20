@@ -10,22 +10,16 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/Microsoft/hcsshim/hcn"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
-	"github.com/Microsoft/hcsshim/internal/vm/guestmanager"
-	"github.com/Microsoft/hcsshim/internal/vm/vmmanager"
-
-	"github.com/Microsoft/go-winio/pkg/guid"
 	"github.com/sirupsen/logrus"
 )
 
 // Manager is the concrete implementation of [Controller].
 type Manager struct {
 	mu sync.Mutex
-
-	// podID is the identifier of the pod whose network this Controller manages.
-	podID string
 
 	// namespaceID is the HCN namespace ID in use after a successful Setup.
 	namespaceID string
@@ -40,13 +34,13 @@ type Manager struct {
 	isNamespaceSupportedByGuest bool
 
 	// vmNetManager performs host-side NIC hot-add/remove on the UVM.
-	vmNetManager vmmanager.NetworkManager
+	vmNetManager vmNetworkManager
 
 	// linuxGuestMgr performs guest-side NIC inject/remove for LCOW.
-	linuxGuestMgr guestmanager.LCOWNetworkManager
+	linuxGuestMgr linuxGuestNetworkManager
 
 	// winGuestMgr performs guest-side NIC/namespace operations for WCOW.
-	winGuestMgr guestmanager.WCOWNetworkManager
+	winGuestMgr windowsGuestNetworkManager
 
 	// capsProvider exposes the guest's declared capabilities.
 	// Used to check IsNamespaceAddRequestSupported.
@@ -61,9 +55,9 @@ var _ Controller = (*Manager)(nil)
 // This method is called from [VMController.CreateNetworkController()]
 // which injects the necessary dependencies.
 func New(
-	vmNetManager vmmanager.NetworkManager,
-	linuxGuestMgr guestmanager.LCOWNetworkManager,
-	windowsGuestMgr guestmanager.WCOWNetworkManager,
+	vmNetManager vmNetworkManager,
+	linuxGuestMgr linuxGuestNetworkManager,
+	windowsGuestMgr windowsGuestNetworkManager,
 	capsProvider capabilitiesProvider,
 ) *Manager {
 	m := &Manager{
@@ -87,15 +81,12 @@ func New(
 // and hot-adds all endpoints found in that namespace.
 // It must be called only once; subsequent calls return an error.
 func (m *Manager) Setup(ctx context.Context, opts *SetupOptions) (err error) {
-	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Operation, "Network Setup"))
+	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Namespace, opts.NetworkNamespace))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.PodID:     opts.PodID,
-		logfields.Namespace: opts.NetworkNamespace,
-	}).Debug("starting network setup")
+	log.G(ctx).Debug("starting network setup")
 
 	// If Setup has already been called, then error out.
 	if m.netState != StateNotConfigured {
@@ -138,19 +129,18 @@ func (m *Manager) Setup(ctx context.Context, opts *SetupOptions) (err error) {
 		if err != nil {
 			return fmt.Errorf("generate NIC GUID: %w", err)
 		}
-		if err = m.addEndpointToGuestNamespace(ctx, nicGUID.String(), endpoint, opts.PolicyBasedRouting); err != nil {
+		// add the nicID and endpointID to the context for trace.
+		nicCtx, _ := log.WithContext(ctx, logrus.WithFields(logrus.Fields{"vm_nic_id": nicGUID.String(), "hns_endpoint_id": endpoint.Id}))
+
+		if err = m.addEndpointToGuestNamespace(nicCtx, nicGUID.String(), endpoint, opts.PolicyBasedRouting); err != nil {
 			return fmt.Errorf("add endpoint %s to guest: %w", endpoint.Name, err)
 		}
 	}
 
-	m.podID = opts.PodID
 	m.namespaceID = hcnNamespace.Id
 	m.netState = StateConfigured
 
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.PodID:     opts.PodID,
-		logfields.Namespace: hcnNamespace.Id,
-	}).Info("network setup completed successfully")
+	log.G(ctx).Info("network setup completed successfully")
 
 	return nil
 }
@@ -160,16 +150,12 @@ func (m *Manager) Setup(ctx context.Context, opts *SetupOptions) (err error) {
 // It is idempotent: calling it when the network is already torn down or not yet
 // configured is a no-op.
 func (m *Manager) Teardown(ctx context.Context) error {
-	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Operation, "Network Teardown"))
+	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Namespace, m.namespaceID))
 
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.PodID:     m.podID,
-		logfields.Namespace: m.namespaceID,
-		"State":             m.netState,
-	}).Debug("starting network teardown")
+	log.G(ctx).WithField("State", m.netState).Debug("starting network teardown")
 
 	if m.netState == StateTornDown {
 		// Teardown is idempotent, so return nil if already torn down.
@@ -188,16 +174,15 @@ func (m *Manager) Teardown(ctx context.Context) error {
 	// failures, then collect all errors.
 	var teardownErrs []error
 	for nicID, endpoint := range m.vmEndpoints {
-		if err := m.removeEndpointFromGuestNamespace(ctx, nicID, endpoint); err != nil {
+		// add the nicID and endpointID to the context for trace.
+		nicCtx, _ := log.WithContext(ctx, logrus.WithFields(logrus.Fields{"vm_nic_id": nicID, "hns_endpoint_id": endpoint.Id}))
+
+		if err := m.removeEndpointFromGuestNamespace(nicCtx, nicID, endpoint); err != nil {
 			teardownErrs = append(teardownErrs, fmt.Errorf("remove endpoint %s from guest: %w", endpoint.Name, err))
 			continue // continue attempting to remove other endpoints
 		}
 
 		delete(m.vmEndpoints, nicID)
-	}
-
-	if err := m.removeNetNSInsideGuest(ctx, m.namespaceID); err != nil {
-		teardownErrs = append(teardownErrs, fmt.Errorf("remove network namespace from guest: %w", err))
 	}
 
 	if len(teardownErrs) > 0 {
@@ -206,14 +191,17 @@ func (m *Manager) Teardown(ctx context.Context) error {
 		return errors.Join(teardownErrs...)
 	}
 
+	if err := m.removeNetNSInsideGuest(ctx, m.namespaceID); err != nil {
+		// Mark the state as invalid so that we can retry teardown.
+		m.netState = StateInvalid
+		return fmt.Errorf("remove network namespace from guest: %w", err)
+	}
+
 	// Mark as torn down if we do not encounter any errors.
 	// No further Setup or Teardown calls are allowed.
 	m.netState = StateTornDown
 
-	log.G(ctx).WithFields(logrus.Fields{
-		logfields.PodID:    m.podID,
-		"networkNamespace": m.namespaceID,
-	}).Info("network teardown completed successfully")
+	log.G(ctx).Info("network teardown completed successfully")
 
 	return nil
 }
@@ -222,7 +210,6 @@ func (m *Manager) Teardown(ctx context.Context) error {
 // the given namespace.
 // Endpoints are sorted so that those with names ending in "eth0" appear first.
 func (m *Manager) fetchEndpointsInNamespace(ctx context.Context, ns *hcn.HostComputeNamespace) ([]*hcn.HostComputeEndpoint, error) {
-	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Namespace, ns.Id))
 	log.G(ctx).Info("fetching endpoints from the network namespace")
 
 	ids, err := hcn.GetNamespaceEndpointIds(ns.Id)
@@ -239,8 +226,8 @@ func (m *Manager) fetchEndpointsInNamespace(ctx context.Context, ns *hcn.HostCom
 	}
 
 	// Ensure the endpoint named "eth0" is added first when multiple endpoints are present,
-	// so it maps to eth0 inside the guest. CNI results aren't available here, so we rely
-	// on the endpoint name suffix as a heuristic.
+	// so it maps to eth0 inside the pod network namespace within guest.
+	// CNI results aren't available here, so we rely on the endpoint name suffix as a heuristic.
 	cmp := func(a, b *hcn.HostComputeEndpoint) int {
 		if strings.HasSuffix(a.Name, "eth0") {
 			return -1
