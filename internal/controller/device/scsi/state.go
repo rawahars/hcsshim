@@ -11,7 +11,7 @@ package scsi
 // If AddSCSIDisk fails, the owning goroutine moves the attachment to
 // attachmentInvalid and records the error. Other goroutines waiting on
 // the same attachment observe the invalid state and receive the original
-// error. The caller must call DetachFromVM to remove the map entry.
+// error. The entry is removed from the map immediately.
 //
 // attachmentReserved is a special state for pre-reserved slots that never
 // transition to any other state.
@@ -25,7 +25,7 @@ package scsi
 //	attachmentAttached      │ unplugFromGuest succeeds           │ attachmentUnplugged
 //	attachmentUnplugged     │ RemoveSCSIDisk succeeds            │ attachmentDetached
 //	attachmentDetached      │ (terminal — no further transitions)│ —
-//	attachmentInvalid       │ DetachFromVM removes entry         │ —
+//	attachmentInvalid       │ entry removed from map             │ —
 //	attachmentReserved      │ (never transitions)                │ —
 type attachmentState int
 
@@ -46,8 +46,7 @@ const (
 	// fully removed from the VM. This is a terminal state.
 	attachmentDetached
 
-	// attachmentInvalid means AddSCSIDisk failed. The caller must call
-	// [Manager.DetachFromVM] to remove the map entry and free the slot.
+	// attachmentInvalid means AddSCSIDisk failed.
 	attachmentInvalid
 
 	// attachmentReserved is used for slots pre-reserved at Manager construction
