@@ -10,8 +10,12 @@ import (
 	"github.com/Microsoft/go-winio"
 	"github.com/Microsoft/hcsshim/internal/gcs/prot"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
+	"github.com/Microsoft/hcsshim/internal/memory"
 	"github.com/Microsoft/hcsshim/internal/vm/vmmanager"
 	"github.com/Microsoft/hcsshim/internal/vm/vmutils"
+	"github.com/Microsoft/hcsshim/osversion"
+	"github.com/containerd/errdefs"
+	"github.com/opencontainers/runtime-spec/specs-go"
 
 	"github.com/sirupsen/logrus"
 	"golang.org/x/net/netutil"
@@ -110,6 +114,47 @@ func (c *Manager) finalizeGCSConnection(ctx context.Context) error {
 	err := c.guest.UpdateHvSocketAddress(ctx, hvsocketAddress)
 	if err != nil {
 		return fmt.Errorf("failed to create GCS connection: %w", err)
+	}
+
+	return nil
+}
+
+func (c *Manager) updateVMResources(ctx context.Context, data interface{}) error {
+	resources, ok := data.(*specs.WindowsResources)
+	if !ok {
+		return fmt.Errorf("invalid resource: %+v", data)
+	}
+
+	if resources.Memory != nil {
+		sizeInBytes := *resources.Memory.Limit
+		// Make a call to the VM's orchestrator to update the VM's size in MB
+		// Internally, HCS will get the number of pages this corresponds to and attempt to assign
+		// pages to numa nodes evenly
+		requestedSizeInMB := sizeInBytes / memory.MiB
+		actual := vmutils.NormalizeMemorySize(ctx, c.vmID, requestedSizeInMB)
+
+		if err := c.uvm.UpdateMemory(ctx, actual); err != nil {
+			return fmt.Errorf("failed to update VM memory: %w", err)
+		}
+	}
+
+	if resources.CPU != nil {
+		processorLimits := &hcsschema.ProcessorLimits{}
+		if resources.CPU.Maximum != nil {
+			processorLimits.Limit = uint64(*resources.CPU.Maximum)
+		}
+		if resources.CPU.Shares != nil {
+			processorLimits.Weight = uint64(*resources.CPU.Shares)
+		}
+
+		// Support for updating CPU limits was not added until 20H2 build
+		if osversion.Get().Build < osversion.V20H2 {
+			return errdefs.ErrNotImplemented
+		}
+
+		if err := c.uvm.UpdateCPULimits(ctx, processorLimits); err != nil {
+			return fmt.Errorf("failed to update VM CPU limits: %w", err)
+		}
 	}
 
 	return nil

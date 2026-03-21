@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/Microsoft/hcsshim/internal/builder/vm/lcow"
+	"github.com/Microsoft/hcsshim/internal/controller/pod"
 	"github.com/Microsoft/hcsshim/internal/controller/vm"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/shim"
@@ -47,6 +48,14 @@ type Service struct {
 	// vmController is responsible for managing the lifecycle of the underlying utility VM and its associated resources.
 	vmController vm.Controller
 
+	// podControllers maps podID -> PodController for each active pod.
+	podControllers map[string]pod.Controller
+
+	// containerPodMapping maps containerID -> podID, allowing callers to look up
+	// which pod a container belongs to and then retrieve the corresponding controller
+	// from podControllers.
+	containerPodMapping map[string]string
+
 	// shutdown manages graceful shutdown operations and allows registration of cleanup callbacks.
 	shutdown shutdown.Service
 }
@@ -63,6 +72,8 @@ func NewService(ctx context.Context, eventsPublisher shim.Publisher, sd shutdown
 	}
 
 	go svc.forward(ctx, eventsPublisher)
+
+	// todo: kill and delete all running pods.
 
 	// Register a shutdown callback to close the events channel,
 	// which signals the forward goroutine to exit.

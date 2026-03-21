@@ -10,20 +10,22 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Microsoft/go-winio/pkg/process"
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/stats"
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
+	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 	"github.com/Microsoft/hcsshim/internal/shimdiag"
 	"github.com/Microsoft/hcsshim/internal/timeout"
 	"github.com/Microsoft/hcsshim/internal/vm/guestmanager"
 	"github.com/Microsoft/hcsshim/internal/vm/vmmanager"
 	"github.com/Microsoft/hcsshim/internal/vm/vmutils"
 	iwin "github.com/Microsoft/hcsshim/internal/windows"
+	"github.com/Microsoft/hcsshim/pkg/annotations"
+	"github.com/Microsoft/hcsshim/pkg/ctrdtaskapi"
 	"github.com/containerd/errdefs"
-
-	"github.com/Microsoft/go-winio/pkg/process"
 	"github.com/sirupsen/logrus"
 	"golang.org/x/sync/errgroup"
 	"golang.org/x/sys/windows"
@@ -198,6 +200,49 @@ func (c *Manager) StartVM(ctx context.Context, opts *StartOptions) (err error) {
 
 	// If all goes well, we can transition the VM to Running state.
 	c.vmState = StateRunning
+
+	return nil
+}
+
+// Update is used to update the VM configuration on-the-fly.
+// It supports modifying resources like CPU and memory while the VM is running.
+// It also supports injecting policy fragments or updating the CPU group id for the VM.
+func (c *Manager) Update(ctx context.Context, resources interface{}, annots map[string]string) error {
+	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.Operation, "Update"))
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.vmState != StateRunning {
+		return fmt.Errorf("cannot update VM: VM is in state %s", c.vmState)
+	}
+
+	policyFragment, ok := resources.(*ctrdtaskapi.PolicyFragment)
+	if ok {
+		return c.guest.InjectPolicyFragment(ctx,
+			guestresource.SecurityPolicyFragment{
+				Fragment: policyFragment.Fragment,
+			},
+		)
+	}
+
+	if err := c.updateVMResources(ctx, resources); err != nil {
+		return fmt.Errorf("failed to update VM resources: %w", err)
+	}
+
+	// Check if an annotation was sent to update cpugroup membership
+	if cpuGroupID, ok := annots[annotations.CPUGroupID]; ok {
+		if cpuGroupID == "" {
+			return errors.New("must specify an ID to use when configuring a VM's cpugroup")
+		}
+
+		err := c.uvm.SetCPUGroup(ctx, &hcsschema.CpuGroup{
+			Id: cpuGroupID,
+		})
+		if err != nil {
+			return fmt.Errorf("failed to set CPU group: %w", err)
+		}
+	}
 
 	return nil
 }

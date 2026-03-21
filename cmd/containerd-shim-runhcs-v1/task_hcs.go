@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/Microsoft/hcsshim/internal/vm/vmutils"
 	eventstypes "github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
 	"github.com/containerd/containerd/api/types"
@@ -793,38 +794,6 @@ func (ht *hcsTask) Share(ctx context.Context, req *shimdiag.ShareRequest) error 
 	return ht.host.Share(ctx, req.HostPath, req.UvmPath, req.ReadOnly)
 }
 
-func hcsPropertiesToWindowsStats(props *hcsschema.Properties) *stats.Statistics_Windows {
-	wcs := &stats.Statistics_Windows{Windows: &stats.WindowsContainerStatistics{}}
-	if props.Statistics != nil {
-		wcs.Windows.Timestamp = timestamppb.New(props.Statistics.Timestamp)
-		wcs.Windows.ContainerStartTime = timestamppb.New(props.Statistics.ContainerStartTime)
-		wcs.Windows.UptimeNS = props.Statistics.Uptime100ns * 100
-		if props.Statistics.Processor != nil {
-			wcs.Windows.Processor = &stats.WindowsContainerProcessorStatistics{
-				TotalRuntimeNS:  props.Statistics.Processor.TotalRuntime100ns * 100,
-				RuntimeUserNS:   props.Statistics.Processor.RuntimeUser100ns * 100,
-				RuntimeKernelNS: props.Statistics.Processor.RuntimeKernel100ns * 100,
-			}
-		}
-		if props.Statistics.Memory != nil {
-			wcs.Windows.Memory = &stats.WindowsContainerMemoryStatistics{
-				MemoryUsageCommitBytes:            props.Statistics.Memory.MemoryUsageCommitBytes,
-				MemoryUsageCommitPeakBytes:        props.Statistics.Memory.MemoryUsageCommitPeakBytes,
-				MemoryUsagePrivateWorkingSetBytes: props.Statistics.Memory.MemoryUsagePrivateWorkingSetBytes,
-			}
-		}
-		if props.Statistics.Storage != nil {
-			wcs.Windows.Storage = &stats.WindowsContainerStorageStatistics{
-				ReadCountNormalized:  props.Statistics.Storage.ReadCountNormalized,
-				ReadSizeBytes:        props.Statistics.Storage.ReadSizeBytes,
-				WriteCountNormalized: props.Statistics.Storage.WriteCountNormalized,
-				WriteSizeBytes:       props.Statistics.Storage.WriteSizeBytes,
-			}
-		}
-	}
-	return wcs
-}
-
 func (ht *hcsTask) Stats(ctx context.Context) (*stats.Statistics, error) {
 	s := &stats.Statistics{}
 	props, err := ht.c.PropertiesV2(ctx, hcsschema.PTStatistics)
@@ -837,7 +806,7 @@ func (ht *hcsTask) Stats(ctx context.Context) (*stats.Statistics, error) {
 
 	if props != nil {
 		if ht.isWCOW {
-			s.Container = hcsPropertiesToWindowsStats(props)
+			s.Container = vmutils.ConvertHcsPropertiesToWindowsStats(props)
 		} else {
 			s.Container = &stats.Statistics_Linux{Linux: props.Metrics}
 		}

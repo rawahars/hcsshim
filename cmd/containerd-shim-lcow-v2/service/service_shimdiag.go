@@ -72,14 +72,14 @@ func (s *Service) DiagShare(ctx context.Context, request *shimdiag.ShareRequest)
 
 // DiagStacks returns the stack traces of all goroutines in the shim.
 // This method is part of the instrumentation layer and business logic is included in diagStacksInternal.
-func (s *Service) DiagStacks(ctx context.Context, request *shimdiag.StacksRequest) (resp *shimdiag.StacksResponse, err error) {
+func (s *Service) DiagStacks(ctx context.Context, _ *shimdiag.StacksRequest) (resp *shimdiag.StacksResponse, err error) {
 	ctx, span := oc.StartSpan(ctx, "DiagStacks")
 	defer span.End()
 	defer func() { oc.SetSpanStatus(span, err) }()
 
 	span.AddAttributes(trace.StringAttribute(logfields.SandboxID, s.sandboxID))
 
-	r, e := s.diagStacksInternal(ctx, request)
+	r, e := s.diagStacksInternal(ctx)
 	return r, errgrpc.ToGRPC(e)
 }
 

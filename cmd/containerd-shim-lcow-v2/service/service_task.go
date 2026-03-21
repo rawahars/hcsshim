@@ -4,6 +4,7 @@ package service
 
 import (
 	"context"
+	"os"
 
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/oc"
@@ -319,8 +320,13 @@ func (s *Service) Connect(ctx context.Context, request *task.ConnectRequest) (re
 		trace.StringAttribute(logfields.SandboxID, s.sandboxID),
 		trace.StringAttribute(logfields.ID, request.ID))
 
-	r, e := s.connectInternal(ctx, request)
-	return r, errgrpc.ToGRPC(e)
+	// We treat the shim/task as the same pid on the Windows host.
+	pid := uint32(os.Getpid())
+
+	return &task.ConnectResponse{
+		ShimPid: pid,
+		TaskPid: pid,
+	}, nil
 }
 
 // Shutdown gracefully shuts down the Service.

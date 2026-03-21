@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/stats"
+	"github.com/Microsoft/hcsshim/internal/controller/network"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
 	"github.com/Microsoft/hcsshim/internal/shimdiag"
@@ -30,6 +31,13 @@ type Controller interface {
 	// This establishes the guest connection, sets up necessary listeners for
 	// guest-host communication, and transitions the VM to StateRunning.
 	StartVM(context.Context, *StartOptions) error
+
+	// Update is used to update the VM configuration on-the-fly.
+	// It supports modifying resources like CPU and memory while the VM is running.
+	// It also supports injecting policy fragments or updating the CPU group id for the VM.
+	Update(ctx context.Context, resources interface{}, annotations map[string]string) error
+
+	CreateNetworkController() *network.Manager
 
 	// ExecIntoHost executes a command in the running UVM.
 	ExecIntoHost(ctx context.Context, request *shimdiag.ExecProcessRequest) (int, error)
