@@ -252,7 +252,7 @@ func (c *Manager) ExecIntoHost(ctx context.Context, request *shimdiag.ExecProces
 		Stdout:   request.Stdout,
 		Stderr:   request.Stderr,
 	}
-	return c.guest.ExecIntoUVM(ctx, cmdReq)
+	return c.guest.ExecInUVM(ctx, cmdReq)
 }
 
 // DumpStacks dumps the GCS stacks associated with the VM

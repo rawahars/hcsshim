@@ -5,14 +5,17 @@ package devices
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"io"
+	"net"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/uvm"
-	"github.com/pkg/errors"
 )
 
 // AddDevice is the api exposed to oci/hcsoci to handle assigning a device on a WCOW UVM
@@ -43,7 +46,7 @@ func AddDevice(ctx context.Context, vm *uvm.UtilityVM, idType, deviceID string, 
 	if uvm.IsValidDeviceType(idType) {
 		vpci, err = vm.AssignDevice(ctx, deviceID, index, "")
 		if err != nil {
-			return vpci, nil, errors.Wrapf(err, "failed to assign device %s of type %s to pod %s", deviceID, idType, vm.ID())
+			return vpci, nil, fmt.Errorf("failed to assign device %s of type %s to pod %s: %w", deviceID, idType, vm.ID(), err)
 		}
 		vmBusInstanceID := vm.GetAssignedDeviceVMBUSInstanceID(vpci.VMBusGUID)
 		log.G(ctx).WithField("vmbus id", vmBusInstanceID).Info("vmbus instance ID")
@@ -77,7 +80,7 @@ func getChildrenDeviceLocationPaths(ctx context.Context, vm *uvm.UtilityVM, vmBu
 	}
 	exitCode, err := vm.ExecInUVM(ctx, cmdReq)
 	if err != nil {
-		return nil, errors.Wrapf(err, "failed to find devices with exit code %d", exitCode)
+		return nil, fmt.Errorf("failed to find devices with exit code %d: %w", exitCode, err)
 	}
 
 	// wait to finish parsing stdout results
@@ -119,4 +122,33 @@ func GetDeviceInfoFromPath(rawDevicePath string) (string, uint16) {
 	}
 	// otherwise, just use default index and full device ID given
 	return rawDevicePath, 0
+}
+
+// readCsPipeOutput is a helper function that connects to a listener and reads
+// the connection's comma separated output until done. resulting comma separated
+// values are returned in the `result` param. The `errChan` param is used to
+// propagate an errors to the calling function.
+func readCsPipeOutput(l net.Listener, errChan chan<- error, result *[]string) {
+	defer close(errChan)
+	c, err := l.Accept()
+	if err != nil {
+		errChan <- fmt.Errorf("failed to accept named pipe: %w", err)
+		return
+	}
+	bytes, err := io.ReadAll(c)
+	if err != nil {
+		errChan <- err
+		return
+	}
+
+	elementsAsString := strings.TrimSuffix(string(bytes), "\n")
+	elements := strings.Split(elementsAsString, ",")
+	*result = append(*result, elements...)
+
+	if len(*result) == 0 {
+		errChan <- errors.New("failed to get any pipe output")
+		return
+	}
+
+	errChan <- nil
 }
