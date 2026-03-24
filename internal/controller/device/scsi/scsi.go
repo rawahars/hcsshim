@@ -12,15 +12,19 @@ import (
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
+	"github.com/Microsoft/hcsshim/internal/wclayer"
 
 	"github.com/sirupsen/logrus"
 )
 
-// Manager implements [Controller] and manages SCSI disk attachment across
+// Manager implements the methods to manage SCSI disk attachment across
 // one or more controllers on a Hyper-V VM.
 type Manager struct {
 	// globalMu protects the attachments map and serializes slot allocation across concurrent callers.
 	globalMu sync.Mutex
+
+	// vmID is the ID for the HCS compute system to which we are attaching disks.
+	vmID string
 
 	// numControllers is the number of SCSI controllers available on the VM.
 	// It bounds the (controller, lun) search space when allocating a free slot.
@@ -38,17 +42,17 @@ type Manager struct {
 	linuxGuestSCSI linuxGuestSCSI
 }
 
-var _ Controller = (*Manager)(nil)
-
-// New creates a new [Manager] instance conforming to [Controller] interface.
+// New creates a new [Manager] instance for managing disk attachments.
 // ReservedSlots are never allocated to new disks.
 func New(
+	vmID string,
 	vmScsi vmSCSI,
 	linuxGuestScsi linuxGuestSCSI,
 	numControllers int,
 	reservedSlots []VMSlot,
 ) *Manager {
 	m := &Manager{
+		vmID:           vmID,
 		numControllers: numControllers,
 		attachments:    make(map[VMSlot]*vmAttachment),
 		vmSCSI:         vmScsi,
@@ -89,6 +93,15 @@ func (m *Manager) AttachDiskToVM(
 		hostPath: hostPath,
 		readOnly: readOnly,
 		typ:      diskType,
+	}
+
+	// For Virtual and Physical disks, we need to grant VM access to the VHD.
+	if diskType == DiskTypeVirtualDisk || diskType == DiskTypePassThru {
+		log.G(ctx).WithField(logfields.HostPath, hostPath).Debug("Granting VM access to disk")
+
+		if err := wclayer.GrantVmAccess(ctx, m.vmID, hostPath); err != nil {
+			return VMSlot{}, err
+		}
 	}
 
 	// Parse EVD-specific fields out of hostPath before forwarding to attachDiskToVM,

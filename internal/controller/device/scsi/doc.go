@@ -3,8 +3,8 @@
 // Package scsi manages the lifecycle of SCSI disk attachments on a Hyper-V VM.
 //
 // It abstracts host-side slot allocation, reference counting, and two-phase
-// teardown (guest unplug followed by host removal) behind the [Controller]
-// interface, with [Manager] as the primary implementation.
+// teardown (guest unplug followed by host removal) with [Manager] as
+// the primary implementation.
 //
 // # Lifecycle
 //

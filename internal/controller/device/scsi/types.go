@@ -25,16 +25,6 @@ const (
 	DiskTypeExtensibleVirtualDisk DiskType = "ExtensibleVirtualDisk"
 )
 
-// Controller is the primary interface for attaching and detaching SCSI disks on a VM.
-type Controller interface {
-	// AttachDiskToVM attaches the disk at hostPath to the VM and returns the allocated [VMSlot].
-	// If the same disk is already attached, the existing slot is reused.
-	AttachDiskToVM(ctx context.Context, hostPath string, diskType DiskType, readOnly bool) (VMSlot, error)
-
-	// DetachFromVM unplugs and detaches the disk from the VM.
-	DetachFromVM(ctx context.Context, slot VMSlot) error
-}
-
 // VMSlot identifies a disk's hardware address on the VM's SCSI bus.
 type VMSlot struct {
 	// Controller is the zero-based SCSI controller index.
@@ -42,6 +32,10 @@ type VMSlot struct {
 	// LUN is the logical unit number within the controller.
 	LUN uint
 }
+
+// ==============================================================================
+// Interfaces used by Manager to perform actions on VM and Guest.
+// ==============================================================================
 
 // vmSCSI manages adding and removing SCSI devices for a Utility VM.
 type vmSCSI interface {
