@@ -537,7 +537,7 @@ Example JSON document produced once the hcsschema.ComputeSytem returned by makeL
 */
 
 // Make the ComputeSystem document object that will be serialized to json to be presented to the HCS api.
-func makeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcsschema.ComputeSystem, err error) {
+func MakeLCOWDoc(ctx context.Context, opts *OptionsLCOW, uvm *UtilityVM) (_ *hcsschema.ComputeSystem, err error) {
 	if logrus.IsLevelEnabled(logrus.TraceLevel) {
 		log.G(ctx).WithField("options", log.Format(ctx, opts)).Trace("makeLCOWDoc")
 	}
@@ -931,7 +931,7 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 		uvm.scsiControllerCount = 4
 	}
 
-	if err = verifyOptions(ctx, opts); err != nil {
+	if err = VerifyOptions(ctx, opts); err != nil {
 		return nil, errors.Wrap(err, errBadUVMOpts.Error())
 	}
 
@@ -946,7 +946,7 @@ func CreateLCOW(ctx context.Context, opts *OptionsLCOW) (_ *UtilityVM, err error
 			}).Trace("create_lcow::CreateLCOW makeLCOWSecurityDoc result")
 		}
 	} else {
-		doc, err = makeLCOWDoc(ctx, opts, uvm)
+		doc, err = MakeLCOWDoc(ctx, opts, uvm)
 		if logrus.IsLevelEnabled(logrus.TraceLevel) {
 			log.G(ctx).WithFields(logrus.Fields{
 				"doc":           log.Format(ctx, doc),
