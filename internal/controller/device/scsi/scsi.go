@@ -72,56 +72,76 @@ func New(
 	return m
 }
 
+// ResolveDiskSlot pre-emptively allocates a SCSI slot for the given [DiskConfig] and
+// returns the assigned [VMSlot]. If a slot is already allocated for this disk,
+// we return the existing slot without allocating a new one.
+// The returned [VMSlot] can be used to resolve downstream resources (e.g., guest mount paths).
+func (m *Manager) ResolveDiskSlot(ctx context.Context, opts DiskConfig) (VMSlot, error) {
+	log.G(ctx).WithFields(logrus.Fields{
+		logfields.HostPath: opts.HostPath,
+		logfields.DiskType: opts.Type,
+	}).Debug("Resolving disk slot")
+
+	// Parse EVD-specific fields out of hostPath so the HostPath key used in
+	// getOrAllocateSlot is consistent with the one used by AttachDiskToVM.
+	if opts.Type == DiskTypeExtensibleVirtualDisk {
+		evdType, evdMountPath, err := parseEVDPath(opts.HostPath)
+		if err != nil {
+			return VMSlot{}, err
+		}
+		opts.HostPath = evdMountPath
+		opts.EVDType = evdType
+	}
+
+	att, err := m.getOrAllocateSlot(ctx, &opts)
+	if err != nil {
+		return VMSlot{}, err
+	}
+
+	return VMSlot{Controller: att.controller, LUN: att.lun}, nil
+}
+
 // AttachDiskToVM attaches the disk at hostPath to the VM and returns the allocated [VMSlot].
 // If the same disk is already in flight or attached, AttachDiskToVM blocks until the
 // original operation completes and then returns the shared slot.
 func (m *Manager) AttachDiskToVM(
 	ctx context.Context,
-	hostPath string,
-	diskType DiskType,
-	readOnly bool,
+	opts DiskConfig,
 ) (VMSlot, error) {
 
 	log.G(ctx).WithFields(logrus.Fields{
-		logfields.HostPath: hostPath,
-		logfields.DiskType: diskType,
-		logfields.ReadOnly: readOnly,
+		logfields.HostPath: opts.HostPath,
+		logfields.DiskType: opts.Type,
+		logfields.ReadOnly: opts.ReadOnly,
 	}).Debug("Attaching disk to VM")
 
-	// Create the disk config for the VM.
-	config := &diskConfig{
-		hostPath: hostPath,
-		readOnly: readOnly,
-		typ:      diskType,
-	}
-
 	// For Virtual and Physical disks, we need to grant VM access to the VHD.
-	if diskType == DiskTypeVirtualDisk || diskType == DiskTypePassThru {
-		log.G(ctx).WithField(logfields.HostPath, hostPath).Debug("Granting VM access to disk")
+	if opts.Type == DiskTypeVirtualDisk || opts.Type == DiskTypePassThru {
+		log.G(ctx).WithField(logfields.HostPath, opts.HostPath).Debug("Granting VM access to disk")
 
-		if err := wclayer.GrantVmAccess(ctx, m.vmID, hostPath); err != nil {
+		if err := wclayer.GrantVmAccess(ctx, m.vmID, opts.HostPath); err != nil {
 			return VMSlot{}, err
 		}
 	}
 
 	// Parse EVD-specific fields out of hostPath before forwarding to attachDiskToVM,
-	if diskType == DiskTypeExtensibleVirtualDisk {
-		evdType, evdMountPath, err := parseEVDPath(hostPath)
+	if opts.Type == DiskTypeExtensibleVirtualDisk {
+		evdType, evdMountPath, err := parseEVDPath(opts.HostPath)
 		if err != nil {
 			return VMSlot{}, err
 		}
-		config.hostPath = evdMountPath
-		config.evdType = evdType
+		opts.HostPath = evdMountPath
+		opts.EVDType = evdType
 	}
 
-	return m.attachDiskToVM(ctx, config)
+	return m.attachDiskToVM(ctx, &opts)
 }
 
 // attachDiskToVM is the internal implementation of [Manager.AttachDiskToVM].
 // It calls [Manager.getOrAllocateSlot] to reuse an existing slot or allocate a new one,
 // then drives the HCS add-disk call. On failure the attachment is removed from
 // the internal map and the error is returned.
-func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlot, error) {
+func (m *Manager) attachDiskToVM(ctx context.Context, config *DiskConfig) (VMSlot, error) {
 	// Track the attachment and get the slot for attachment.
 	// The attachment may be Pending, Attached, or Invalid.
 	att, err := m.getOrAllocateSlot(ctx, config)
@@ -162,10 +182,10 @@ func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlo
 
 		// Perform the host-side HCS call to add the disk at the allocated (controller, lun) slot.
 		if err = m.vmSCSI.AddSCSIDisk(ctx, hcsschema.Attachment{
-			Path:                      config.hostPath,
-			Type_:                     string(config.typ),
-			ReadOnly:                  config.readOnly,
-			ExtensibleVirtualDiskType: config.evdType,
+			Path:                      config.HostPath,
+			Type_:                     string(config.Type),
+			ReadOnly:                  config.ReadOnly,
+			ExtensibleVirtualDiskType: config.EVDType,
 		}, att.controller, att.lun); err != nil {
 
 			// Move the state to Invalid so that other goroutines waiting on
@@ -180,7 +200,7 @@ func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlo
 			m.globalMu.Unlock()
 
 			return VMSlot{}, fmt.Errorf("add scsi disk %q to vm at controller=%d lun=%d: %w",
-				config.hostPath, att.controller, att.lun, err)
+				config.HostPath, att.controller, att.lun, err)
 		}
 
 		// Mark the attachment as attached so that future callers can reuse it.
@@ -208,13 +228,13 @@ func (m *Manager) attachDiskToVM(ctx context.Context, config *diskConfig) (VMSlo
 // getOrAllocateSlot either reuses an existing [vmAttachment] for the same disk config,
 // incrementing its reference count, or allocates the first free (controller, lun) slot
 // and registers a new [vmAttachment] in the internal map.
-func (m *Manager) getOrAllocateSlot(ctx context.Context, config *diskConfig) (*vmAttachment, error) {
+func (m *Manager) getOrAllocateSlot(ctx context.Context, config *DiskConfig) (*vmAttachment, error) {
 	m.globalMu.Lock()
 	defer m.globalMu.Unlock()
 
 	// Reuse an existing attachment for the same disk.
 	for _, existing := range m.attachments {
-		if existing != nil && existing.config != nil && existing.config.hostPath == config.hostPath {
+		if existing != nil && existing.config != nil && existing.config.HostPath == config.HostPath {
 			return existing, nil
 		}
 	}

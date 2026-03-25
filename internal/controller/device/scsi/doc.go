@@ -76,7 +76,18 @@
 //
 //	mgr := scsi.New(vmSCSI, linuxGuestSCSI, numControllers, reservedSlots)
 //
-//	slot, err := mgr.AttachDiskToVM(ctx, "/path/to/disk.vhdx", scsi.DiskTypeVirtualDisk, false)
+//	cfg := scsi.DiskConfig{HostPath: "/path/to/disk.vhdx", Type: scsi.DiskTypeVirtualDisk}
+//
+//	// Optionally pre-allocate the slot before the actual attach, e.g. to resolve
+//	// a guest mount path ahead of time.
+//	slot, err := mgr.ResolveDiskSlot(ctx, cfg)
+//	if err != nil {
+//	    // handle error
+//	}
+//
+//	// ... use slot to resolve downstream resources (e.g. guest mount path) ...
+//
+//	slot, err = mgr.AttachDiskToVM(ctx, cfg)
 //	if err != nil {
 //	    // handle error
 //	}

@@ -25,6 +25,18 @@ const (
 	DiskTypeExtensibleVirtualDisk DiskType = "ExtensibleVirtualDisk"
 )
 
+type DiskConfig struct {
+	// HostPath is the path on the host to the disk to be attached.
+	HostPath string
+	// ReadOnly specifies whether the disk should be attached with read-only access.
+	ReadOnly bool
+	// Type specifies the attachment protocol to use when attaching the disk.
+	Type DiskType
+	// EVDType is the EVD provider name.
+	// Only populated when Type is [DiskTypeExtensibleVirtualDisk].
+	EVDType string
+}
+
 // VMSlot identifies a disk's hardware address on the VM's SCSI bus.
 type VMSlot struct {
 	// Controller is the zero-based SCSI controller index.
@@ -64,22 +76,13 @@ type linuxGuestSCSI interface {
 // numLUNsPerController is the maximum number of LUNs per controller, fixed by Hyper-V.
 const numLUNsPerController = 64
 
-// diskConfig holds the immutable parameters that uniquely identify a disk attachment request.
-type diskConfig struct {
-	hostPath string
-	readOnly bool
-	typ      DiskType
-	// evdType is the EVD provider name; only populated when typ is [DiskTypeExtensibleVirtualDisk].
-	evdType string
-}
-
 // vmAttachment records one disk's full attachment state and reference count.
 type vmAttachment struct {
 	// mu serializes state transitions and broadcasts completion to concurrent waiters.
 	mu sync.Mutex
 
 	// config is the immutable disk parameters used to match duplicate attach requests.
-	config *diskConfig
+	config *DiskConfig
 
 	// controller and lun are the allocated hardware address on the SCSI bus.
 	controller uint
