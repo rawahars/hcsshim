@@ -2,6 +2,8 @@
 
 package gcs
 
+//go:generate go tool mockgen -source=guestcaps.go -build_constraint=windows -package=mock -destination=mock/mock_guestcaps.go
+
 import (
 	"encoding/json"
 	"fmt"

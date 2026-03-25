@@ -2,6 +2,8 @@
 
 package network
 
+//go:generate go tool mockgen -source=interface.go -build_constraint=windows -package=mock -destination=mock/mock_network.go
+
 import (
 	"context"
 
