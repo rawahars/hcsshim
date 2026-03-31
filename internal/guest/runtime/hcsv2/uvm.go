@@ -66,15 +66,11 @@ var validContainerIDRegex = regexp.MustCompile("^" + validContainerIDRegexRaw + 
 
 // idType just changes the error message
 func checkValidContainerID(id string, idType string) error {
-	if id == UVMContainerID {
+	if id == UVMContainerID || validContainerIDRegex.MatchString(id) {
 		return nil
 	}
 
-	if !validContainerIDRegex.MatchString(id) {
-		return errors.Errorf("invalid %s id: %s (must match %s)", idType, id, validContainerIDRegex.String())
-	}
-
-	return nil
+	return errors.Errorf("invalid %s id: %s (must match %s)", idType, id, validContainerIDRegex.String())
 }
 
 // VirtualPod represents a virtual pod that shares a UVM/Sandbox with other pods
