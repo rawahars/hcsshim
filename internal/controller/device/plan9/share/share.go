@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 package share
 
@@ -13,16 +13,6 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/vm/vmutils"
-)
-
-// share-flag constants used in Plan9 HCS requests.
-//
-// These are marked private in the HCS schema. When public variants become
-// available, we should replace these.
-const (
-	shareFlagsReadOnly           int32 = 0x00000001
-	shareFlagsLinuxMetadata      int32 = 0x00000004
-	shareFlagsRestrictFileAccess int32 = 0x00000080
 )
 
 // Share represents a Plan9 share attached to a Hyper-V VM. It tracks the
@@ -75,18 +65,10 @@ func (s *Share) HostPath() string {
 	return s.config.HostPath
 }
 
-// GuestPath returns the guest-side mount path of the share.
-// Valid only if a mount has been reserved on this share; otherwise returns an empty string.
-func (s *Share) GuestPath() string {
-	if s.mount == nil {
-		return ""
-	}
-	return s.mount.GuestPath()
-}
-
 // AddToVM adds the share to the VM's Plan9 provider. It is idempotent for an
-// already-added share; on failure the share is moved into removed state and
-// a new [Share] must be created to retry.
+// already-added share; on failure the share is moved into invalid state so
+// that outstanding mount reservations can be drained before the share is
+// fully removed.
 func (s *Share) AddToVM(ctx context.Context, vm VMPlan9Adder) error {
 
 	// Drive the state machine.
@@ -98,12 +80,12 @@ func (s *Share) AddToVM(ctx context.Context, vm VMPlan9Adder) error {
 		}).Debug("adding Plan9 share to VM")
 
 		// Build the HCS flags from the share config.
-		flags := shareFlagsLinuxMetadata
+		flags := hcsschema.Plan9ShareFlagsLinuxMetadata
 		if s.config.ReadOnly {
-			flags |= shareFlagsReadOnly
+			flags |= hcsschema.Plan9ShareFlagsReadOnly
 		}
 		if s.config.Restrict {
-			flags |= shareFlagsRestrictFileAccess
+			flags |= hcsschema.Plan9ShareFlagsRestrictFileAccess
 		}
 
 		// Attempt to add the share to the VM.
@@ -115,10 +97,10 @@ func (s *Share) AddToVM(ctx context.Context, vm VMPlan9Adder) error {
 			Flags:        flags,
 			AllowedFiles: s.config.AllowedNames,
 		}); err != nil {
-			// Since the share was never added, move directly to the terminal
-			// Removed state. No guest state was established, so there is nothing
-			// to clean up.
-			s.state = StateRemoved
+			// The share was never added to the VM. Transition to Invalid so
+			// that outstanding mount reservations can still be drained by
+			// callers via UnmountFromGuest before the share is fully removed.
+			s.state = StateInvalid
 			return fmt.Errorf("add Plan9 share %s to VM: %w", s.name, err)
 		}
 
@@ -131,13 +113,18 @@ func (s *Share) AddToVM(ctx context.Context, vm VMPlan9Adder) error {
 		// Already added — no-op.
 		return nil
 
+	case StateInvalid:
+		// A previous add attempt failed. The caller must drain all mount
+		// reservations via UnmountFromGuest and then call RemoveFromVM to
+		// transition to StateRemoved.
+		return fmt.Errorf("share %s is in invalid state; drain mounts and remove", s.name)
+
 	case StateRemoved:
 		// Re-adding a removed share is not supported.
 		return fmt.Errorf("share %s already removed", s.name)
 	default:
+		return fmt.Errorf("share %s in unknown state %d", s.name, s.state)
 	}
-
-	return nil
 }
 
 // RemoveFromVM removes the share from the VM. It is idempotent for a share
@@ -172,8 +159,19 @@ func (s *Share) RemoveFromVM(ctx context.Context, vm VMPlan9Remover) error {
 		s.state = StateRemoved
 		log.G(ctx).Debug("Plan9 share removed from VM")
 
+	case StateInvalid:
+		// The share was never successfully added to the VM. Wait for all
+		// mount reservations to be drained before transitioning to Removed.
+		if s.mount != nil {
+			return nil
+		}
+
+		s.state = StateRemoved
+		log.G(ctx).Debug("invalid Plan9 share transitioned to removed (all mounts drained)")
+
 	case StateRemoved:
 		// Already fully removed — no-op.
+		// Controller needs to remove ref from its map.
 	}
 
 	return nil

@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 // Package mount manages the lifecycle of a single Plan9 guest-side mount
 // inside a Hyper-V guest VM, from the initial reservation through mounting
@@ -16,15 +16,15 @@
 // # Mount Lifecycle
 //
 //	┌──────────────────────┐
-//	│    StateReserved     │ ← mount failure → StateUnmounted (not retriable)
-//	└──────────┬───────────┘
-//	           │ guest mount succeeds
-//	           ▼
-//	┌──────────────────────┐
-//	│    StateMounted      │
-//	└──────────┬───────────┘
-//	           │ reference count → 0;
-//	           │ guest unmount succeeds
+//	│    StateReserved     │ ← mount failure → StateInvalid
+//	└──────────┬───────────┘                       │
+//	           │ guest mount succeeds              │ all refs drained
+//	           ▼                                   ▼
+//	┌──────────────────────┐              ┌──────────────────────┐
+//	│    StateMounted      │              │   StateUnmounted     │
+//	└──────────┬───────────┘              └──────────────────────┘
+//	           │ reference count → 0;       (terminal — entry
+//	           │ guest unmount succeeds      removed from share)
 //	           ▼
 //	┌──────────────────────┐
 //	│   StateUnmounted     │
