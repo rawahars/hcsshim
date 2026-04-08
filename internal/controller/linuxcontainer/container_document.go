@@ -63,7 +63,7 @@ func (c *Controller) generateContainerDocument(
 
 	return &vmHostedContainerSettingsV2{
 		SchemaVersion:    schemaversion.SchemaV21(),
-		OCIBundlePath:    ospath.Join("linux", guestpath.LCOWV2RootPrefixInVM, c.gcsPodID, c.gcsContainerID),
+		OCIBundlePath:    ospath.Join("linux", guestpath.LCOWRootPrefixInUVM, c.gcsContainerID),
 		OCISpecification: linuxSpec,
 		ScratchDirPath:   c.layers.scratch.guestPath,
 	}, nil
