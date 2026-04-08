@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 // containerd-shim-lcow-v2 is a containerd shim implementation for Linux Containers on Windows (LCOW).
 package main
@@ -16,6 +16,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/oc"
 	"github.com/Microsoft/hcsshim/internal/shim"
+	"github.com/Microsoft/hcsshim/osversion"
 
 	"github.com/containerd/errdefs"
 	"github.com/sirupsen/logrus"
@@ -40,6 +41,12 @@ func main() {
 	if err := setLogConfiguration(); err != nil {
 		_, _ = fmt.Fprintf(os.Stderr, "%s: %s", service.ShimName, err)
 		os.Exit(1)
+	}
+
+	// This shim is supported on Windows Build 26100 and later.
+	if osversion.Build() < osversion.V25H1Server {
+		_, _ = fmt.Fprintf(os.Stderr,
+			"%s: Windows version [%v] is not supported", service.ShimName, osversion.Build())
 	}
 
 	// Start the shim manager event loop. The manager is responsible for

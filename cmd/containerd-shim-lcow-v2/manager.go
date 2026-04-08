@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 package main
 
@@ -19,6 +19,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/oc"
 	"github.com/Microsoft/hcsshim/internal/shim"
 	hcsversion "github.com/Microsoft/hcsshim/internal/version"
+	"github.com/containerd/containerd/v2/pkg/atomicfile"
 
 	"github.com/containerd/containerd/api/types"
 	"github.com/containerd/containerd/v2/pkg/namespaces"
@@ -176,7 +177,31 @@ func (m *shimManager) Start(ctx context.Context, id string, opts shim.StartOpts)
 	_, _ = windows.WaitForSingleObject(handle, windows.INFINITE)
 
 	params.Address = address
+
+	//todo: delete this is a hack.
+	if err = writeAddress(filepath.Join(cwd, "address"), address); err != nil {
+		return params, err
+	}
+
 	return params, nil
+}
+
+// writeAddress writes an address file atomically
+func writeAddress(path, address string) error {
+	path, err := filepath.Abs(path)
+	if err != nil {
+		return err
+	}
+	f, err := atomicfile.New(path, 0o644)
+	if err != nil {
+		return err
+	}
+	_, err = f.Write([]byte(address))
+	if err != nil {
+		_ = f.Cancel()
+		return err
+	}
+	return f.Close()
 }
 
 // Stop tears down a running shim instance identified by id.

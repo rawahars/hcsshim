@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 package plugin
 
@@ -30,7 +30,7 @@ const (
 var svc *service.Service
 
 func init() {
-	// Provider ID: 64F6FC7F-8326-5EE8-B890-3734AE584136
+	// Provider ID: A6BD4B70-8A0B-5913-5C8E-E2780DC7F06F
 	// Provider and hook aren't closed explicitly, as they will exist until process exit.
 	provider, err := etw.NewProvider(etwProviderName, etwCallback)
 	if err != nil {

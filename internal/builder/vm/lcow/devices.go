@@ -43,7 +43,9 @@ func parseDeviceOptions(
 	}).Debug("parseDeviceOptions: starting device options parsing")
 
 	// ===============================Parse VPMem configuration===============================
-	vpmemCount := oci.ParseAnnotationsUint32(ctx, annotations, shimannotations.VPMemCount, vmutils.DefaultVPMEMCount)
+	// By default, we will set vPMem device count as 0.
+	// todo: Check if we should remove vpmem code paths.
+	vpmemCount := oci.ParseAnnotationsUint32(ctx, annotations, shimannotations.VPMemCount, 0)
 	vpmemSize := oci.ParseAnnotationsUint64(ctx, annotations, shimannotations.VPMemSize, vmutils.DefaultVPMemSizeBytes)
 
 	// VPMem is not supported by the enlightened kernel for SNP (confidential VMs, and Hyper-V on arm64).
@@ -101,6 +103,10 @@ func parseDeviceOptions(
 				"imageFormat": imageFormat,
 			}).Debug("configured VPMem device for VHD rootfs boot")
 		}
+	}
+
+	if vpMemController != nil {
+		return nil, nil, nil, fmt.Errorf("VPMem devices are not supported in this configuration")
 	}
 
 	// ===============================Parse SCSI configuration===============================
