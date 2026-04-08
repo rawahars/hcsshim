@@ -93,17 +93,14 @@ func newTestController(t *testing.T, noWritableFileShares bool) *testController 
 // ─────────────────────────────────────────────────────────────────────────────
 
 // TestReserve_NewShare verifies that reserving a new host path creates a share
-// entry, returns a non-empty guest path, and stores a unique reservation ID.
+// entry and stores a unique reservation ID.
 func TestReserve_NewShare(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, guestPath, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
-	}
-	if guestPath == "" {
-		t.Error("expected non-empty guest path")
 	}
 	if len(tc.c.reservations) != 1 {
 		t.Errorf("expected 1 reservation, got %d", len(tc.c.reservations))
@@ -118,19 +115,16 @@ func TestReserve_NewShare(t *testing.T) {
 
 // TestReserve_SameHostPath_RefsExistingShare verifies that two reservations for
 // the same host path reuse the existing share (only one share entry) and return
-// distinct reservation IDs but the same guest path.
+// distinct reservation IDs.
 func TestReserve_SameHostPath_RefsExistingShare(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id1, gp1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
-	id2, gp2, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id2, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	if id1 == id2 {
 		t.Error("expected different reservation IDs for two callers on the same path")
-	}
-	if gp1 != gp2 {
-		t.Errorf("expected same guest path for same host path, got %q vs %q", gp1, gp2)
 	}
 	if len(tc.c.sharesByHostPath) != 1 {
 		t.Errorf("expected 1 share for same host path, got %d", len(tc.c.sharesByHostPath))
@@ -146,8 +140,8 @@ func TestReserve_DifferentHostPaths_CreatesSeparateShares(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	_, _, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/a"}, mount.Config{})
-	_, _, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/b"}, mount.Config{})
+	_, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/a"}, mount.Config{})
+	_, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/b"}, mount.Config{})
 
 	if len(tc.c.sharesByHostPath) != 2 {
 		t.Errorf("expected 2 shares, got %d", len(tc.c.sharesByHostPath))
@@ -161,10 +155,10 @@ func TestReserve_DifferentConfig_SameHostPath_Errors(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	_, _, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	_, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	// Same host path but read-only flag differs.
-	_, _, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path", ReadOnly: true}, mount.Config{})
+	_, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path", ReadOnly: true}, mount.Config{})
 	if err == nil {
 		t.Fatal("expected error when re-reserving same host path with different config")
 	}
@@ -177,7 +171,7 @@ func TestReserve_WritableDenied(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, true /* noWritableFileShares */)
 
-	_, _, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path" /* writable */}, mount.Config{})
+	_, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path" /* writable */}, mount.Config{})
 	if err == nil {
 		t.Fatal("expected error when adding writable share with noWritableFileShares=true")
 	}
@@ -189,7 +183,7 @@ func TestReserve_ReadOnlyAllowedWhenWritableDenied(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, true /* noWritableFileShares */)
 
-	_, _, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path", ReadOnly: true /* readOnly */}, mount.Config{ReadOnly: true})
+	_, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path", ReadOnly: true /* readOnly */}, mount.Config{ReadOnly: true})
 	if err != nil {
 		t.Fatalf("unexpected error for read-only share: %v", err)
 	}
@@ -201,8 +195,8 @@ func TestReserve_NameCounterIncrements(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	_, _, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/a"}, mount.Config{})
-	_, _, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/b"}, mount.Config{})
+	_, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/a"}, mount.Config{})
+	_, _ = tc.c.Reserve(tc.ctx, share.Config{HostPath: "/path/b"}, mount.Config{})
 
 	if tc.c.nameCounter != 2 {
 		t.Errorf("expected nameCounter=2, got %d", tc.c.nameCounter)
@@ -215,12 +209,12 @@ func TestReserve_NameCounterIncrements(t *testing.T) {
 
 // TestMapToGuest_HappyPath verifies a normal Reserve → MapToGuest flow: the
 // share is added to the VM and mounted in the guest, returning a non-empty
-// guest path that matches the one returned during Reserve.
+// guest path.
 func TestMapToGuest_HappyPath(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, gp, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
 	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(nil)
@@ -232,9 +226,6 @@ func TestMapToGuest_HappyPath(t *testing.T) {
 	if guestPath == "" {
 		t.Error("expected non-empty guest path")
 	}
-	if guestPath != gp {
-		t.Errorf("expected guest path %q from MapToGuest to match reservation guest path %q", guestPath, gp)
-	}
 }
 
 // TestMapToGuest_VMAddFails_Errors verifies that when the host-side AddPlan9
@@ -243,7 +234,7 @@ func TestMapToGuest_VMAddFails_Errors(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(errVMAdd)
 
@@ -261,7 +252,7 @@ func TestMapToGuest_GuestMountFails_RetryMapToGuest_Fails(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	// First MapToGuest: VM add succeeds, guest mount fails.
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
@@ -274,7 +265,7 @@ func TestMapToGuest_GuestMountFails_RetryMapToGuest_Fails(t *testing.T) {
 
 	// Forward retry: MapToGuest again with the same reservation.
 	// AddToVM is idempotent (share already in StateAdded), but MountToGuest
-	// fails because the mount is in the terminal StateUnmounted.
+	// fails because the mount is in StateInvalid.
 	_, err = tc.c.MapToGuest(tc.ctx, id)
 	if err == nil {
 		t.Fatal("expected error on retry MapToGuest after terminal mount failure")
@@ -294,7 +285,7 @@ func TestMapToGuest_GuestMountFails_UnmapFromGuest_CleansUp(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	// MapToGuest: VM add succeeds, guest mount fails.
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
@@ -331,8 +322,8 @@ func TestMapToGuest_SharedPath_VMAddCalledOnce(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id1, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
-	id2, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id2, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	// AddPlan9 and AddLCOWMappedDirectory each called exactly once.
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil).Times(1)
@@ -362,7 +353,7 @@ func TestUnmapFromGuest_HappyPath(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
 	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(nil)
@@ -389,7 +380,7 @@ func TestUnmapFromGuest_GuestUnmountFails_Retryable(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
 	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(nil)
@@ -420,7 +411,7 @@ func TestUnmapFromGuest_VMRemoveFails_Retryable(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
 	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(nil)
@@ -451,8 +442,8 @@ func TestUnmapFromGuest_RefCounting_VMRemoveOnLastRef(t *testing.T) {
 	t.Parallel()
 	tc := newTestController(t, false)
 
-	id1, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
-	id2, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id2, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil).Times(1)
 	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(nil).Times(1)
@@ -486,7 +477,7 @@ func TestUnmapFromGuest_WithoutMapToGuest_CleansUp(t *testing.T) {
 	tc := newTestController(t, false)
 
 	// Reserve but never MapToGuest — no VM or guest calls expected.
-	id, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 
 	if err := tc.c.UnmapFromGuest(tc.ctx, id); err != nil {
 		t.Fatalf("unexpected error: %v", err)
@@ -508,7 +499,7 @@ func TestFullLifecycle_ReuseAfterRelease(t *testing.T) {
 	tc := newTestController(t, false)
 
 	// First full cycle.
-	id1, _, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
 	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(nil)
 	_, _ = tc.c.MapToGuest(tc.ctx, id1)
@@ -517,11 +508,142 @@ func TestFullLifecycle_ReuseAfterRelease(t *testing.T) {
 	_ = tc.c.UnmapFromGuest(tc.ctx, id1)
 
 	// Reserve the same path again — should start a fresh share.
-	id2, _, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id2, err := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
 	if err != nil {
 		t.Fatalf("re-reserve after release: %v", err)
 	}
 	if id1 == id2 {
 		t.Error("expected a new reservation ID after re-reserving a released path")
+	}
+}
+
+// TestUnmapFromGuest_AddToVMFails_MultipleReservations_AllDrain verifies that
+// when two callers reserve the same host path and AddToVM fails, the share
+// stays in the controller's map (in StateInvalid) until both callers call
+// UnmapFromGuest to drain their mount reservations. Only after the last ref
+// is drained does the share transition to StateRemoved and get cleaned up.
+func TestUnmapFromGuest_AddToVMFails_MultipleReservations_AllDrain(t *testing.T) {
+	t.Parallel()
+	tc := newTestController(t, false)
+
+	// Two callers reserve the same host path.
+	id1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id2, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+
+	// First caller attempts MapToGuest — AddToVM fails.
+	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(errVMAdd)
+	_, err := tc.c.MapToGuest(tc.ctx, id1)
+	if err == nil {
+		t.Fatal("expected error when VM add fails")
+	}
+
+	// First caller's UnmapFromGuest: decrements mount ref but share stays
+	// (mount ref > 0 → share stays in StateInvalid).
+	if err := tc.c.UnmapFromGuest(tc.ctx, id1); err != nil {
+		t.Fatalf("first UnmapFromGuest: %v", err)
+	}
+
+	// Share must still be in the map — second caller hasn't drained yet.
+	if len(tc.c.sharesByHostPath) != 1 {
+		t.Errorf("expected share to remain in map after first unmap, got %d shares", len(tc.c.sharesByHostPath))
+	}
+	if len(tc.c.reservations) != 1 {
+		t.Errorf("expected 1 remaining reservation, got %d", len(tc.c.reservations))
+	}
+
+	// Second caller's UnmapFromGuest: drains last mount ref → share transitions
+	// to StateRemoved → controller cleans up the share entry.
+	if err := tc.c.UnmapFromGuest(tc.ctx, id2); err != nil {
+		t.Fatalf("second UnmapFromGuest: %v", err)
+	}
+
+	// Everything should be cleaned up.
+	if len(tc.c.reservations) != 0 {
+		t.Errorf("expected 0 reservations after all unmaps, got %d", len(tc.c.reservations))
+	}
+	if len(tc.c.sharesByHostPath) != 0 {
+		t.Errorf("expected 0 shares after all unmaps, got %d", len(tc.c.sharesByHostPath))
+	}
+}
+
+// TestUnmapFromGuest_GuestMountFails_MultipleReservations_AllDrain verifies
+// that when two callers reserve the same host path and MapToGuest fails at the
+// guest mount stage (AddToVM succeeds, AddLCOWMappedDirectory fails), the share
+// and mount stay in the controller's maps until all callers have called
+// UnmapFromGuest to drain their mount reservations.
+func TestUnmapFromGuest_GuestMountFails_MultipleReservations_AllDrain(t *testing.T) {
+	t.Parallel()
+	tc := newTestController(t, false)
+
+	// Two callers reserve the same host path.
+	id1, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+	id2, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+
+	// First caller attempts MapToGuest — AddToVM succeeds, guest mount fails.
+	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(nil)
+	tc.guestMount.EXPECT().AddLCOWMappedDirectory(gomock.Any(), gomock.Any()).Return(errMount)
+	_, err := tc.c.MapToGuest(tc.ctx, id1)
+	if err == nil {
+		t.Fatal("expected error when guest mount fails")
+	}
+
+	// First caller's UnmapFromGuest: decrements mount ref but share stays
+	// because second caller still holds a reservation.
+	// VM remove should NOT be called yet — second caller hasn't drained.
+	tc.vmRemove.EXPECT().RemovePlan9(gomock.Any(), gomock.Any()).Return(nil).MaxTimes(0)
+	if err := tc.c.UnmapFromGuest(tc.ctx, id1); err != nil {
+		t.Fatalf("first UnmapFromGuest: %v", err)
+	}
+
+	// Share must still be in the map — second caller hasn't drained yet.
+	if len(tc.c.sharesByHostPath) != 1 {
+		t.Errorf("expected share to remain in map after first unmap, got %d shares", len(tc.c.sharesByHostPath))
+	}
+	if len(tc.c.reservations) != 1 {
+		t.Errorf("expected 1 remaining reservation, got %d", len(tc.c.reservations))
+	}
+
+	// Second caller's UnmapFromGuest: drains last mount ref → share transitions
+	// to StateRemoved → controller cleans up the share entry.
+	tc.vmRemove.EXPECT().RemovePlan9(gomock.Any(), gomock.Any()).Return(nil)
+	if err := tc.c.UnmapFromGuest(tc.ctx, id2); err != nil {
+		t.Fatalf("second UnmapFromGuest: %v", err)
+	}
+
+	// Everything should be cleaned up.
+	if len(tc.c.reservations) != 0 {
+		t.Errorf("expected 0 reservations after all unmaps, got %d", len(tc.c.reservations))
+	}
+	if len(tc.c.sharesByHostPath) != 0 {
+		t.Errorf("expected 0 shares after all unmaps, got %d", len(tc.c.sharesByHostPath))
+	}
+}
+
+// TestUnmapFromGuest_AddToVMFails_SingleReservation_Drains verifies that when
+// a single caller reserves a host path and AddToVM fails, UnmapFromGuest
+// correctly drains the mount and transitions the share to StateRemoved.
+func TestUnmapFromGuest_AddToVMFails_SingleReservation_Drains(t *testing.T) {
+	t.Parallel()
+	tc := newTestController(t, false)
+
+	id, _ := tc.c.Reserve(tc.ctx, share.Config{HostPath: "/host/path"}, mount.Config{})
+
+	// MapToGuest fails at AddToVM.
+	tc.vmAdd.EXPECT().AddPlan9(gomock.Any(), gomock.Any()).Return(errVMAdd)
+	_, err := tc.c.MapToGuest(tc.ctx, id)
+	if err == nil {
+		t.Fatal("expected error when VM add fails")
+	}
+
+	// UnmapFromGuest drains the mount and removes the share.
+	if err := tc.c.UnmapFromGuest(tc.ctx, id); err != nil {
+		t.Fatalf("UnmapFromGuest: %v", err)
+	}
+
+	if len(tc.c.reservations) != 0 {
+		t.Errorf("expected 0 reservations, got %d", len(tc.c.reservations))
+	}
+	if len(tc.c.sharesByHostPath) != 0 {
+		t.Errorf("expected 0 shares, got %d", len(tc.c.sharesByHostPath))
 	}
 }

@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 // Package share manages the lifecycle of a single Plan9 share attached to a
 // Hyper-V VM, from host-side name allocation through guest-side mounting.
@@ -15,7 +15,7 @@
 // # Share Lifecycle
 //
 //	┌──────────────────────┐
-//	│    StateReserved     │ ← add failure → StateRemoved (not retriable)
+//	│    StateReserved     │ ← add failure → StateInvalid
 //	└──────────┬───────────┘
 //	           │ share added to VM
 //	           ▼
@@ -25,6 +25,17 @@
 //	  (guest mount driven here)
 //	           │ mount released;
 //	           │ share removed from VM
+//	           ▼
+//	┌──────────────────────┐
+//	│    StateRemoved      │
+//	└──────────────────────┘
+//	  (terminal — entry removed from controller)
+//
+//	┌──────────────────────┐
+//	│    StateInvalid      │ ← add failed; share never on VM
+//	└──────────┬───────────┘
+//	           │ all mount reservations drained
+//	           │ via UnmountFromGuest + RemoveFromVM
 //	           ▼
 //	┌──────────────────────┐
 //	│    StateRemoved      │
