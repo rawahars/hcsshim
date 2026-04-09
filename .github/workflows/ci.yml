@@ -326,6 +326,12 @@ jobs:
       - name: Test repo
         run: ${{ env.GOTESTSUM_CMD }} -gcflags=all=-d=checkptr -tags admin -timeout=20m ./...
 
+      - name: Test lcow tagged packages (shimV2)
+        run: ${{ env.GOTESTSUM_CMD }} -gcflags=all=-d=checkptr -tags lcow -timeout=10m ./...
+
+      - name: Test wcow tagged packages (shimV2)
+        run: ${{ env.GOTESTSUM_CMD }} -gcflags=all=-d=checkptr -tags wcow -timeout=10m ./...
+
       - name: Run non-functional tests
         run: ${{ env.GOTESTSUM_CMD }} -mod=mod -gcflags=all=-d=checkptr ./internal/... ./pkg/... ./parity/...
         working-directory: test
@@ -646,8 +652,16 @@ jobs:
             $LASTEXITCODE = 0
           }
 
+      - run: ${{ env.GO_BUILD_CMD }} -tags lcow ./...
+        name: Build lcow tagged packages (shimV2)
+      - run: ${{ env.GO_BUILD_CMD }} -tags wcow ./...
+        name: Build wcow tagged packages (shimV2)
+      - run: ${{ env.GO_BUILD_CMD }} ./...
+        name: Build untagged packages
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/containerd-shim-runhcs-v1
         name: Build containerd-shim-runhcs-v1.exe
+      - run: ${{ env.GO_BUILD_CMD }} -tags lcow ./cmd/containerd-shim-lcow-v2
+        name: Build containerd-shim-lcow-v2.exe
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/device-util
         name: Build device-util.exe
       - run: ${{ env.GO_BUILD_CMD }} ./cmd/jobobject-util
