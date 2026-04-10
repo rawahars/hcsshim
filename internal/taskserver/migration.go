@@ -354,7 +354,7 @@ func (s *service) runMigration(ctx context.Context, sessionID string, timeout ti
 }
 
 func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSandboxRequest) (*lmproto.FinalizeSandboxResponse, error) {
-	if s.migState.migrated == nil {
+	if s.migState == nil || s.migState.migrated == nil {
 		return nil, fmt.Errorf("no migrated sandbox is present")
 	}
 	switch req.Action {
@@ -402,9 +402,13 @@ func (s *service) FinalizeSandbox(ctx context.Context, req *lmproto.FinalizeSand
 		}); err != nil {
 			log.G(ctx).WithError(err).Info("PublishEvent failed")
 		}
-		s.sandbox = nil
-		// We should do this for resume at some point as well, but can't do it right away,
-		// since we need the info in migState for container restore.
+		// Do not nil s.sandbox — containerd calls Kill, Wait, and Delete on
+		// the task ttrpc service after FinalizeSandbox returns. With s.sandbox
+		// set to nil, those handlers panic on s.sandbox.get() (nil pointer
+		// dereference), crashing the shim and producing "ttrpc: closed" errors.
+		// The sandbox is already marked exited, so Kill → Terminate returns nil
+		// for an already-stopped system, Wait returns immediately (waitCh
+		// closed above), and Delete returns the cached exit state.
 		s.migState = nil
 	default:
 		return nil, fmt.Errorf("unsupported action: %v", req.Action)
