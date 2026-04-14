@@ -7,14 +7,16 @@ const (
 	Namespace = "namespace"
 	Operation = "operation"
 
-	ID          = "id"
-	ContainerID = "cid"
-	ExecID      = "eid"
-	ProcessID   = "pid"
-	TaskID      = "tid"
-	UVMID       = "uvm-id"
-	SandboxID   = "sandbox-id"
-	PodID       = "pod-id"
+	ID             = "id"
+	ContainerID    = "cid"
+	GCSContainerID = "gcs_container_id"
+	ExecID         = "eid"
+	ProcessID      = "pid"
+	TaskID         = "tid"
+	UVMID          = "uvm-id"
+	SandboxID      = "sandbox-id"
+	PodID          = "pod-id"
+	GCSPodID       = "gcs_pod_id"
 
 	// networking and IO
 
@@ -29,11 +31,6 @@ const (
 	LUN        = "lun"
 	DiskType   = "disk-type"
 	Partition  = "partition"
-
-	// Common Misc
-
-	Attempt = "attemptNo"
-	JSON    = "json"
 
 	// Time
 
