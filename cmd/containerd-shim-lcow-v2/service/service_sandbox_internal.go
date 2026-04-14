@@ -1,4 +1,4 @@
-//go:build windows
+//go:build windows && lcow
 
 package service
 
@@ -124,7 +124,7 @@ func (s *Service) startSandboxInternal(ctx context.Context, request *sandbox.Sta
 		}
 	}
 
-	// VM controller ensures that only once of the Start call goes through.
+	// VM controller ensures that only one of the Start calls goes through.
 	err := s.vmController.StartVM(ctx, &vm.StartOptions{
 		GCSServiceID:        winio.VsockServiceID(prot.LinuxGcsVsockPort),
 		ConfidentialOptions: confidentialOpts,
@@ -264,7 +264,7 @@ func (s *Service) pingSandboxInternal(_ context.Context, _ *sandbox.PingRequest)
 // The sandbox must already be in the stopped state before shutdown is accepted.
 func (s *Service) shutdownSandboxInternal(ctx context.Context, request *sandbox.ShutdownSandboxRequest) (*sandbox.ShutdownSandboxResponse, error) {
 	if s.sandboxID != request.SandboxID {
-		return &sandbox.ShutdownSandboxResponse{}, fmt.Errorf("sandbox ID mismatch, expected %s, got %s", s.sandboxID, request.SandboxID)
+		return nil, fmt.Errorf("sandbox ID mismatch, expected %s, got %s", s.sandboxID, request.SandboxID)
 	}
 
 	// Ensure the VM is terminated. If the VM is already terminated,
@@ -298,17 +298,17 @@ func (s *Service) shutdownSandboxInternal(ctx context.Context, request *sandbox.
 // It collects and returns runtime statistics from the vmController.
 func (s *Service) sandboxMetricsInternal(ctx context.Context, request *sandbox.SandboxMetricsRequest) (*sandbox.SandboxMetricsResponse, error) {
 	if s.sandboxID != request.SandboxID {
-		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("sandbox ID mismatch, expected %s, got %s", s.sandboxID, request.SandboxID)
+		return nil, fmt.Errorf("sandbox ID mismatch, expected %s, got %s", s.sandboxID, request.SandboxID)
 	}
 
 	stats, err := s.vmController.Stats(ctx)
 	if err != nil {
-		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("failed to get sandbox metrics: %w", err)
+		return nil, fmt.Errorf("failed to get sandbox metrics: %w", err)
 	}
 
 	anyStat, err := typeurl.MarshalAny(stats)
 	if err != nil {
-		return &sandbox.SandboxMetricsResponse{}, fmt.Errorf("failed to marshal sandbox metrics: %w", err)
+		return nil, fmt.Errorf("failed to marshal sandbox metrics: %w", err)
 	}
 
 	return &sandbox.SandboxMetricsResponse{
