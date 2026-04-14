@@ -14,6 +14,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/containerd/containerd/api/events"
 	"github.com/containerd/containerd/api/runtime/task/v2"
+	containerd_v1_types "github.com/containerd/containerd/api/types/task"
 	"github.com/containerd/containerd/errdefs"
 	"github.com/containerd/containerd/protobuf"
 	"github.com/containerd/containerd/runtime"
@@ -154,10 +155,14 @@ func (s *service) Delete(ctx context.Context, req *task.DeleteRequest) (*task.De
 		log.G(ctx).WithError(err).Info("PublishEvent failed")
 	}
 	if state.ExecID == "" {
-		// Call code to cleanup LM resources for the Task
-		err = s.sandbox.Sandbox.RemoveLinuxContainer(ctx, req.ID)
-		if err != nil {
-			return nil, fmt.Errorf("failed to remove container %s: %w", req.ID, err)
+		// Call code to cleanup LM resources for the Task.
+		// Skip resource cleanup if the sandbox is already stopped (e.g. after
+		// FinalizeSandbox STOP) — the VM is gone and SCSI detach would fail.
+		if s.sandbox.Status != containerd_v1_types.Status_STOPPED {
+			err = s.sandbox.Sandbox.RemoveLinuxContainer(ctx, req.ID)
+			if err != nil {
+				return nil, fmt.Errorf("failed to remove container %s: %w", req.ID, err)
+			}
 		}
 		delete(s.sandbox.Tasks, req.ID)
 	}
@@ -214,11 +219,19 @@ func (s *service) Kill(ctx context.Context, req *task.KillRequest) (*emptypb.Emp
 		if req.ExecID != "" {
 			return nil, fmt.Errorf("killing sandbox execs is not supported")
 		}
+		// If sandbox is already stopped (e.g. after FinalizeSandbox STOP),
+		// Terminate is a no-op on an already-stopped system.
 		return &emptypb.Empty{}, s.sandbox.Sandbox.Terminate(ctx)
 	}
 	task, ok := s.sandbox.Tasks[req.ID]
 	if !ok {
 		return nil, fmt.Errorf("task not found: %s", req.ID)
+	}
+	// If the task is already stopped, return success. After FinalizeSandbox
+	// STOP the VM is gone — signaling would fail on the dead GCS bridge.
+	// This is also correct for normal ops: killing a dead container is a no-op.
+	if task.Status == containerd_v1_types.Status_STOPPED {
+		return &emptypb.Empty{}, nil
 	}
 	if req.All {
 		if req.ExecID != "" {
