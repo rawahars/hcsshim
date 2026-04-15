@@ -14,9 +14,13 @@ import (
 	"github.com/Microsoft/hcsshim/internal/controller/pod"
 	"github.com/Microsoft/hcsshim/internal/controller/process"
 	"github.com/Microsoft/hcsshim/internal/hcs"
+	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
+	"github.com/Microsoft/hcsshim/internal/memory"
 	"github.com/Microsoft/hcsshim/internal/oci"
+	"github.com/Microsoft/hcsshim/internal/protocol/guestresource"
+	"github.com/Microsoft/hcsshim/pkg/annotations"
 
 	"github.com/Microsoft/hcsshim/pkg/ctrdtaskapi"
 	eventstypes "github.com/containerd/containerd/api/events"
@@ -535,17 +539,10 @@ func (s *Service) updateInternal(ctx context.Context, request *task.UpdateTaskRe
 		return nil, fmt.Errorf("failed to unmarshal resources for container %s update request: %w", request.ID, err)
 	}
 
-	switch resources.(type) {
-	case *specs.LinuxResources:
-	case *ctrdtaskapi.PolicyFragment:
-	default:
-		return nil, fmt.Errorf("unsupported resource type %T: %w", resources, errdefs.ErrInvalidArgument)
-	}
-
 	// Check if the ID in request matches any podID in podController map.
-	// If so, this is a pod-level update — call Update on the VMController.
+	// If so, this is a pod-level update — call the appropriate VM controller API.
 	if _, ok := s.getPodController(request.ID); ok {
-		if err := s.vmController.Update(ctx, resources, request.Annotations); err != nil {
+		if err := s.updateVMResources(ctx, resources, request.Annotations); err != nil {
 			return nil, fmt.Errorf("failed to update VM resources for pod %s: %w", request.ID, err)
 		}
 		return &emptypb.Empty{}, nil
@@ -562,6 +559,49 @@ func (s *Service) updateInternal(ctx context.Context, request *task.UpdateTaskRe
 	}
 
 	return &emptypb.Empty{}, nil
+}
+
+// updateVMResources dispatches resource updates to the appropriate VM controller APIs.
+func (s *Service) updateVMResources(ctx context.Context, resources interface{}, annots map[string]string) error {
+	switch res := resources.(type) {
+	case *ctrdtaskapi.PolicyFragment:
+		return s.vmController.UpdatePolicyFragment(ctx, guestresource.SecurityPolicyFragment{
+			Fragment: res.Fragment,
+		})
+	case *specs.LinuxResources:
+		// Update memory if specified.
+		if res.Memory != nil && res.Memory.Limit != nil {
+			requestedSizeInMB := uint64(*res.Memory.Limit) / memory.MiB
+			if err := s.vmController.UpdateMemory(ctx, requestedSizeInMB); err != nil {
+				return fmt.Errorf("failed to update vm memory: %w", err)
+			}
+		}
+
+		// Translate OCI CPU knobs to HCS processor limits and update if specified.
+		if res.CPU != nil {
+			processorLimits := &hcsschema.ProcessorLimits{}
+			if res.CPU.Quota != nil {
+				processorLimits.Limit = uint64(*res.CPU.Quota)
+			}
+			if res.CPU.Shares != nil {
+				processorLimits.Weight = uint64(*res.CPU.Shares)
+			}
+			if err := s.vmController.UpdateCPU(ctx, processorLimits); err != nil {
+				return fmt.Errorf("failed to update vm cpu limits: %w", err)
+			}
+		}
+
+		// Update CPU group membership if the corresponding annotation is present.
+		if cpuGroupID, ok := annots[annotations.CPUGroupID]; ok {
+			if err := s.vmController.UpdateCPUGroup(ctx, cpuGroupID); err != nil {
+				return fmt.Errorf("failed to update vm cpu group: %w", err)
+			}
+		}
+
+		return nil
+	default:
+		return fmt.Errorf("unsupported resource type %T: %w", resources, errdefs.ErrInvalidArgument)
+	}
 }
 
 // waitInternal blocks until the specified process exits and returns its exit status.
