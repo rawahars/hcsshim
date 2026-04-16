@@ -18,6 +18,10 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// platformControllers holds platform-specific sub-controllers embedded in [Controller].
+// For WCOW, no additional controllers are needed as of now (VSMB will be added later).
+type platformControllers struct{} //nolint:unused // embedded in Controller for cross-platform compatibility with LCOW
+
 // setupEntropyListener sets up entropy for WCOW (Windows Containers on Windows) VMs.
 //
 // For WCOW, entropy setup is not required. Windows VMs have their own internal
@@ -25,7 +29,7 @@ import (
 // This is a no-op implementation to satisfy the platform-specific interface.
 //
 // For comparison, LCOW VMs require entropy to be provided during boot.
-func (c *Manager) setupEntropyListener(_ context.Context, _ *errgroup.Group) {}
+func (c *Controller) setupEntropyListener(_ context.Context, _ *errgroup.Group) {}
 
 // setupLoggingListener sets up logging for WCOW UVMs.
 //
@@ -37,7 +41,7 @@ func (c *Manager) setupEntropyListener(_ context.Context, _ *errgroup.Group) {}
 // The listener is configured to accept only one concurrent connection at a time
 // to prevent resource exhaustion, but will accept new connections if the current one is closed.
 // This supports scenarios where the logging service inside the VM needs to restart.
-func (c *Manager) setupLoggingListener(ctx context.Context, _ *errgroup.Group) {
+func (c *Controller) setupLoggingListener(ctx context.Context, _ *errgroup.Group) {
 	// For Windows, the listener can receive a connection later (after VM starts),
 	// so we start the output handler in a goroutine with a non-timeout context.
 	// This allows the output handler to run independently of the VM creation lifecycle.
@@ -96,7 +100,7 @@ func (c *Manager) setupLoggingListener(ctx context.Context, _ *errgroup.Group) {
 
 // finalizeGCSConnection finalizes the GCS connection for WCOW UVMs.
 // This is called after CreateConnection succeeds and before the VM is considered fully started.
-func (c *Manager) finalizeGCSConnection(ctx context.Context) error {
+func (c *Controller) finalizeGCSConnection(ctx context.Context) error {
 	// Prepare the HvSocket address configuration for the external GCS connection.
 	// The LocalAddress is the VM's runtime ID, and the ParentAddress is the
 	// predefined host ID for Windows GCS communication.

@@ -1,4 +1,4 @@
-//go:build windows && !wcow
+//go:build windows && lcow
 
 package vm
 
@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/Microsoft/hcsshim/internal/controller/device/plan9"
 	"github.com/Microsoft/hcsshim/internal/vm/vmmanager"
 	"github.com/Microsoft/hcsshim/internal/vm/vmutils"
 
@@ -15,12 +16,32 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
+// platformControllers holds platform-specific sub-controllers embedded in [Controller].
+// For LCOW, this includes the Plan9 file share controller.
+type platformControllers struct {
+	// plan9Controller manages Plan9 file share mounts for this VM.
+	plan9Controller *plan9.Controller
+}
+
+// Plan9Controller returns the singleton controller which can be used
+// to manage the Plan9 shares on the Linux UVM.
+func (c *Controller) Plan9Controller() *plan9.Controller {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.plan9Controller == nil {
+		c.plan9Controller = plan9.New(c.uvm, c.guest, c.noWritableFileShares)
+	}
+
+	return c.plan9Controller
+}
+
 // setupEntropyListener sets up entropy for LCOW UVMs.
 //
 // Linux VMs require entropy to initialize their random number generators during boot.
 // This method listens on a predefined vsock port and provides cryptographically secure
 // random data to the Linux init process when it connects.
-func (c *Manager) setupEntropyListener(ctx context.Context, group *errgroup.Group) {
+func (c *Controller) setupEntropyListener(ctx context.Context, group *errgroup.Group) {
 	group.Go(func() error {
 		// The Linux guest will connect to this port during init to receive entropy.
 		entropyConn, err := winio.ListenHvsock(&winio.HvsockAddr{
@@ -58,7 +79,7 @@ func (c *Manager) setupEntropyListener(ctx context.Context, group *errgroup.Grou
 // This method establishes a vsock connection to receive log output from GCS
 // running inside the Linux VM. The logs are parsed and
 // forwarded to the host's logging system for monitoring and debugging.
-func (c *Manager) setupLoggingListener(ctx context.Context, group *errgroup.Group) {
+func (c *Controller) setupLoggingListener(ctx context.Context, group *errgroup.Group) {
 	group.Go(func() error {
 		// The GCS will connect to this port to stream log output.
 		logConn, err := winio.ListenHvsock(&winio.HvsockAddr{
@@ -93,6 +114,6 @@ func (c *Manager) setupLoggingListener(ctx context.Context, group *errgroup.Grou
 
 // finalizeGCSConnection finalizes the GCS connection for LCOW VMs.
 // For LCOW, no additional finalization is needed.
-func (c *Manager) finalizeGCSConnection(_ context.Context) error {
+func (c *Controller) finalizeGCSConnection(_ context.Context) error {
 	return nil
 }
