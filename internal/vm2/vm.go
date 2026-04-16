@@ -173,7 +173,7 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 					Data: oc.compatData,
 				},
 				ChecksumVerification: true,
-				PerfTracingEnabled:  true,
+				PerfTracingEnabled:   true,
 			}
 		}
 
@@ -192,6 +192,13 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 			_ = system.Close()
 		}
 	}()
+
+	// Open a second v2 handle for live migration event notifications.
+	// This is separate from the v1 handle used for standard system operations.
+	if err = system.OpenV2Handle(ctx); err != nil {
+		return nil, err
+	}
+
 	props, err := system.Properties(ctx)
 	if err != nil {
 		return nil, err

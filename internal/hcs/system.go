@@ -34,6 +34,13 @@ type System struct {
 	id             string
 	callbackNumber uintptr
 
+	// v2Handle is a separate computecore handle opened for the same system,
+	// used exclusively for receiving live migration event notifications via
+	// the v2 callback API (HcsSetComputeSystemCallback). This avoids
+	// conflicting with the legacy v1 callback registered on 'handle'.
+	v2Handle         computecore.HCS_SYSTEM
+	callbackNumberV2 uintptr
+
 	closedWaitOnce sync.Once
 	waitBlock      chan struct{}
 	waitError      error
@@ -866,6 +873,11 @@ func (computeSystem *System) CloseCtx(ctx context.Context) (err error) {
 		close(computeSystem.waitBlock)
 	})
 
+	// Clean up v2 handle if it was opened
+	if err = computeSystem.closeV2(ctx); err != nil {
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+
 	return nil
 }
 
@@ -925,6 +937,114 @@ func (computeSystem *System) unregisterCallback(ctx context.Context) error {
 	handle = 0 //nolint:ineffassign
 
 	return nil
+}
+
+// OpenV2Handle opens a second handle to the same compute system using the v2
+// computecore API and registers a v2 callback for live migration events.
+// This must be called after the system is created/opened with a v1 handle.
+func (computeSystem *System) OpenV2Handle(ctx context.Context) error {
+	operation := "hcs::System::OpenV2Handle"
+
+	var handle computecore.HCS_SYSTEM
+	err := computecore.HcsOpenComputeSystem(computeSystem.id, syscall.GENERIC_ALL, &handle)
+	if err != nil {
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+	computeSystem.v2Handle = handle
+
+	if err = computeSystem.registerCallbackV2(ctx); err != nil {
+		computecore.HcsCloseComputeSystem(computeSystem.v2Handle)
+		computeSystem.v2Handle = 0
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+	return nil
+}
+
+func (computeSystem *System) registerCallbackV2(ctx context.Context) error {
+	callbackContext := &notificationWatcherContextV2{
+		channels: newLiveMigrationChannels(),
+		systemID: computeSystem.id,
+	}
+
+	callbackMapLockV2.Lock()
+	callbackNumber := nextCallbackV2
+	nextCallbackV2++
+	callbackMapV2[callbackNumber] = callbackContext
+	callbackMapLockV2.Unlock()
+
+	err := computecore.HcsSetComputeSystemCallback(
+		computeSystem.v2Handle,
+		computecore.HcsEventOptionEnableLiveMigrationEvents,
+		callbackNumber,
+		notificationWatcherCallbackV2,
+	)
+	if err != nil {
+		callbackMapLockV2.Lock()
+		delete(callbackMapV2, callbackNumber)
+		callbackMapLockV2.Unlock()
+		return err
+	}
+
+	computeSystem.callbackNumberV2 = callbackNumber
+	return nil
+}
+
+func (computeSystem *System) unregisterCallbackV2(ctx context.Context) error {
+	callbackNumber := computeSystem.callbackNumberV2
+
+	callbackMapLockV2.RLock()
+	callbackContext := callbackMapV2[callbackNumber]
+	callbackMapLockV2.RUnlock()
+
+	if callbackContext == nil {
+		return nil
+	}
+
+	// Unregister by passing callback=0
+	err := computecore.HcsSetComputeSystemCallback(
+		computeSystem.v2Handle,
+		computecore.HcsEventOptionNone,
+		0,
+		0,
+	)
+	if err != nil {
+		return err
+	}
+
+	closeChannelsV2(callbackContext.channels)
+
+	callbackMapLockV2.Lock()
+	delete(callbackMapV2, callbackNumber)
+	callbackMapLockV2.Unlock()
+
+	return nil
+}
+
+// closeV2 cleans up the v2 handle and its callback.
+func (computeSystem *System) closeV2(ctx context.Context) error {
+	if computeSystem.v2Handle == 0 {
+		return nil
+	}
+
+	if err := computeSystem.unregisterCallbackV2(ctx); err != nil {
+		return err
+	}
+
+	computecore.HcsCloseComputeSystem(computeSystem.v2Handle)
+	computeSystem.v2Handle = 0
+	return nil
+}
+
+// LMNotificationChannel returns the channel that receives live migration
+// event data strings from the v2 callback.
+func (computeSystem *System) LMNotificationChannel() <-chan string {
+	callbackMapLockV2.RLock()
+	ctx := callbackMapV2[computeSystem.callbackNumberV2]
+	callbackMapLockV2.RUnlock()
+	if ctx == nil {
+		return nil
+	}
+	return ctx.channels[computecore.HcsEventTypeGroupLiveMigration]
 }
 
 // Modify the System by sending a request to HCS
@@ -998,7 +1118,7 @@ func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Cont
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsInitializeLiveMigrationOnSource(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsInitializeLiveMigrationOnSource(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
@@ -1025,7 +1145,7 @@ func (computeSystem *System) HcsStartLiveMigrationOnSource(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsStartLiveMigrationOnSource(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsStartLiveMigrationOnSource(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
@@ -1045,7 +1165,7 @@ func (computeSystem *System) HcsStartLiveMigrationTransfer(ctx context.Context) 
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsStartLiveMigrationTransfer(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsStartLiveMigrationTransfer(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
@@ -1068,7 +1188,7 @@ func (computeSystem *System) HcsFinalizeLiveMigation(ctx context.Context, resume
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsFinalizeLiveMigration(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsFinalizeLiveMigration(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
