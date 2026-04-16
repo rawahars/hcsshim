@@ -18,6 +18,10 @@ message SandboxLMSpec {
     // Adjusted resources (only rootfs supported for now).
     DestinationResources resources = 5;
     map<string, string> annotations = 4;
+    // Enable memory checksum verification during live migration.
+    bool checksum_verification = 6;
+    // Enable HCS performance tracing for migration.
+    bool perf_tracing_enabled = 7;
 }
 
 message DestinationResources {
