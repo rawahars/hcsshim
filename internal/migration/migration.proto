@@ -1,0 +1,167 @@
+syntax = "proto3";
+
+option go_package = "github.com/Microsoft/hcsshim/internal/migration;migration";
+
+import "google/protobuf/any.proto";
+import "google/protobuf/duration.proto";
+import "google/protobuf/timestamp.proto";
+
+service Migration {
+    // Called on SOURCE. Prepares the sandbox for live migration.
+    rpc PrepareAndExportSandbox(PrepareAndExportSandboxRequest) returns (PrepareAndExportSandboxResponse);
+    // Called on SOURCE AND DESTINATION. Initiates memory transfer, and returns a stream of status updates.
+    rpc TransferSandbox(TransferSandboxRequest) returns (stream TransferSandboxResponse);
+    // Called on SOURCE AND DESTINATION. Finalizes live migration and starts or deletes the sandbox.
+    rpc FinalizeSandbox(FinalizeSandboxRequest) returns (FinalizeSandboxResponse);
+    // Creates a duplicate socket for the migration transport.
+    rpc CreateDuplicateSocket(CreateDuplicateSocketRequest) returns (CreateDuplicateSocketResponse);
+}
+
+// MigrationOrigin indicates where migration is initiated from.
+enum MigrationOrigin {
+    MIGRATION_ORIGIN_UNSPECIFIED = 0;
+    // Source side of migration.
+    MIGRATION_ORIGIN_SOURCE = 1;
+    // Destination side of migration.
+    MIGRATION_ORIGIN_DESTINATION = 2;
+}
+
+// MigrationMemoryTransport is the transport protocol used for memory transfer during migration.
+enum MigrationMemoryTransport {
+    MIGRATION_MEMORY_TRANSPORT_UNSPECIFIED = 0;
+    // VM memory is copied over a TCP/IP connection.
+    MIGRATION_MEMORY_TRANSPORT_TCP = 1;
+}
+
+message MigrationInitializeOptions {
+    // Origin is the side of migration the workflow is performed on.
+    MigrationOrigin origin = 1;
+    // MemoryTransport specifies the transport protocol for memory transfer during migration.
+    MigrationMemoryTransport memory_transport = 2;
+    // MemoryTransferThrottleParams specifies settings for throttling during memory transfer.
+    optional MemoryMigrationTransferThrottleParams memory_transfer_throttle_params = 3;
+    // CompressionSettings specifies additional settings when compression is enabled.
+    optional MigrationCompressionSettings compression_settings = 4;
+    // ChecksumVerification enables memory checksum verification.
+    bool checksum_verification = 5;
+    // PerfTracingEnabled enables performance tracing during migration.
+    bool perf_tracing_enabled = 6;
+    // CancelIfBlackoutThresholdExceeds cancels the operation if the blackout threshold is exceeded.
+    bool cancel_if_blackout_threshold_exceeds = 7;
+    // PrepareMemoryTransferMode extends timeout for cross-version live migration.
+    bool prepare_memory_transfer_mode = 8;
+    // CompatibilityData is the compatibility information required for the destination VM.
+    optional CompatibilityInfo compatibility_data = 9;
+}
+
+// CompatibilityInfo is opaque VM compatibility data, primarily used in migration.
+message CompatibilityInfo {
+    // Raw compatibility information.
+    bytes data = 1;
+}
+
+message MemoryMigrationTransferThrottleParams {
+    // A flag indicating if throttling should be skipped.
+    optional bool skip_throttling = 1;
+    // The scale of the throttling. The value is in percentage (1-100).
+    optional double throttling_scale = 2;
+    // Minimum percentage value to which memory transfer can be throttled.
+    optional uint32 minimum_throttle_percentage = 3;
+    // Number of memory transfer passes targeted before the VM enters blackout.
+    optional uint32 target_number_of_brownout_transfer_passes = 4;
+    // The starting transfer pass where throttling is starting.
+    optional uint32 starting_brownout_pass_number_for_throttling = 5;
+    // Maximum number of memory transfer passes before forcing the VM to enter blackout.
+    optional uint32 maximum_number_of_brownout_transfer_passes = 6;
+    // Expected duration for blackout transfer time.
+    optional uint32 target_blackout_transfer_time = 7;
+    // Threshold for blackout duration prior to cancelling migration.
+    optional uint32 blackout_time_threshold_for_cancelling_migration = 8;
+}
+
+message MigrationCompressionSettings {
+    // Number of worker threads used for [de]compression. Values higher than what the host
+    // and VM configuration can support will be adjusted. The value should be non-zero.
+    optional uint32 throttle_worker_count = 1;
+}
+
+message PrepareAndExportSandboxRequest {
+    // Idempotency key for the migration session (stable across retries).
+    string session_id = 1;
+    // Options for initializing the live migration on the source.
+    MigrationInitializeOptions init_options = 2;
+}
+
+message PrepareAndExportSandboxResponse {
+    // An opaque config that should be set in the CreateSandbox input on the destination.
+    google.protobuf.Any config = 1;
+}
+
+message TransferSandboxRequest {
+    // Idempotency key for migration session.
+    string session_id = 1;
+    // Max time to wait for socket/connection readiness before declaring TIMEOUT.
+    // If unset, server uses a sensible default (e.g., 10 minutes).
+    google.protobuf.Duration timeout = 2;
+}
+
+message TransferSandboxResponse {
+    // Increments per message; can be used to dedupe after client restarts.
+    uint32 message_id = 1;
+    // Current migration event.
+    MigrationEvent event = 2;
+    // Populated when event indicates an error or timeout.
+    string error_message = 3;
+    // Event-specific message from the migration notification.
+    // This will be used in the future to send additional data such as progress percentage.
+    string event_message = 4;
+    // When the transfer started (according to the server).
+    google.protobuf.Timestamp start_time = 5;
+    // When this update was produced.
+    google.protobuf.Timestamp update_time = 6;
+}
+
+// Describes a set of live migration events.
+enum MigrationEvent {
+    MIGRATION_EVENT_UNKNOWN = 0;
+    // The LM setup is done.
+    MIGRATION_EVENT_SETUP_DONE = 1;
+    // The VM is still transferring memory and necessary states.
+    MIGRATION_EVENT_TRANSFER_IN_PROGRESS = 2;
+    // The VM starts the blackout phase.
+    MIGRATION_EVENT_BLACKOUT_STARTED = 3;
+    // Taking the VM offline is done.
+    MIGRATION_EVENT_OFFLINE_DONE = 4;
+    // The VM has successfully started again after blackout phase.
+    MIGRATION_EVENT_BLACKOUT_EXITED = 5;
+    // Migration is done.
+    MIGRATION_EVENT_DONE = 6;
+    // Migration recovery has been performed.
+    MIGRATION_EVENT_RECOVERY_DONE = 7;
+    // Migration failed.
+    MIGRATION_EVENT_FAILED = 8;
+}
+
+message FinalizeSandboxRequest {
+    // Idempotency key for the session (must match the key used in PrepareSandbox).
+    string session_id = 1;
+    // Action to perform on the sandbox at finalize time.
+    FinalizeAction action = 2;
+}
+
+enum FinalizeAction {
+    FINALIZE_ACTION_UNSPECIFIED = 0;
+    FINALIZE_ACTION_STOP = 1;
+    FINALIZE_ACTION_RESUME = 2;
+}
+
+message FinalizeSandboxResponse {}
+
+message CreateDuplicateSocketRequest {
+    // Idempotency key; must match active LM session.
+    string session_id = 1;
+    // Serialized WSAProtocolInfo struct (opaque to clients).
+    bytes protocol_info = 2;
+}
+
+message CreateDuplicateSocketResponse {}
