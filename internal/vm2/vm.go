@@ -172,8 +172,8 @@ func NewVM(ctx context.Context, id string, config *Config, opts ...Opt) (_ *VM, 
 				CompatibilityData: &hcsschema.CompatibilityInfo{
 					Data: oc.compatData,
 				},
-				ChecksumVerification: true,
-				PerfTracingEnabled:  true,
+				ChecksumVerification: oc.checksumVerification,
+				PerfTracingEnabled:   oc.perfTracingEnabled,
 			}
 		}
 
@@ -325,9 +325,11 @@ func convertConfig(config *Config) (*hcsschema.ComputeSystem, error) {
 }
 
 type optConfig struct {
-	restorePath string
-	compatData  []byte
-	openID      string
+	restorePath          string
+	compatData           []byte
+	openID               string
+	checksumVerification bool
+	perfTracingEnabled   bool
 }
 
 type Opt func(*optConfig)
@@ -338,9 +340,11 @@ func WithRestore(path string) Opt {
 	}
 }
 
-func WithLM(compatData []byte) Opt {
+func WithLM(compatData []byte, checksumVerification bool, perfTracingEnabled bool) Opt {
 	return func(oc *optConfig) {
 		oc.compatData = compatData
+		oc.checksumVerification = checksumVerification
+		oc.perfTracingEnabled = perfTracingEnabled
 	}
 }
 

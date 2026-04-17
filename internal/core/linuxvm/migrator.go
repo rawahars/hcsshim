@@ -155,6 +155,8 @@ func NewMigrator(
 	annos map[string]string,
 	replacements *core.Replacements,
 	vmResources core.Resources,
+	checksumVerification bool,
+	perfTracingEnabled bool,
 ) (_ core.Migrator, err error) {
 	logrus.WithField("config", config).Info("creating lm sandbox with config")
 	vmConfig := statepkg.VMConfigToInternal(config.Vm.Config)
@@ -227,7 +229,7 @@ func NewMigrator(
 	}
 
 	vmID := fmt.Sprintf("%s@vm", id)
-	vm, err := vm.NewVM(ctx, vmID, vmConfig, vm.WithLM(config.Vm.CompatInfo))
+	vm, err := vm.NewVM(ctx, vmID, vmConfig, vm.WithLM(config.Vm.CompatInfo, checksumVerification, perfTracingEnabled))
 	if err != nil {
 		return nil, err
 	}

@@ -21,7 +21,6 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 	"github.com/Microsoft/hcsshim/internal/oc"
-	"github.com/Microsoft/hcsshim/internal/timeout"
 	"github.com/Microsoft/hcsshim/internal/vmcompute"
 	"github.com/sirupsen/logrus"
 	"go.opencensus.io/trace"
@@ -33,6 +32,8 @@ type System struct {
 	handle         vmcompute.HcsSystem
 	id             string
 	callbackNumber uintptr
+
+	v2Handle computecore.HCS_SYSTEM
 
 	closedWaitOnce sync.Once
 	waitBlock      chan struct{}
@@ -77,13 +78,16 @@ func CreateComputeSystem(ctx context.Context, id string, hcsDocumentInterface in
 
 	hcsDocument := string(hcsDocumentB)
 
-	var (
-		identity    syscall.Handle
-		resultJSON  string
-		createError error
-	)
-	computeSystem.handle, resultJSON, createError = vmcompute.HcsCreateComputeSystem(ctx, id, hcsDocument, identity)
+	// Use computecore (v2) directly so we own the callback slot — vmcompute (v1)
+	// would install its own EventCallback translator that filters out LM events.
+	op := computecore.NewOperation(0)
+	defer op.Close()
+
+	var csHandle computecore.HCS_SYSTEM
+	createError := computecore.HcsCreateComputeSystem(id, hcsDocument, op, nil, &csHandle)
 	if createError == nil || IsPending(createError) {
+		computeSystem.handle = vmcompute.HcsSystem(csHandle)
+		computeSystem.v2Handle = csHandle
 		defer func() {
 			if err != nil {
 				computeSystem.Close()
@@ -95,18 +99,19 @@ func CreateComputeSystem(ctx context.Context, id string, hcsDocumentInterface in
 			_ = computeSystem.Terminate(ctx)
 			return nil, makeSystemError(computeSystem, operation, err, nil)
 		}
+	} else {
+		return nil, makeSystemError(computeSystem, operation, createError, nil)
 	}
 
-	events, err := processAsyncHcsResult(ctx, createError, resultJSON, computeSystem.callbackNumber,
-		hcsNotificationSystemCreateCompleted, &timeout.SystemCreate)
-	if err != nil {
-		if err == ErrTimeout {
-			// Terminate the compute system if it still exists. We're okay to
-			// ignore a failure here.
+	// Wait for the create operation to finish via the v2 operation object.
+	resultJSON, waitErr := op.WaitResult(windows.INFINITE)
+	if waitErr != nil {
+		if waitErr == ErrTimeout {
 			_ = computeSystem.Terminate(ctx)
 		}
-		return nil, makeSystemError(computeSystem, operation, err, events)
+		return nil, makeSystemError(computeSystem, operation, waitErr, processHcsResult(ctx, resultJSON))
 	}
+
 	go computeSystem.waitBackground()
 	if err = computeSystem.getCachedProperties(ctx); err != nil {
 		return nil, err
@@ -119,12 +124,14 @@ func OpenComputeSystem(ctx context.Context, id string) (*System, error) {
 	operation := "hcs::OpenComputeSystem"
 
 	computeSystem := newSystem(id)
-	handle, resultJSON, err := vmcompute.HcsOpenComputeSystem(ctx, id)
-	events := processHcsResult(ctx, resultJSON)
+
+	var csHandle computecore.HCS_SYSTEM
+	err := computecore.HcsOpenComputeSystem(id, syscall.GENERIC_ALL, &csHandle)
 	if err != nil {
-		return nil, makeSystemError(computeSystem, operation, err, events)
+		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
-	computeSystem.handle = handle
+	computeSystem.handle = vmcompute.HcsSystem(csHandle)
+	computeSystem.v2Handle = csHandle
 	defer func() {
 		if err != nil {
 			computeSystem.Close()
@@ -176,10 +183,14 @@ func GetComputeSystems(ctx context.Context, q schema1.ComputeSystemQuery) ([]sch
 		return nil, err
 	}
 
-	computeSystemsJSON, resultJSON, err := vmcompute.HcsEnumerateComputeSystems(ctx, string(queryb))
-	events := processHcsResult(ctx, resultJSON)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsEnumerateComputeSystems(string(queryb), op); err != nil && !IsPending(err) {
+		return nil, &HcsError{Op: operation, Err: err}
+	}
+	computeSystemsJSON, err := op.WaitResult(windows.INFINITE)
 	if err != nil {
-		return nil, &HcsError{Op: operation, Err: err, Events: events}
+		return nil, &HcsError{Op: operation, Err: err}
 	}
 
 	if computeSystemsJSON == "" {
@@ -282,12 +293,13 @@ func (computeSystem *System) Shutdown(ctx context.Context) error {
 		return nil
 	}
 
-	resultJSON, err := vmcompute.HcsShutdownComputeSystem(ctx, computeSystem.handle, "")
-	events := processHcsResult(ctx, resultJSON)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	err := computecore.HcsShutDownComputeSystem(computeSystem.v2Handle, op, "")
 	switch err {
 	case nil, ErrVmcomputeAlreadyStopped, ErrComputeSystemDoesNotExist, ErrVmcomputeOperationPending:
 	default:
-		return makeSystemError(computeSystem, operation, err, events)
+		return makeSystemError(computeSystem, operation, err, nil)
 	}
 	return nil
 }
@@ -303,12 +315,13 @@ func (computeSystem *System) Terminate(ctx context.Context) error {
 		return nil
 	}
 
-	resultJSON, err := vmcompute.HcsTerminateComputeSystem(ctx, computeSystem.handle, "")
-	events := processHcsResult(ctx, resultJSON)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	err := computecore.HcsTerminateComputeSystem(computeSystem.v2Handle, op, "")
 	switch err {
 	case nil, ErrVmcomputeAlreadyStopped, ErrComputeSystemDoesNotExist, ErrVmcomputeOperationPending:
 	default:
-		return makeSystemError(computeSystem, operation, err, events)
+		return makeSystemError(computeSystem, operation, err, nil)
 	}
 	return nil
 }
@@ -405,10 +418,14 @@ func (computeSystem *System) Properties(ctx context.Context, types ...schema1.Pr
 		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
 
-	propertiesJSON, resultJSON, err := vmcompute.HcsGetComputeSystemProperties(ctx, computeSystem.handle, string(queryBytes))
-	events := processHcsResult(ctx, resultJSON)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsGetComputeSystemProperties(computeSystem.v2Handle, op, string(queryBytes)); err != nil && !IsPending(err) {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+	propertiesJSON, err := op.WaitResult(windows.INFINITE)
 	if err != nil {
-		return nil, makeSystemError(computeSystem, operation, err, events)
+		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	if propertiesJSON == "" {
@@ -546,10 +563,14 @@ func (computeSystem *System) hcsPropertiesV2Query(ctx context.Context, types []h
 		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
 
-	propertiesJSON, resultJSON, err := vmcompute.HcsGetComputeSystemProperties(ctx, computeSystem.handle, string(queryBytes))
-	events := processHcsResult(ctx, resultJSON)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsGetComputeSystemProperties(computeSystem.v2Handle, op, string(queryBytes)); err != nil && !IsPending(err) {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+	propertiesJSON, err := op.WaitResult(windows.INFINITE)
 	if err != nil {
-		return nil, makeSystemError(computeSystem, operation, err, events)
+		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	if propertiesJSON == "" {
@@ -578,10 +599,14 @@ func (computeSystem *System) PropertiesV3(ctx context.Context, query *hcsschema.
 		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
 
-	propertiesJSON, resultJSON, err := vmcompute.HcsGetComputeSystemProperties(ctx, computeSystem.handle, string(queryBytes))
-	events := processHcsResult(ctx, resultJSON)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsGetComputeSystemProperties(computeSystem.v2Handle, op, string(queryBytes)); err != nil && !IsPending(err) {
+		return nil, makeSystemError(computeSystem, operation, err, nil)
+	}
+	propertiesJSON, err := op.WaitResult(windows.INFINITE)
 	if err != nil {
-		return nil, makeSystemError(computeSystem, operation, err, events)
+		return nil, makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	if propertiesJSON == "" {
@@ -667,11 +692,13 @@ func (computeSystem *System) Pause(ctx context.Context) (err error) {
 		return makeSystemError(computeSystem, operation, ErrAlreadyClosed, nil)
 	}
 
-	resultJSON, err := vmcompute.HcsPauseComputeSystem(ctx, computeSystem.handle, "")
-	events, err := processAsyncHcsResult(ctx, err, resultJSON, computeSystem.callbackNumber,
-		hcsNotificationSystemPauseCompleted, &timeout.SystemPause)
-	if err != nil {
-		return makeSystemError(computeSystem, operation, err, events)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsPauseComputeSystem(computeSystem.v2Handle, op, ""); err != nil && !IsPending(err) {
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	return nil
@@ -695,11 +722,13 @@ func (computeSystem *System) Resume(ctx context.Context) (err error) {
 		return makeSystemError(computeSystem, operation, ErrAlreadyClosed, nil)
 	}
 
-	resultJSON, err := vmcompute.HcsResumeComputeSystem(ctx, computeSystem.handle, "")
-	events, err := processAsyncHcsResult(ctx, err, resultJSON, computeSystem.callbackNumber,
-		hcsNotificationSystemResumeCompleted, &timeout.SystemResume)
-	if err != nil {
-		return makeSystemError(computeSystem, operation, err, events)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsResumeComputeSystem(computeSystem.v2Handle, op, ""); err != nil && !IsPending(err) {
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	return nil
@@ -728,11 +757,13 @@ func (computeSystem *System) Save(ctx context.Context, options interface{}) (err
 		return makeSystemError(computeSystem, operation, ErrAlreadyClosed, nil)
 	}
 
-	result, err := vmcompute.HcsSaveComputeSystem(ctx, computeSystem.handle, string(saveOptions))
-	events, err := processAsyncHcsResult(ctx, err, result, computeSystem.callbackNumber,
-		hcsNotificationSystemSaveCompleted, &timeout.SystemSave)
-	if err != nil {
-		return makeSystemError(computeSystem, operation, err, events)
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsSaveComputeSystem(computeSystem.v2Handle, op, string(saveOptions)); err != nil && !IsPending(err) {
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	return nil
@@ -855,12 +886,10 @@ func (computeSystem *System) CloseCtx(ctx context.Context) (err error) {
 		return makeSystemError(computeSystem, operation, err, nil)
 	}
 
-	err = vmcompute.HcsCloseComputeSystem(ctx, computeSystem.handle)
-	if err != nil {
-		return makeSystemError(computeSystem, operation, err, nil)
-	}
+	computecore.HcsCloseComputeSystem(computeSystem.v2Handle)
 
 	computeSystem.handle = 0
+	computeSystem.v2Handle = 0
 	computeSystem.closedWaitOnce.Do(func() {
 		computeSystem.waitError = ErrAlreadyClosed
 		close(computeSystem.waitBlock)
@@ -881,12 +910,17 @@ func (computeSystem *System) registerCallback(ctx context.Context) error {
 	callbackMap[callbackNumber] = callbackContext
 	callbackMapLock.Unlock()
 
-	callbackHandle, err := vmcompute.HcsRegisterComputeSystemCallback(ctx, computeSystem.handle,
-		notificationWatcherCallback, callbackNumber)
+	// Use v2 (computecore) callback so we receive LiveMigration events
+	// (event group 0x80000003) which v1 vmcompute translator filters out.
+	err := computecore.HcsSetComputeSystemCallback(
+		computeSystem.v2Handle,
+		computecore.HcsEventOptionEnableOperationCallbacks|computecore.HcsEventOptionEnableLiveMigrationEvents,
+		callbackNumber,
+		notificationWatcherCallbackV2,
+	)
 	if err != nil {
 		return err
 	}
-	callbackContext.handle = callbackHandle
 	computeSystem.callbackNumber = callbackNumber
 
 	return nil
@@ -903,15 +937,13 @@ func (computeSystem *System) unregisterCallback(ctx context.Context) error {
 		return nil
 	}
 
-	handle := callbackContext.handle
-
-	if handle == 0 {
-		return nil
-	}
-
-	// hcsUnregisterComputeSystemCallback has its own synchronization
-	// to wait for all callbacks to complete. We must NOT hold the callbackMapLock.
-	err := vmcompute.HcsUnregisterComputeSystemCallback(ctx, handle)
+	// Unregister v2 callback by passing 0 as the callback pointer.
+	err := computecore.HcsSetComputeSystemCallback(
+		computeSystem.v2Handle,
+		computecore.HcsEventOptionEnableOperationCallbacks|computecore.HcsEventOptionEnableLiveMigrationEvents,
+		callbackNumber,
+		0,
+	)
 	if err != nil {
 		return err
 	}
@@ -921,8 +953,6 @@ func (computeSystem *System) unregisterCallback(ctx context.Context) error {
 	callbackMapLock.Lock()
 	delete(callbackMap, callbackNumber)
 	callbackMapLock.Unlock()
-
-	handle = 0 //nolint:ineffassign
 
 	return nil
 }
@@ -944,10 +974,14 @@ func (computeSystem *System) Modify(ctx context.Context, config interface{}) err
 	}
 
 	requestJSON := string(requestBytes)
-	resultJSON, err := vmcompute.HcsModifyComputeSystem(ctx, computeSystem.handle, requestJSON)
-	events := processHcsResult(ctx, resultJSON)
-	if err != nil {
-		return makeSystemError(computeSystem, operation, err, events)
+
+	op := computecore.NewOperation(0)
+	defer op.Close()
+	if err := computecore.HcsModifyComputeSystem(computeSystem.v2Handle, op, requestJSON, 0); err != nil && !IsPending(err) {
+		return makeSystemError(computeSystem, operation, err, nil)
+	}
+	if _, err := op.WaitResult(windows.INFINITE); err != nil {
+		return makeSystemError(computeSystem, operation, err, nil)
 	}
 
 	return nil
@@ -986,19 +1020,16 @@ func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Cont
 			options.MemoryTransport = hcsschema.MigrationMemoryTransportTCP
 		}
 		options.CancelIfBlackoutThresholdExceeds = opt.CancelIfBlackoutThresholdExceeds
-		//options.PerfTracingEnabled = opt.PerfTracingEnabled
-		//options.ChecksumVerification = opt.ChecksumVerification
+		options.PerfTracingEnabled = opt.PerfTracingEnabled
+		options.ChecksumVerification = opt.ChecksumVerification
 		options.PrepareMemoryTransferMode = opt.PrepareMemoryTransferMode
 	}
-	//knagendra Hardcoding these values to enable checksum verification in canary
-	options.PerfTracingEnabled = true
-	options.ChecksumVerification = true
 
 	optionsRaw, err := json.Marshal(options)
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsInitializeLiveMigrationOnSource(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsInitializeLiveMigrationOnSource(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
@@ -1025,7 +1056,7 @@ func (computeSystem *System) HcsStartLiveMigrationOnSource(ctx context.Context, 
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsStartLiveMigrationOnSource(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsStartLiveMigrationOnSource(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
@@ -1045,7 +1076,7 @@ func (computeSystem *System) HcsStartLiveMigrationTransfer(ctx context.Context) 
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsStartLiveMigrationTransfer(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsStartLiveMigrationTransfer(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
@@ -1068,7 +1099,7 @@ func (computeSystem *System) HcsFinalizeLiveMigation(ctx context.Context, resume
 	if err != nil {
 		return err
 	}
-	if err := computecore.HcsFinalizeLiveMigration(computecore.HCS_SYSTEM(computeSystem.handle), op, string(optionsRaw)); err != nil {
+	if err := computecore.HcsFinalizeLiveMigration(computeSystem.v2Handle, op, string(optionsRaw)); err != nil {
 		return err
 	}
 	if _, err := op.WaitResult(windows.INFINITE); err != nil {
