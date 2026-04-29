@@ -32,6 +32,13 @@ type SandboxOptions struct {
 	// ConfidentialConfig carries confidential computing fields that are not
 	// part of the HCS document but are needed for confidential VM setup.
 	ConfidentialConfig *ConfidentialConfig
+
+	// LiveMigrationAllowed is a sandbox-scoped gate indicating that the sandbox is
+	// intended to be live-migratable. When true, any container subsequently
+	// created in the pod that requests a feature incompatible with live
+	// migration (e.g. host-backed mounts via Plan9 or SCSI hot-add, or vPCI
+	// device assignment) will be rejected at create time.
+	LiveMigrationAllowed bool
 }
 
 // ConfidentialConfig carries confidential computing configuration that is not

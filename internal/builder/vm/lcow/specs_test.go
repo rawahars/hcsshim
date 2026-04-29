@@ -324,6 +324,37 @@ func TestBuildSandboxConfig(t *testing.T) {
 			},
 		},
 		{
+			name: "live migration allowed annotation parsed",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: validBootFilesPath,
+			},
+			spec: &vm.Spec{
+				Annotations: map[string]string{
+					shimannotations.LiveMigrationAllowed: "true",
+				},
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				if !sandboxOpts.LiveMigrationAllowed {
+					t.Errorf("expected LiveMigrationAllowed true, got %v", sandboxOpts.LiveMigrationAllowed)
+				}
+			},
+		},
+		{
+			name: "live migration defaults to false",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: validBootFilesPath,
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				if sandboxOpts.LiveMigrationAllowed {
+					t.Errorf("expected LiveMigrationAllowed false by default, got %v", sandboxOpts.LiveMigrationAllowed)
+				}
+			},
+		},
+		{
 			name: "boot options with kernel direct",
 			opts: &runhcsoptions.Options{
 				SandboxPlatform:   "linux/amd64",
@@ -1404,6 +1435,20 @@ func TestBuildSandboxConfig_BootOptions(t *testing.T) {
 		}
 	}
 
+	// Configuration 5: Live-migration capable boot files (kernel direct +
+	// initrd). LM forces PreferredRootFSType=initrd and KernelDirectBoot=true,
+	// so the boot files path must contain both the (uncompressed) kernel and
+	// the initrd.
+	lmBootPath := filepath.Join(tempDir, "lm_boot")
+	if err := os.MkdirAll(lmBootPath, 0755); err != nil {
+		t.Fatalf("failed to create lm boot dir: %v", err)
+	}
+	for _, f := range []string{vmutils.KernelFile, vmutils.UncompressedKernelFile, vmutils.InitrdFile, vmutils.VhdFile} {
+		if err := os.WriteFile(filepath.Join(lmBootPath, f), []byte("test"), 0644); err != nil {
+			t.Fatalf("failed to create file %s: %v", f, err)
+		}
+	}
+
 	tests := []specTestCase{
 		{
 			name: "boot with VHD only (no initrd)",
@@ -1648,6 +1693,136 @@ func TestBuildSandboxConfig_BootOptions(t *testing.T) {
 				t.Helper()
 				if !strings.Contains(getKernelArgs(doc), "-scrub-logs") {
 					t.Error("expected -scrub-logs in kernel args")
+				}
+			},
+		},
+		{
+			// Default (non-LM) pod: gcs is wrapped by /bin/vsockexec on
+			// LinuxLogVsockPort so its stderr is forwarded to the host log
+			// listener.
+			name: "default vsockexec wraps gcs on log vsock port",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: vhdOnlyPath,
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				wantWrapper := fmt.Sprintf("/bin/vsockexec -e %d /bin/gcs", vmutils.LinuxLogVsockPort)
+				if !strings.Contains(getKernelArgs(doc), wantWrapper) {
+					t.Errorf("expected %q in kernel args, got %q", wantWrapper, getKernelArgs(doc))
+				}
+			},
+		},
+		{
+			// Live-migratable pod: vsockexec wrapping must be dropped because
+			// the host does not run a log listener for migratable pods (a
+			// connect on LinuxLogVsockPort would stall init). Entropy
+			// injection is unrelated to log forwarding and must remain.
+			name: "live migration drops vsockexec wrapper",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: lmBootPath,
+			},
+			spec: &vm.Spec{
+				Annotations: map[string]string{
+					shimannotations.LiveMigrationAllowed: "true",
+				},
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				args := getKernelArgs(doc)
+				if !sandboxOpts.LiveMigrationAllowed {
+					t.Errorf("expected sandboxOpts.LiveMigrationAllowed=true")
+				}
+				if strings.Contains(args, "vsockexec") {
+					t.Errorf("LM kernel args must not contain vsockexec, got %q", args)
+				}
+				if strings.Contains(args, fmt.Sprintf("%d", vmutils.LinuxLogVsockPort)) {
+					t.Errorf("LM kernel args must not reference LinuxLogVsockPort, got %q", args)
+				}
+				if !strings.Contains(args, "/bin/gcs") {
+					t.Errorf("expected bare /bin/gcs in LM kernel args, got %q", args)
+				}
+				// Entropy is one-shot at boot; LM must keep it.
+				wantEntropy := fmt.Sprintf("-e %d", vmutils.LinuxEntropyVsockPort)
+				if !strings.Contains(args, wantEntropy) {
+					t.Errorf("expected entropy arg %q in LM kernel args, got %q", wantEntropy, args)
+				}
+			},
+		},
+		{
+			// LM only drops the vsockexec wrapper, not the gcs flags
+			// themselves: -loglevel, -scrub-logs, etc. must still flow into
+			// the bare /bin/gcs invocation.
+			name: "live migration preserves gcs flags",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: lmBootPath,
+				LogLevel:          "debug",
+				ScrubLogs:         true,
+			},
+			spec: &vm.Spec{
+				Annotations: map[string]string{
+					shimannotations.LiveMigrationAllowed: "true",
+				},
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				args := getKernelArgs(doc)
+				for _, sub := range []string{"-loglevel debug", "-scrub-logs"} {
+					if !strings.Contains(args, sub) {
+						t.Errorf("expected %q in LM kernel args, got %q", sub, args)
+					}
+				}
+				if strings.Contains(args, "vsockexec") {
+					t.Errorf("LM kernel args must not contain vsockexec, got %q", args)
+				}
+			},
+		},
+		{
+			// User-supplied KernelBootOptions must be appended verbatim and
+			// must appear before the `--` init-args separator (the host-side
+			// kernel cmdline section, not the init args section).
+			name: "kernel boot options appended verbatim before separator",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: vhdOnlyPath,
+			},
+			spec: &vm.Spec{
+				Annotations: map[string]string{
+					shimannotations.KernelBootOptions: "extra=foo other=bar",
+				},
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				args := getKernelArgs(doc)
+				if !strings.Contains(args, "extra=foo other=bar") {
+					t.Errorf("expected user kernel boot options verbatim, got %q", args)
+				}
+				sepIdx := strings.Index(args, " -- ")
+				userIdx := strings.Index(args, "extra=foo")
+				if sepIdx < 0 || userIdx < 0 || userIdx > sepIdx {
+					t.Errorf("user kernel boot options must appear before `--`, got %q", args)
+				}
+			},
+		},
+		{
+			// nr_cpus reflects the resolved processor count (here pinned via
+			// annotation rather than relying on host CPU count).
+			name: "nr_cpus reflects processor count",
+			opts: &runhcsoptions.Options{
+				SandboxPlatform:   "linux/amd64",
+				BootFilesRootPath: vhdOnlyPath,
+			},
+			spec: &vm.Spec{
+				Annotations: map[string]string{
+					shimannotations.ProcessorCount: "3",
+				},
+			},
+			validate: func(t *testing.T, doc *hcsschema.ComputeSystem, sandboxOpts *SandboxOptions) {
+				t.Helper()
+				if !strings.Contains(getKernelArgs(doc), "nr_cpus=3") {
+					t.Errorf("expected nr_cpus=3 in kernel args, got %q", getKernelArgs(doc))
 				}
 			},
 		},

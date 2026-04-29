@@ -90,6 +90,13 @@ type Controller struct {
 
 	// ioRetryTimeout is the duration to retry IO relay operations before giving up.
 	ioRetryTimeout time.Duration
+
+	// liveMigrationAllowed mirrors the pod-scoped LM gate. When true, the
+	// container has been validated to use only LM-compatible features
+	// (no host-backed mounts, no vPCI devices). It is captured at create
+	// time and used by downstream code that needs to know whether the
+	// container can participate in live migration.
+	liveMigrationAllowed bool
 }
 
 // New creates a ready-to-use Controller.
@@ -131,6 +138,10 @@ func (c *Controller) Create(ctx context.Context, spec *specs.Spec, opts *task.Cr
 	if c.state != StateNotCreated {
 		return fmt.Errorf("container %s is in state %s; cannot create: %w", c.containerID, c.state, errdefs.ErrFailedPrecondition)
 	}
+
+	// Capture the pod-scoped live-migration gate so downstream code can
+	// query it via the container controller.
+	c.liveMigrationAllowed = copts.LiveMigrationAllowed
 
 	// Parse the runtime options from the request.
 	shimOpts, err := vmutils.UnmarshalRuntimeOptions(ctx, opts.Options)

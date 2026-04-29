@@ -17,6 +17,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/guestpath"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.uber.org/mock/gomock"
 )
@@ -1018,5 +1019,102 @@ func TestAllocateMounts_EVDInvalidPath(t *testing.T) {
 	err := c.allocateMounts(t.Context(), spec)
 	if err == nil {
 		t.Fatal("expected error for invalid EVD path")
+	}
+}
+
+// --- allocateMounts: live-migration gating ---
+
+// TestAllocateMounts_LiveMigrationRejectsSCSI verifies that a SCSI-backed
+// mount (virtual-disk / physical-disk / extensible-virtual-disk) is rejected
+// when the pod is gated for live migration, and that no host-side allocation
+// is attempted.
+func TestAllocateMounts_LiveMigrationRejectsSCSI(t *testing.T) {
+	t.Parallel()
+	for _, mountType := range []string{
+		mountTypeVirtualDisk,
+		mountTypePhysicalDisk,
+		mountTypeExtensibleVirtualDisk,
+	} {
+		t.Run(mountType, func(t *testing.T) {
+			t.Parallel()
+			c, _, _ := newMountsTestController(t)
+			c.liveMigrationAllowed = true
+			spec := &specs.Spec{
+				Mounts: []specs.Mount{
+					{Source: `C:\disk.vhd`, Destination: "/mnt", Type: mountType},
+				},
+			}
+
+			// No mock calls expected — the LM gate must short-circuit
+			// before any Reserve/MapToGuest call.
+
+			err := c.allocateMounts(t.Context(), spec)
+			if err == nil {
+				t.Fatalf("expected error for %s mount in LM-gated pod", mountType)
+			}
+			if !errors.Is(err, errdefs.ErrFailedPrecondition) {
+				t.Errorf("error = %v, want ErrFailedPrecondition", err)
+			}
+			if len(c.scsiResources) != 0 {
+				t.Errorf("expected 0 SCSI reservations, got %d", len(c.scsiResources))
+			}
+		})
+	}
+}
+
+// TestAllocateMounts_LiveMigrationRejectsHostBindMount verifies that a
+// host-backed bind mount (which would become a Plan9 share) is rejected
+// when the pod is gated for live migration.
+func TestAllocateMounts_LiveMigrationRejectsHostBindMount(t *testing.T) {
+	t.Parallel()
+	c, _, _ := newMountsTestController(t)
+	c.liveMigrationAllowed = true
+	spec := &specs.Spec{
+		Mounts: []specs.Mount{
+			{Source: `C:\hostdir`, Destination: "/mnt", Type: mountTypeBind},
+		},
+	}
+
+	// No Plan9 mock calls expected.
+
+	err := c.allocateMounts(t.Context(), spec)
+	if err == nil {
+		t.Fatal("expected error for host bind mount in LM-gated pod")
+	}
+	if !errors.Is(err, errdefs.ErrFailedPrecondition) {
+		t.Errorf("error = %v, want ErrFailedPrecondition", err)
+	}
+	if len(c.plan9Resources) != 0 {
+		t.Errorf("expected 0 Plan9 reservations, got %d", len(c.plan9Resources))
+	}
+}
+
+// TestAllocateMounts_LiveMigrationAllowsUVMInternal verifies that mounts whose
+// sources are entirely UVM-internal (sandbox://, sandbox-tmp://, uvm://,
+// hugepages://) and kernel-only mount types do NOT get rejected when the
+// pod is gated for live migration. None of them require host-side
+// allocations, so no mock calls are expected either.
+func TestAllocateMounts_LiveMigrationAllowsUVMInternal(t *testing.T) {
+	t.Parallel()
+	c, _, _ := newMountsTestController(t)
+	c.liveMigrationAllowed = true
+	spec := &specs.Spec{
+		Mounts: []specs.Mount{
+			{Source: guestpath.SandboxMountPrefix + "a", Destination: "/sb", Type: mountTypeBind},
+			{Source: guestpath.SandboxTmpfsMountPrefix + "b", Destination: "/tmp/sb", Type: mountTypeBind},
+			{Source: guestpath.UVMMountPrefix + "c", Destination: "/uvm", Type: mountTypeBind},
+			{Source: guestpath.HugePagesMountPrefix + "2M/d", Destination: "/hp", Type: mountTypeBind},
+			{Source: "tmpfs", Destination: "/tmp", Type: "tmpfs"},
+			{Source: "proc", Destination: "/proc", Type: "proc"},
+			{Source: "sysfs", Destination: "/sys", Type: "sysfs"},
+		},
+	}
+
+	if err := c.allocateMounts(t.Context(), spec); err != nil {
+		t.Fatalf("UVM-internal/kernel-only mounts should not be rejected: %v", err)
+	}
+	if len(c.scsiResources) != 0 || len(c.plan9Resources) != 0 {
+		t.Errorf("expected no host-side reservations, got scsi=%d plan9=%d",
+			len(c.scsiResources), len(c.plan9Resources))
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/controller/linuxcontainer/mocks"
 
 	"github.com/Microsoft/go-winio/pkg/guid"
+	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"go.uber.org/mock/gomock"
 )
@@ -351,5 +352,43 @@ func TestAllocateDevices_MultipleDevicesPartialFailure(t *testing.T) {
 				t.Errorf("expected %d tracked device(s) after partial failure, got %d", wantTracked, len(c.devices))
 			}
 		})
+	}
+}
+
+// --- live-migration gating ---
+
+// TestAllocateDevices_LiveMigrationRejectsAnyDevice verifies that any vPCI
+// device assignment is rejected when the pod is gated for live migration,
+// and that no Reserve/AddToVM call is attempted.
+func TestAllocateDevices_LiveMigrationRejectsAnyDevice(t *testing.T) {
+	t.Parallel()
+	c, spec, _ := newTestControllerAndSpec(t,
+		specs.WindowsDevice{ID: `PCI\VEN_1234&DEV_5678\0`, IDType: vpci.DeviceIDType},
+	)
+	c.liveMigrationAllowed = true
+
+	// No Reserve / AddToVM calls expected.
+
+	err := c.allocateDevices(t.Context(), spec)
+	if err == nil {
+		t.Fatal("expected error rejecting vPCI device in LM-gated pod")
+	}
+	if !errors.Is(err, errdefs.ErrFailedPrecondition) {
+		t.Errorf("error = %v, want ErrFailedPrecondition", err)
+	}
+	if len(c.devices) != 0 {
+		t.Errorf("expected 0 tracked devices, got %d", len(c.devices))
+	}
+}
+
+// TestAllocateDevices_LiveMigrationAllowsNoDevices verifies that a spec with
+// no vPCI devices is accepted even when the pod is gated for live migration.
+func TestAllocateDevices_LiveMigrationAllowsNoDevices(t *testing.T) {
+	t.Parallel()
+	c, spec, _ := newTestControllerAndSpec(t)
+	c.liveMigrationAllowed = true
+
+	if err := c.allocateDevices(t.Context(), spec); err != nil {
+		t.Fatalf("unexpected error for empty device list in LM-gated pod: %v", err)
 	}
 }

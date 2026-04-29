@@ -19,6 +19,11 @@ import (
 // CreateOpts holds additional options for container creation.
 type CreateOpts struct {
 	IsScratchEncryptionEnabled bool
+
+	// LiveMigrationAllowed propagates the sandbox-scoped LM gate. When true, the
+	// container creation must reject any feature that is incompatible with
+	// live migration (host-backed mounts, vPCI device assignment, etc.).
+	LiveMigrationAllowed bool
 }
 
 // guest abstracts the UVM guest connection for container lifecycle operations.

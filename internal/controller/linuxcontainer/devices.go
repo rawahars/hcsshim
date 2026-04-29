@@ -10,12 +10,20 @@ import (
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
 
+	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 	"github.com/sirupsen/logrus"
 )
 
 // allocateDevices reserves and maps vPCI devices for the container.
 func (c *Controller) allocateDevices(ctx context.Context, spec *specs.Spec) error {
+	// vPCI assignments are hot-attached to the source VM and cannot be
+	// transferred, so reject them up-front when the pod is
+	// gated for live migration.
+	if c.liveMigrationAllowed && len(spec.Windows.Devices) > 0 {
+		return fmt.Errorf("vpci device assignment not allowed in live-migratable pod: %w", errdefs.ErrFailedPrecondition)
+	}
+
 	for idx := range spec.Windows.Devices {
 		device := &spec.Windows.Devices[idx]
 

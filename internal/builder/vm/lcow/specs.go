@@ -66,6 +66,19 @@ func BuildSandboxConfig(
 		return nil, nil, fmt.Errorf("failed to parse sandbox options: %w", err)
 	}
 
+	// If the sandbox has opted into live migration, enforce the allow-list of
+	// UVM-shape annotations up front so that we fail fast (before any boot/
+	// device/kernel-args parsing) rather than producing a non-migratable UVM.
+	// After validation succeeds, fill in any locked annotation that the caller
+	// did not specify with its required value, so that downstream parsing
+	// always sees the LM-mandated configuration.
+	if sandboxOptions.LiveMigrationAllowed {
+		if err := validateLiveMigrationAnnotations(spec.Annotations); err != nil {
+			return nil, nil, fmt.Errorf("live-migration annotation validation failed: %w", err)
+		}
+		spec.Annotations = applyLiveMigrationLockedDefaults(spec.Annotations)
+	}
+
 	// ================== Parse Topology (CPU, Memory, NUMA) options =================
 	// ===============================================================================
 
@@ -210,6 +223,7 @@ func BuildSandboxConfig(
 			bootOptions.LinuxKernelDirect != nil, // isKernelDirectBoot
 			comPorts != nil,                      // hasConsole
 			filepath.Base(rootFsFullPath),
+			sandboxOptions.LiveMigrationAllowed,
 		)
 		if err != nil {
 			return nil, nil, fmt.Errorf("failed to build kernel args: %w", err)
@@ -312,6 +326,10 @@ func parseSandboxOptions(ctx context.Context, platform string, annotations map[s
 		NoWritableFileShares:  oci.ParseAnnotationsBool(ctx, annotations, shimannotations.DisableWritableFileShares, false),
 		// Multi-mapping is enabled by default on 19H1+, can be disabled via annotation.
 		VPMEMMultiMapping: !(oci.ParseAnnotationsBool(ctx, annotations, shimannotations.VPMemNoMultiMapping, osversion.Build() < osversion.V19H1)),
+		// LiveMigrationAllowed gates per-container creation: when true, any
+		// container in the sandbox requesting LM-incompatible features (host
+		// mounts, vPCI devices) is rejected.
+		LiveMigrationAllowed: oci.ParseAnnotationsBool(ctx, annotations, shimannotations.LiveMigrationAllowed, false),
 	}
 
 	// Parse the list of additional kernel drivers to be injected into the VM.

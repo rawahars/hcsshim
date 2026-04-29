@@ -15,6 +15,8 @@ import (
 	scsiMount "github.com/Microsoft/hcsshim/internal/controller/device/scsi/mount"
 	"github.com/Microsoft/hcsshim/internal/guestpath"
 	"github.com/Microsoft/hcsshim/internal/log"
+
+	"github.com/containerd/errdefs"
 	"github.com/opencontainers/runtime-spec/specs-go"
 )
 
@@ -53,6 +55,11 @@ func (c *Controller) allocateMounts(ctx context.Context, spec *specs.Spec) error
 		// Dispatch to a mount-type-specific handler.
 		switch mount.Type {
 		case mountTypeVirtualDisk, mountTypePhysicalDisk, mountTypeExtensibleVirtualDisk:
+			// SCSI hot-add of a host disk is not transferable across hosts.
+			if c.liveMigrationAllowed {
+				return fmt.Errorf("scsi mount %s not allowed in live-migratable pod: %w", mount.Source, errdefs.ErrFailedPrecondition)
+			}
+
 			if err := c.allocateSCSIMount(ctx, mount, isReadOnly); err != nil {
 				return err
 			}
@@ -71,13 +78,20 @@ func (c *Controller) allocateMounts(ctx context.Context, spec *specs.Spec) error
 			}
 
 			// All remaining bind mounts are host directories served via Plan9.
-			// Allocate them.
+			// A Plan9 share holds host-side state that cannot be transferred,
+			// so reject them when the pod is gated for live migration.
+			if c.liveMigrationAllowed {
+				return fmt.Errorf("host bind mount %s not allowed in live-migratable pod: %w", mount.Source, errdefs.ErrFailedPrecondition)
+			}
+
 			if err := c.allocatePlan9Mount(ctx, mount, isReadOnly); err != nil {
 				return err
 			}
 		default:
 			// Unknown mount types (e.g. tmpfs, devpts, proc) are passed through
 			// to the guest without host-side resource reservation/allocation.
+			// These are LM-safe because they are resolved entirely by the
+			// guest kernel.
 		}
 	}
 

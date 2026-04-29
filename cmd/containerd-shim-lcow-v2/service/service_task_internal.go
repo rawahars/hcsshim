@@ -178,9 +178,11 @@ func (s *Service) createInternal(ctx context.Context, request *task.CreateTaskRe
 
 	// Get EnableScratchEncryption option.
 	var enableScratchEncryption bool
+	var liveMigrationAllowed bool
 	sandboxOpts := s.vmController.SandboxOptions()
 	if sandboxOpts != nil {
 		enableScratchEncryption = sandboxOpts.EnableScratchEncryption
+		liveMigrationAllowed = sandboxOpts.LiveMigrationAllowed
 	}
 
 	// Call Create on the container controller.
@@ -190,6 +192,7 @@ func (s *Service) createInternal(ctx context.Context, request *task.CreateTaskRe
 		request,
 		&container.CreateOpts{
 			IsScratchEncryptionEnabled: enableScratchEncryption,
+			LiveMigrationAllowed:       liveMigrationAllowed,
 		},
 	); err != nil {
 		return nil, fmt.Errorf("failed to create container %s: %w", request.ID, err)
