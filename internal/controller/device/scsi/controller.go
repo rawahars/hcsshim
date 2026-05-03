@@ -58,6 +58,12 @@ type Controller struct {
 	//   ControllerID = index / numLUNsPerController
 	//   LUN          = index % numLUNsPerController
 	controllerSlots []*disk.Disk
+
+	// isMigrating is true between [Import] and [Controller.Resume]: the
+	// controller has been rehydrated from a snapshot but the live host/guest
+	// interfaces are not yet bound. All public ops reject calls while set.
+	// Guarded by mu.
+	isMigrating bool
 }
 
 // New creates a new [Controller] for the given number of SCSI controllers and
@@ -82,6 +88,10 @@ func (c *Controller) ReserveForRootfs(ctx context.Context, controller, lun uint)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.isMigrating {
+		return fmt.Errorf("SCSI controller is migrating; call Resume first")
+	}
+
 	slot := int(controller*numLUNsPerController + lun)
 	if slot >= len(c.controllerSlots) {
 		return fmt.Errorf("invalid controller %d or lun %d", controller, lun)
@@ -102,6 +112,10 @@ func (c *Controller) ReserveForRootfs(ctx context.Context, controller, lun uint)
 func (c *Controller) Reserve(ctx context.Context, diskConfig disk.Config, mountConfig mount.Config) (guid.GUID, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return guid.GUID{}, fmt.Errorf("SCSI controller is migrating; call Resume first")
+	}
 
 	ctx, _ = log.WithContext(ctx, logrus.WithFields(logrus.Fields{
 		logfields.HostPath:  diskConfig.HostPath,
@@ -178,6 +192,10 @@ func (c *Controller) MapToGuest(ctx context.Context, id guid.GUID) (string, erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.isMigrating {
+		return "", fmt.Errorf("SCSI controller is migrating; call Resume first")
+	}
+
 	r, ok := c.reservations[id]
 	if !ok {
 		return "", fmt.Errorf("reservation %s not found", id)
@@ -211,6 +229,10 @@ func (c *Controller) MapToGuest(ctx context.Context, id guid.GUID) (string, erro
 func (c *Controller) UnmapFromGuest(ctx context.Context, id guid.GUID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return fmt.Errorf("SCSI controller is migrating; call Resume first")
+	}
 
 	ctx, _ = log.WithContext(ctx, logrus.WithField("reservation", id.String()))
 

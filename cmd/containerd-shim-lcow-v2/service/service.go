@@ -7,11 +7,13 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/Microsoft/hcsshim/internal/controller/migration"
 	"github.com/Microsoft/hcsshim/internal/controller/pod"
 	"github.com/Microsoft/hcsshim/internal/controller/vm"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/shim"
 	"github.com/Microsoft/hcsshim/internal/shimdiag"
+	migrationsvc "github.com/Microsoft/hcsshim/pkg/migration"
 
 	sandboxsvc "github.com/containerd/containerd/api/runtime/sandbox/v1"
 	tasksvc "github.com/containerd/containerd/api/runtime/task/v2"
@@ -53,6 +55,10 @@ type Service struct {
 	// from podControllers.
 	containerPodMapping map[string]string
 
+	// migrationController orchestrates the live-migration session for the
+	// sandbox. There is at most one active session per shim.
+	migrationController *migration.Controller
+
 	// shutdown manages graceful shutdown operations and allows registration of cleanup callbacks.
 	shutdown shutdown.Service
 }
@@ -67,6 +73,7 @@ func NewService(ctx context.Context, eventsPublisher shim.Publisher, sd shutdown
 		vmController:        vm.New(),
 		podControllers:      make(map[string]*pod.Controller),
 		containerPodMapping: make(map[string]string),
+		migrationController: migration.New(),
 		shutdown:            sd,
 	}
 
@@ -94,6 +101,7 @@ func (s *Service) RegisterTTRPC(server *ttrpc.Server) error {
 	tasksvc.RegisterTaskService(server, s)
 	sandboxsvc.RegisterTTRPCSandboxService(server, s)
 	shimdiag.RegisterShimDiagService(server, s)
+	migrationsvc.RegisterMigrationService(server, s)
 	return nil
 }
 

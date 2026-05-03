@@ -59,6 +59,12 @@ type Controller struct {
 	// nameCounter is the monotonically increasing index used to generate
 	// unique share names. Guarded by mu.
 	nameCounter uint64
+
+	// isMigrating is true between [Import] and [Controller.Resume]: the
+	// controller has been rehydrated from a snapshot but the live host/guest
+	// interfaces are not yet bound. All public ops reject calls while set.
+	// Guarded by mu.
+	isMigrating bool
 }
 
 // New creates a new [Controller] for managing the plan9 shares on a VM.
@@ -81,6 +87,10 @@ func New(vm vmPlan9, guest guestPlan9, noWritableFileShares bool) *Controller {
 func (c *Controller) Reserve(ctx context.Context, shareConfig share.Config, mountConfig mount.Config) (guid.GUID, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return guid.GUID{}, fmt.Errorf("plan9 controller is migrating; call Resume first")
+	}
 
 	// Validate write-share policy before touching shared state.
 	if !shareConfig.ReadOnly && c.noWritableFileShares {
@@ -157,6 +167,10 @@ func (c *Controller) MapToGuest(ctx context.Context, id guid.GUID) (string, erro
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.isMigrating {
+		return "", fmt.Errorf("plan9 controller is migrating; call Resume first")
+	}
+
 	// Check if the reservation exists.
 	res, ok := c.reservations[id]
 	if !ok {
@@ -193,6 +207,10 @@ func (c *Controller) MapToGuest(ctx context.Context, id guid.GUID) (string, erro
 func (c *Controller) UnmapFromGuest(ctx context.Context, id guid.GUID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return fmt.Errorf("plan9 controller is migrating; call Resume first")
+	}
 
 	ctx, _ = log.WithContext(ctx, logrus.WithField("res", id.String()))
 

@@ -114,7 +114,13 @@ type Payload struct {
 	// the source VM's compatibility surface. The destination passes it back
 	// to HCS when starting the target VM so the platform can verify that the
 	// two VMs can interchange live-migration state.
-	CompatInfo    []byte `protobuf:"bytes,9,opt,name=compat_info,json=compatInfo,proto3" json:"compat_info,omitempty"`
+	CompatInfo []byte `protobuf:"bytes,9,opt,name=compat_info,json=compatInfo,proto3" json:"compat_info,omitempty"`
+	// hcs_document is the JSON-encoded HCS [hcsschema.ComputeSystem] document
+	// that was used to create the source VM. The destination reuses this
+	// document verbatim (with [hcsschema.VirtualMachine.MigrationOptions]
+	// set) when creating the destination VM, ensuring the two VMs have
+	// identical hardware topology required for live-migration compatibility.
+	HcsDocument   []byte `protobuf:"bytes,10,opt,name=hcs_document,json=hcsDocument,proto3" json:"hcs_document,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -208,6 +214,13 @@ func (x *Payload) GetGcsNextPort() uint32 {
 func (x *Payload) GetCompatInfo() []byte {
 	if x != nil {
 		return x.CompatInfo
+	}
+	return nil
+}
+
+func (x *Payload) GetHcsDocument() []byte {
+	if x != nil {
+		return x.HcsDocument
 	}
 	return nil
 }
@@ -376,7 +389,7 @@ var File_github_com_Microsoft_hcsshim_internal_controller_vm_save_payload_proto 
 
 const file_github_com_Microsoft_hcsshim_internal_controller_vm_save_payload_proto_rawDesc = "" +
 	"\n" +
-	"Fgithub.com/Microsoft/hcsshim/internal/controller/vm/save/payload.proto\x12\x1dhcsshim.controller.vm.save.v1\x1a\x19google/protobuf/any.proto\"\x9e\x03\n" +
+	"Fgithub.com/Microsoft/hcsshim/internal/controller/vm/save/payload.proto\x12\x1dhcsshim.controller.vm.save.v1\x1a\x19google/protobuf/any.proto\"\xc1\x03\n" +
 	"\aPayload\x12%\n" +
 	"\x0eschema_version\x18\x01 \x01(\rR\rschemaVersion\x12\x13\n" +
 	"\x05vm_id\x18\x02 \x01(\tR\x04vmId\x12:\n" +
@@ -387,7 +400,9 @@ const file_github_com_Microsoft_hcsshim_internal_controller_vm_save_payload_prot
 	"\x05plan9\x18\a \x01(\v2\x14.google.protobuf.AnyR\x05plan9\x12\"\n" +
 	"\rgcs_next_port\x18\b \x01(\rR\vgcsNextPort\x12\x1f\n" +
 	"\vcompat_info\x18\t \x01(\fR\n" +
-	"compatInfo\"\xe8\x02\n" +
+	"compatInfo\x12!\n" +
+	"\fhcs_document\x18\n" +
+	" \x01(\fR\vhcsDocument\"\xe8\x02\n" +
 	"\x0eSandboxOptions\x125\n" +
 	"\x17no_writable_file_shares\x18\x01 \x01(\bR\x14noWritableFileShares\x12:\n" +
 	"\x19enable_scratch_encryption\x18\x02 \x01(\bR\x17enableScratchEncryption\x120\n" +

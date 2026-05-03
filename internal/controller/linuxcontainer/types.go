@@ -36,6 +36,9 @@ type scsiController interface {
 	Reserve(ctx context.Context, diskConfig disk.Config, mountConfig scsiMount.Config) (guid.GUID, error)
 	UnmapFromGuest(ctx context.Context, reservation guid.GUID) error
 	MapToGuest(ctx context.Context, id guid.GUID) (string, error)
+	// UpdateDiskHostPath rewrites the host-side path of the disk backing
+	// the given reservation. Used by migration patching.
+	UpdateDiskHostPath(reservationID guid.GUID, newPath string) error
 }
 
 // plan9Controller abstracts host-side Plan9 share reservation and guest mapping.

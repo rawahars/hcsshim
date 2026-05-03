@@ -42,7 +42,7 @@ func newSetup(t *testing.T) (*mocks.MockvmController, *mocks.MocknetworkControll
 func expectVMCallsForNewContainer(vm *mocks.MockvmController) {
 	vm.EXPECT().RuntimeID().Return("vm-runtime-1")
 	vm.EXPECT().Guest().Return(nil)
-	vm.EXPECT().SCSIController().Return(nil)
+	vm.EXPECT().SCSIController(gomock.Any()).Return(nil, nil)
 	vm.EXPECT().Plan9Controller().Return(nil)
 	vm.EXPECT().VPCIController().Return(nil)
 }

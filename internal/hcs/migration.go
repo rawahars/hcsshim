@@ -331,6 +331,7 @@ func (computeSystem *System) StartLiveMigrationTransfer(ctx context.Context, opt
 	if err := computecore.HcsStartLiveMigrationTransfer(ctx, computeSystem.migrationHandle, op, string(optionsJSON)); err != nil {
 		return makeSystemError(computeSystem, operation, err, nil)
 	}
+	// todo: remove the wait
 	if _, err := computecore.HcsWaitForOperationResult(ctx, op, 0xFFFFFFFF); err != nil {
 		return makeSystemError(computeSystem, operation, err, nil)
 	}

@@ -532,18 +532,19 @@ func (c *Controller) KillProcess(ctx context.Context, execID string, signal uint
 		return fmt.Errorf("cannot signal all for non-empty exec %q: %w", execID, errdefs.ErrFailedPrecondition)
 	}
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	// The container must have been created (and not be mid-migration) for
+	// any process to exist or for c.guest to be safe to dereference.
+	if c.state == StateNotCreated || c.state == StateMigrating {
+		return fmt.Errorf("container %s is in state %s; cannot kill: %w", c.containerID, c.state, errdefs.ErrFailedPrecondition)
+	}
+
 	signalsSupported := c.guest.Capabilities().IsSignalProcessSupported()
 	signalOptions, err := signals.ValidateLCOW(int(signal), signalsSupported)
 	if err != nil {
 		return fmt.Errorf("validate signal %d for container %s: %w", signal, c.containerID, err)
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	// The container must have been created for any process to exist.
-	if c.state == StateNotCreated {
-		return fmt.Errorf("container %s is in state %s; cannot kill: %w", c.containerID, c.state, errdefs.ErrFailedPrecondition)
 	}
 
 	// When "all" is requested, deliver the signal to every additional exec
@@ -592,8 +593,9 @@ func (c *Controller) DeleteProcess(ctx context.Context, execID string) (*task.St
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// The container must have been created for any process to exist.
-	if c.state == StateNotCreated {
+	// The container must have been created (and not be mid-migration) for
+	// any process to exist.
+	if c.state == StateNotCreated || c.state == StateMigrating {
 		return nil, fmt.Errorf("container %s is in state %s; cannot delete process: %w", c.containerID, c.state, errdefs.ErrFailedPrecondition)
 	}
 

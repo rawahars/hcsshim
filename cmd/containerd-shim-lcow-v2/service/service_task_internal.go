@@ -114,6 +114,14 @@ func (s *Service) createInternal(ctx context.Context, request *task.CreateTaskRe
 		return nil, err
 	}
 
+	// Live-migration destination path: the container is already rehydrated
+	// from the imported snapshot. Delegate to the migration helper, which
+	// patches host-side resource paths, fixes bookkeeping, and publishes the
+	// TaskCreate event without driving the creation/start lifecycle.
+	if _, ok := spec.Annotations[annotations.LiveMigrationSourceContainerID]; ok {
+		return s.patchMigratedContainerInternal(ctx, request, spec.Annotations, ct, sid)
+	}
+
 	s.mu.Lock()
 	defer s.mu.Unlock()
 

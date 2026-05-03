@@ -3,29 +3,38 @@
 // Package process provides a controller for managing individual process
 // (exec) instances within a container. It handles the full lifecycle from
 // creation through exit, including IO plumbing, signal delivery, and exit
-// status reporting.
+// status reporting. A live-migration entry point is provided via [Import]
+// (state-only rehydration) and [Controller.Resume] (binds the live hosting
+// system / process handle once the destination is ready).
 //
 // # Lifecycle
 //
-// [Controller] drives a single process through a linear state machine:
+// A controller created via [New] follows the live-creation path:
 //
-//		         ┌───────────────────┐
-//		         │  StateNotCreated  │
-//		         └────────┬──────────┘
-//		                  │ Create
-//		                  ▼
-//		         ┌───────────────────┐
-//		         │   StateCreated    │── Start fails / Kill / Delete──┐
-//		         └────────┬──────────┘                                │
-//		                  │ Start ok                                  │
-//		                  ▼                                           │
-//		         ┌───────────────────┐                                │
-//		         │   StateRunning    │──── process exits / Kill ──────┤
-//		         └───────────────────┘                                │
-//		                                                              ▼
-//		                                                    ┌───────────────────┐
-//		                                                    │  StateTerminated  │
-//		                                                    └───────────────────┘
+//	┌───────────────────┐
+//	│  StateNotCreated  │
+//	└────────┬──────────┘
+//	         │ Create
+//	         ▼
+//	┌───────────────────┐
+//	│   StateCreated    │── Start fails / Kill / Delete──┐
+//	└────────┬──────────┘                                │
+//	         │ Start ok                                  │
+//	         ▼                                           │
+//	┌───────────────────┐                                │
+//	│   StateRunning    │──── process exits / Kill ──────┤
+//	└───────────────────┘                                │
+//	                                                     ▼
+//	                                           ┌───────────────────┐
+//	                                           │  StateTerminated  │
+//	                                           └───────────────────┘
+//
+// A controller rehydrated via [Import] enters the migration branch instead,
+// and rejoins the live-creation states only after [Controller.Resume]:
+//
+//	┌────────────────┐  Resume(next)   ┌──────────────────────────────┐
+//	│ StateMigrating │ ───────────────▶│ caller-supplied next state   │
+//	└────────────────┘                 └──────────────────────────────┘
 //
 //	  - [Controller.Create] sets up upstream IO connections and stores the
 //	    process spec. The controller transitions from StateNotCreated to

@@ -189,6 +189,20 @@ func (mr *MockscsiControllerMockRecorder) UnmapFromGuest(ctx, reservation any) *
 	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UnmapFromGuest", reflect.TypeOf((*MockscsiController)(nil).UnmapFromGuest), ctx, reservation)
 }
 
+// UpdateDiskHostPath mocks base method.
+func (m *MockscsiController) UpdateDiskHostPath(reservationID guid.GUID, newPath string) error {
+	m.ctrl.T.Helper()
+	ret := m.ctrl.Call(m, "UpdateDiskHostPath", reservationID, newPath)
+	ret0, _ := ret[0].(error)
+	return ret0
+}
+
+// UpdateDiskHostPath indicates an expected call of UpdateDiskHostPath.
+func (mr *MockscsiControllerMockRecorder) UpdateDiskHostPath(reservationID, newPath any) *gomock.Call {
+	mr.mock.ctrl.T.Helper()
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "UpdateDiskHostPath", reflect.TypeOf((*MockscsiController)(nil).UpdateDiskHostPath), reservationID, newPath)
+}
+
 // Mockplan9Controller is a mock of plan9Controller interface.
 type Mockplan9Controller struct {
 	ctrl     *gomock.Controller

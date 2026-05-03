@@ -12,6 +12,11 @@ import (
 //
 //	StateNotCreated → StateCreated → StateRunning → StateTerminated
 //
+// On the destination side of a live migration, the controller is rehydrated
+// via [Import] directly into [StateMigrating] and only rejoins the table
+// above once [Controller.Resume] supplies the live hosting system / process
+// handle and the caller-supplied next state.
+//
 // Full state-transition table:
 //
 //	Current State    │ Trigger                              │ Next State
@@ -22,6 +27,7 @@ import (
 //	StateRunning     │ process exits                        │ StateTerminated
 //	StateRunning     │ Kill succeeds (signal or terminate)  │ StateTerminated
 //	StateTerminated  │ (terminal — no further transitions)  │ —
+//	StateMigrating   │ Resume(next)                         │ next
 type State int32
 
 const (
@@ -39,6 +45,13 @@ const (
 	// StateTerminated indicates the process has exited and all cleanup is done.
 	// This is a terminal state — no further transitions are possible.
 	StateTerminated
+
+	// StateMigrating indicates the controller has been rehydrated from a
+	// migration snapshot via [Import] but has not yet been bound to a live
+	// hosting system / process handle. [Controller.Resume] moves
+	// the controller out of [StateMigrating] into the caller-supplied next
+	// state.
+	StateMigrating
 )
 
 // String returns a human-readable representation of the State.
@@ -52,6 +65,8 @@ func (s State) String() string {
 		return "Running"
 	case StateTerminated:
 		return "Terminated"
+	case StateMigrating:
+		return "Migrating"
 	default:
 		return "Unknown"
 	}
@@ -67,7 +82,7 @@ func (s State) ContainerdStatus() containerdtypes.Status {
 	case StateTerminated:
 		return containerdtypes.Status_STOPPED
 	default:
-		// StateNotCreated has no direct containerd equivalent.
+		// StateNotCreated and StateMigrating have no direct containerd equivalent.
 		return containerdtypes.Status_UNKNOWN
 	}
 }

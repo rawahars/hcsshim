@@ -4,13 +4,18 @@ package network
 
 // State represents the current lifecycle state of the network for a pod.
 //
-// The normal progression is:
+// The normal (live-creation) progression is:
 //
 //	StateNotConfigured → StateConfigured → StateTornDown
 //
 // If an unrecoverable error occurs during [Controller.Setup], the network
 // transitions to [StateInvalid] instead.
 // A network in [StateInvalid] can only be cleaned up via [Controller.Teardown].
+//
+// On the destination side of a live migration, the controller is rehydrated
+// via [Import] into [StateMigrating] and only rejoins the table above once
+// [Controller.Resume] supplies the live host/guest interfaces and the
+// caller-supplied next state.
 //
 // Full state-transition table:
 //
@@ -21,6 +26,7 @@ package network
 //	StateConfigured     │ Teardown called  │ StateTornDown
 //	StateInvalid        │ Teardown called  │ StateTornDown
 //	StateTornDown       │ (terminal)       │ —
+//	StateMigrating      │ Resume(next)     │ next
 type State int32
 
 const (
@@ -47,6 +53,12 @@ const (
 	// (regardless of whether Setup previously succeeded or failed).
 	// No further calls to Setup or Teardown are permitted.
 	StateTornDown
+
+	// StateMigrating indicates the controller has been rehydrated from a
+	// migration snapshot via [Import] but has not yet been bound to live
+	// host/guest interfaces. [Controller.Resume] moves the
+	// controller out of [StateMigrating] into the caller-supplied next state.
+	StateMigrating
 )
 
 // String returns a human-readable string representation of the network State.
@@ -60,6 +72,8 @@ func (s State) String() string {
 		return "Invalid"
 	case StateTornDown:
 		return "TornDown"
+	case StateMigrating:
+		return "Migrating"
 	default:
 		return "Unknown"
 	}

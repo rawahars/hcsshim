@@ -65,6 +65,11 @@ type Controller struct {
 	// vpciController manages virtual PCI device assignments for this VM.
 	vpciController *vpci.Controller
 
+	// hcsDocument is the final HCS document used to create this VM,
+	// retained for lazy SCSI controller construction and for shipping to
+	// the destination during live migration.
+	hcsDocument *hcsschema.ComputeSystem
+
 	// platformControllers embeds platform-specific sub-controllers (e.g., Plan9 for LCOW).
 	platformControllers //nolint:unused,nolintlint // embedded for cross-platform compatibility; empty on WCOW
 }
@@ -81,6 +86,12 @@ func New() *Controller {
 // The guest manager provides access to guest-host communication.
 func (c *Controller) Guest() *guestmanager.Guest {
 	return c.guest
+}
+
+// VM returns the vm manager instance for this VM.
+// The vm manager provides access to the VM host side operations.
+func (c *Controller) VM() *vmmanager.UtilityVM {
+	return c.uvm
 }
 
 // State returns the current VM state.
@@ -110,15 +121,32 @@ func (c *Controller) CreateVM(ctx context.Context, opts *CreateOptions) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	// In case of duplicate CreateVM call for the same controller, we want to fail.
-	if c.vmState != StateNotCreated {
+	// Pick the HCS document we hand to vmmanager based on the controller's
+	// current state:
+	//   - StateNotCreated: cold-boot path; build a fresh document.
+	//   - StateMigrating: destination side of a live migration; reuse the
+	//     document rehydrated by Import and stamp opts.MigrationOptions
+	//     onto it.
+	// Any other state is invalid for CreateVM.
+	var hcsDocument *hcsschema.ComputeSystem
+	switch c.vmState {
+	case StateNotCreated:
+		doc, err := c.buildHCSConfig(ctx, opts)
+		if err != nil {
+			return fmt.Errorf("failed to build VM config: %w", err)
+		}
+		hcsDocument = doc
+	case StateMigrating:
+		if c.hcsDocument == nil {
+			return fmt.Errorf("cannot create VM in state %s: no imported HCS document available", c.vmState)
+		}
+		if c.hcsDocument.VirtualMachine == nil {
+			return fmt.Errorf("cannot create VM in state %s: imported HCS document has no VirtualMachine", c.vmState)
+		}
+		hcsDocument = c.hcsDocument
+		hcsDocument.VirtualMachine.MigrationOptions = opts.MigrationOptions
+	default:
 		return fmt.Errorf("cannot create VM: VM is in incorrect state %s", c.vmState)
-	}
-
-	// Build the HCS document and sandbox options from the platform-specific builder.
-	hcsDocument, err := c.buildHCSConfig(ctx, opts)
-	if err != nil {
-		return fmt.Errorf("failed to build VM config: %w", err)
 	}
 
 	// Create the VM via vmmanager.
@@ -130,18 +158,16 @@ func (c *Controller) CreateVM(ctx context.Context, opts *CreateOptions) error {
 	// Set the Controller parameters after successful creation.
 	c.vmID = opts.ID
 	c.uvm = uvm
+	// Retain the final HCS document for lazy SCSI init and migration save.
+	c.hcsDocument = hcsDocument
 
 	// Initialize the GuestManager for managing guest interactions.
 	// We will create the guest connection via GuestManager during StartVM.
 	c.guest = guestmanager.New(ctx, uvm)
 
-	// Eager initialize the SCSI controller as opposed to all other controllers.
-	// This is because we always use SCSI for attaching scratch VHDs.
-	c.scsiController, err = newSCSIController(ctx, hcsDocument, c.uvm, c.guest)
-	if err != nil {
-		return fmt.Errorf("failed to initialize SCSI controller: %w", err)
-	}
-
+	// Both the cold-boot and destination-side migration paths land in
+	// StateCreated on success; subsequent StartVM (or migration Resume)
+	// drives the controller forward from there.
 	c.vmState = StateCreated
 	return nil
 }

@@ -14,8 +14,24 @@ import (
 )
 
 // SCSIController returns the singleton SCSI device controller for this VM.
-func (c *Controller) SCSIController() *scsi.Controller {
-	return c.scsiController
+func (c *Controller) SCSIController(ctx context.Context) (*scsi.Controller, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.scsiController != nil {
+		return c.scsiController, nil
+	}
+
+	if c.hcsDocument == nil {
+		return nil, fmt.Errorf("cannot initialize SCSI controller: VM has no HCS document")
+	}
+
+	s, err := newSCSIController(ctx, c.hcsDocument, c.uvm, c.guest)
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize SCSI controller: %w", err)
+	}
+	c.scsiController = s
+	return c.scsiController, nil
 }
 
 // VPCIController returns the singleton vPCI device controller for this VM.

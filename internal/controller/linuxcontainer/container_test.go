@@ -354,13 +354,8 @@ func TestKillProcess_InvalidSignal(t *testing.T) {
 // when the container has not been created yet.
 func TestKillProcess_NotCreatedState(t *testing.T) {
 	t.Parallel()
-	c, _, _, _, guestCtrl := newContainerTestController(t)
+	c, _, _, _, _ := newContainerTestController(t)
 	c.state = StateNotCreated
-
-	// SIGTERM (15) with no signal support returns nil signal options.
-	guestCtrl.EXPECT().
-		Capabilities().
-		Return(&gcs.LCOWGuestDefinedCapabilities{})
 
 	err := c.KillProcess(t.Context(), "", 15, false)
 	if !errors.Is(err, errdefs.ErrFailedPrecondition) {

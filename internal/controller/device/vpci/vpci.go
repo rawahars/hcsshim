@@ -32,6 +32,12 @@ type Controller struct {
 
 	// guestVPCI performs guest-side vPCI device setup.
 	guestVPCI guestVPCI
+
+	// isMigrating is true between [Import] and [Controller.Resume]: the
+	// controller has been rehydrated from a snapshot but the live host/guest
+	// interfaces are not yet bound. All public ops reject calls while set.
+	// Guarded by mu.
+	isMigrating bool
 }
 
 // New creates a ready-to-use [Controller].
@@ -65,6 +71,10 @@ func (c *Controller) Reserve(ctx context.Context, device Device) (guid.GUID, err
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return guid.GUID{}, fmt.Errorf("vPCI controller is migrating; call Resume first")
+	}
 
 	// If this device is already reserved, return the existing GUID.
 	if existingGUID, ok := c.deviceToGUID[device]; ok {
@@ -100,6 +110,10 @@ func (c *Controller) AddToVM(ctx context.Context, vmBusGUID guid.GUID) error {
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return fmt.Errorf("vPCI controller is migrating; call Resume first")
+	}
 
 	dev, ok := c.devices[vmBusGUID]
 	if !ok {
@@ -187,6 +201,10 @@ func (c *Controller) AddToVM(ctx context.Context, vmBusGUID guid.GUID) error {
 func (c *Controller) RemoveFromVM(ctx context.Context, vmBusGUID guid.GUID) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+
+	if c.isMigrating {
+		return fmt.Errorf("vPCI controller is migrating; call Resume first")
+	}
 
 	ctx, _ = log.WithContext(ctx, logrus.WithField(logfields.VMBusGUID, vmBusGUID))
 

@@ -64,6 +64,13 @@ message Payload {
   // to HCS when starting the target VM so the platform can verify that the
   // two VMs can interchange live-migration state.
   bytes compat_info = 9;
+
+  // hcs_document is the JSON-encoded HCS [hcsschema.ComputeSystem] document
+  // that was used to create the source VM. The destination reuses this
+  // document verbatim (with [hcsschema.VirtualMachine.MigrationOptions]
+  // set) when creating the destination VM, ensuring the two VMs have
+  // identical hardware topology required for live-migration compatibility.
+  bytes hcs_document = 10;
 }
 
 // SandboxOptions is the set of VM-creation options preserved verbatim so the

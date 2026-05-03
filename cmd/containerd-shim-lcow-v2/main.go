@@ -26,6 +26,10 @@ import (
 // Add a manifest to get proper Windows version detection.
 //go:generate pwsh -Command "../../scripts/New-ResourceObjectFile.ps1 -ErrorAction 'Stop' -Destination '.' -Name 'containerd-shim-lcow-v2' -UseVersionFile -Architecture 'all'"
 
+// todo: on creation check for LM annot and reject invalid containers.
+// todo: on finalize stop or resume, we need to reset controller states.
+// todo: gate all methods in all controllers based on migration param.
+
 func main() {
 	logrus.AddHook(log.NewHook())
 

@@ -12,6 +12,11 @@ package vm
 // [Controller.TerminateVM], the VM transitions to [StateInvalid] instead.
 // A VM in [StateInvalid] can only be cleaned up via [Controller.TerminateVM].
 //
+// On the destination side of a live migration, the controller is rehydrated
+// via [Controller.Import] directly into [StateMigrating] and only rejoins
+// the table above once [Controller.Resume] supplies the live HCS VM and the
+// caller-supplied next state.
+//
 // Full state-transition table:
 //
 //	Current State    │ Trigger                            │ Next State
@@ -23,6 +28,10 @@ package vm
 //	StateCreated     │ TerminateVM fails                  │ StateInvalid
 //	StateRunning     │ VM exits or TerminateVM succeeds   │ StateTerminated
 //	StateRunning     │ TerminateVM fails (uvm.Close)      │ StateInvalid
+//	StateRunning     │ InitializeLiveMigrationOnSource    │ StateMigrating
+//	StateNotCreated  │ Import (destination)               │ StateMigrating
+//	StateMigrating   │ Resume(next)                       │ next
+//	StateMigrating   │ (source-side migration APIs only)  │ StateMigrating
 //	StateInvalid     │ TerminateVM called                 │ StateTerminated
 //	StateTerminated  │ (terminal — no further transitions)│ —
 type State int32
@@ -45,6 +54,7 @@ const (
 	// Valid transitions:
 	//   - StateRunning → StateTerminated (VM exits naturally or [Controller.TerminateVM] succeeds)
 	//   - StateRunning → StateInvalid    ([Controller.TerminateVM] fails during uvm.Close)
+	//   - StateRunning → StateMigrating  ([Controller.InitializeLiveMigrationOnSource] succeeds)
 	StateRunning
 
 	// StateTerminated indicates the VM has exited or been successfully terminated.
@@ -57,6 +67,17 @@ const (
 	//   - [Controller.TerminateVM] fails during uvm.Close (from either [StateCreated] or [StateRunning]).
 	// A VM in this state can only be cleaned up by calling [Controller.TerminateVM].
 	StateInvalid
+
+	// StateMigrating indicates that a live migration is in progress for this VM.
+	// It is entered from two paths:
+	//   - Source side: [Controller.InitializeLiveMigrationOnSource] succeeds.
+	//   - Destination side: [Controller.Import] rehydrates a snapshot.
+	// While in this state, only live-migration APIs are permitted; all other
+	// VM operations (updates, exec, terminate, etc.) are rejected to avoid
+	// interfering with the in-flight migration. On both source and destination,
+	// [Controller.Resume] transitions the controller into the caller-supplied
+	// next state.
+	StateMigrating
 )
 
 // String returns a human-readable string representation of the VM State.
@@ -72,6 +93,8 @@ func (s State) String() string {
 		return "Terminated"
 	case StateInvalid:
 		return "Invalid"
+	case StateMigrating:
+		return "Migrating"
 	default:
 		return "Unknown"
 	}

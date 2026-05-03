@@ -66,26 +66,30 @@ type testController struct {
 	guestUnmount *mountmocks.MockGuestPlan9Unmounter
 }
 
-func newTestController(t *testing.T, noWritableFileShares bool) *testController {
+// newTestMocks creates a fresh set of plan9 host/guest mocks bound to a
+// gomock controller scoped to t, returning a partially-populated
+// [testController] (with the four mocks) plus the combined vm/guest interfaces.
+func newTestMocks(t *testing.T) (tc *testController, vm vmPlan9, guest guestPlan9) {
 	t.Helper()
 
 	ctrl := gomock.NewController(t)
-	vmAdd := sharemocks.NewMockVMPlan9Adder(ctrl)
-	vmRemove := sharemocks.NewMockVMPlan9Remover(ctrl)
-	guestMount := mountmocks.NewMockGuestPlan9Mounter(ctrl)
-	guestUnmount := mountmocks.NewMockGuestPlan9Unmounter(ctrl)
-
-	vm := &combinedVM{add: vmAdd, remove: vmRemove}
-	guest := &combinedGuest{mounter: guestMount, unmounter: guestUnmount}
-
-	return &testController{
+	tc = &testController{
 		ctx:          context.Background(),
-		c:            New(vm, guest, noWritableFileShares),
-		vmAdd:        vmAdd,
-		vmRemove:     vmRemove,
-		guestMount:   guestMount,
-		guestUnmount: guestUnmount,
+		vmAdd:        sharemocks.NewMockVMPlan9Adder(ctrl),
+		vmRemove:     sharemocks.NewMockVMPlan9Remover(ctrl),
+		guestMount:   mountmocks.NewMockGuestPlan9Mounter(ctrl),
+		guestUnmount: mountmocks.NewMockGuestPlan9Unmounter(ctrl),
 	}
+	vm = &combinedVM{add: tc.vmAdd, remove: tc.vmRemove}
+	guest = &combinedGuest{mounter: tc.guestMount, unmounter: tc.guestUnmount}
+	return
+}
+
+func newTestController(t *testing.T, noWritableFileShares bool) *testController {
+	t.Helper()
+	tc, vm, guest := newTestMocks(t)
+	tc.c = New(vm, guest, noWritableFileShares)
+	return tc
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

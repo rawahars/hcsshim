@@ -164,6 +164,10 @@ func (c *Controller) Teardown(ctx context.Context) error {
 		return nil
 	}
 
+	if c.netState == StateMigrating {
+		return fmt.Errorf("cannot teardown network in state %s: call Resume first", c.netState)
+	}
+
 	// Remove all endpoints from the guest.
 	// Use a continue-on-error strategy: attempt every NIC regardless of individual
 	// failures, then collect all errors.
