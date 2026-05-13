@@ -82,9 +82,11 @@ const char* const lib_modules = "/lib/modules";
 // Forward declarations
 void dmesgInfo(const char* msg);
 void dmesgWarn(const char* msg);
+void dmesgErr(const char* msg);
 void enable_subtree_control(void);
 void init_cgroups_v1(void);
 bool try_init_cgroups_v2(void);
+void simulate_kernel_crash(unsigned int delay_seconds);
 
 struct Mount {
     const char *source, *target, *type;
@@ -639,6 +641,79 @@ pid_t launch(int argc, char** argv) {
     die2("execvpe", argvn[0]);
 }
 
+// simulate_kernel_crash forks a detached child that, after delay_seconds,
+// triggers a real kernel panic in the uVM via the magic SysRq interface.
+//
+// NOTE: This branch is dedicated to simulating guest kernel crashes for
+// host-side validation (dmesg capture, exit notifications, watchdog paths),
+// so the simulator is always compiled in and unconditionally scheduled by
+// main(). DO NOT MERGE THIS BRANCH INTO A PRODUCTION RELEASE.
+//
+// Requires the LCOW kernel to be built with CONFIG_MAGIC_SYSRQ=y.
+//
+// Mechanism:
+//  1. Write '1' to /proc/sys/kernel/sysrq to enable all SysRq functions.
+//  2. Write 'c' to /proc/sysrq-trigger. The kernel handler for SysRq-c
+//     deliberately dereferences a NULL pointer in kernel mode, producing
+//     a genuine "Kernel panic - not syncing" with a full backtrace -
+//     indistinguishable from a real crash.
+void simulate_kernel_crash(unsigned int delay_seconds) {
+    pid_t pid = fork();
+    if (pid < 0) {
+        warn("fork (kernel crash simulator)");
+        return;
+    }
+    if (pid != 0) {
+        // Parent: return immediately and let init continue normally.
+        return;
+    }
+
+    // Child: detach from any controlling terminal / process group so we
+    // survive independently of the gcs child being reaped.
+    setsid();
+
+    char msg[160];
+    snprintf(msg, sizeof(msg),
+             "kernel crash simulator: panic scheduled in %u seconds (SysRq-c)\n",
+             delay_seconds);
+    dmesgWarn(msg);
+
+    // sleep() may return early if interrupted; loop until the full delay
+    // has elapsed so the crash fires at the expected wall-clock time.
+    unsigned int remaining = delay_seconds;
+    while (remaining > 0) {
+        remaining = sleep(remaining);
+    }
+
+    // Enable all SysRq functions. '1' == all; without this, sysrq-trigger
+    // may silently ignore the request depending on the kernel default.
+    FILE* fsysrq = fopen("/proc/sys/kernel/sysrq", "w");
+    if (fsysrq != NULL) {
+        fputs("1\n", fsysrq);
+        fclose(fsysrq);
+    } else {
+        warn("open /proc/sys/kernel/sysrq");
+        dmesgWarn("kernel crash simulator: failed to enable SysRq\n");
+    }
+
+    dmesgErr("kernel crash simulator: triggering kernel panic via SysRq-c NOW\n");
+
+    FILE* ftrig = fopen("/proc/sysrq-trigger", "w");
+    if (ftrig == NULL) {
+        warn("open /proc/sysrq-trigger");
+        dmesgErr("kernel crash simulator: cannot open /proc/sysrq-trigger\n");
+        _exit(1);
+    }
+    fputs("c\n", ftrig);
+    fflush(ftrig);
+    // We should never get past the fflush above - the kernel panics
+    // inside the write. If we somehow do (e.g. CONFIG_MAGIC_SYSRQ=n),
+    // exit so the child does not linger.
+    fclose(ftrig);
+    dmesgErr("kernel crash simulator: SysRq-c returned without panic (CONFIG_MAGIC_SYSRQ disabled?)\n");
+    _exit(1);
+}
+
 int reap_until(pid_t until_pid) {
     for (;;) {
         int status;
@@ -1009,6 +1084,10 @@ int main(int argc, char** argv) {
     }
 
     start_services();
+
+    // Simulation branch only: schedule a deliberate kernel panic 40 seconds
+    // after init finishes. DO NOT MERGE INTO PRODUCTION.
+    simulate_kernel_crash(40);
 
     pid_t pid = launch(child_argc, child_argv);
     if (debug_shell != NULL) {
