@@ -94,39 +94,69 @@ import (
 // errVmcomputeOperationPending is an error encountered when the operation is being completed asynchronously
 const errVmcomputeOperationPending = syscall.Errno(0xC0370103)
 
+// execute runs the HCS syscall f and waits for it to complete. ctx and
+// timeout are used purely as a watchdog: if the syscall does not return
+// within the timeout (or before ctx is canceled) a warning is logged, but
+// we DO NOT abandon the syscall.
+//
+// Why: HCS V2 syscalls (HcsCreateOperation/HcsSignalProcess/...) take a
+// raw operation/process/system handle that the Go caller may free as soon
+// as execute returns. Cancelling the wait without waiting for the syscall
+// to complete leaves a goroutine inside computecore.dll holding pointers
+// to those handles. The caller's defer-Close then frees the underlying
+// HCS struct, and when the orphaned syscall eventually dereferences it we
+// get EXCEPTION_ACCESS_VIOLATION (0xc0000005) crashing the entire shim.
+//
+// We observed this exact crash on TestContainerEvents: hcsExec.Kill kicks
+// off Process.Signal in a goroutine using the gRPC handler ctx, that ctx
+// is cancelled when the handler returns, execute() returns "context
+// canceled", runOperation's defer closes the HcsOperation, and the
+// in-flight HcsSignalProcess syscall then faults inside computecore.dll.
 func execute(ctx gcontext.Context, timeout time.Duration, f func() error) error {
-	now := time.Now()
-	if timeout > 0 {
-		var cancel gcontext.CancelFunc
-		ctx, cancel = gcontext.WithTimeout(ctx, timeout)
-		defer cancel()
-	}
-
-	deadline, ok := ctx.Deadline()
-	trueTimeout := timeout
-	if ok {
-		trueTimeout = deadline.Sub(now)
-		log.G(ctx).WithFields(logrus.Fields{
-			logfields.Timeout: trueTimeout,
-			"desiredTimeout":  timeout,
-		}).Trace("Executing syscall with deadline")
-	}
-
 	done := make(chan error, 1)
 	go func() {
 		done <- f()
 	}()
-	select {
-	case <-ctx.Done():
-		if ctx.Err() == gcontext.DeadlineExceeded {
-			log.G(ctx).WithField(logfields.Timeout, trueTimeout).
-				Warning("Syscall did not complete within operation timeout. This may indicate a platform issue. " +
+
+	// Build the watchdog channel. The syscall timeout (default:
+	// timeout.SyscallWatcher) is purely a telemetry deadline -- if it
+	// fires we log a warning, but we still wait for the syscall to
+	// finish.
+	var watcher <-chan time.Time
+	if timeout > 0 {
+		t := time.NewTimer(timeout)
+		defer t.Stop()
+		watcher = t.C
+	}
+
+	if deadline, ok := ctx.Deadline(); ok {
+		log.G(ctx).WithFields(logrus.Fields{
+			logfields.Timeout: time.Until(deadline),
+			"desiredTimeout":  timeout,
+		}).Trace("Executing syscall with deadline")
+	}
+
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-watcher:
+			log.G(ctx).WithField(logfields.Timeout, timeout).
+				Warning("Syscall has not completed within operation timeout. This may indicate a platform issue. " +
 					"If it appears to be making no forward progress, obtain the stacks and see if there is a syscall " +
-					"stuck in the platform API for a significant length of time.")
+					"stuck in the platform API for a significant length of time. Continuing to wait to avoid " +
+					"abandoning the syscall (which would cause use-after-free in computecore.dll).")
+			watcher = nil // only log once
+		case <-ctx.Done():
+			// Same rationale as the timeout case: log and keep waiting.
+			// We intentionally do NOT return ctx.Err() here.
+			log.G(ctx).WithError(ctx.Err()).
+				WithField("desiredTimeout", timeout).
+				Warning("HCS syscall context canceled while syscall is in flight; continuing to wait " +
+					"to avoid abandoning the syscall (which would cause use-after-free in computecore.dll).")
+			// Strip cancellation so we don't keep looping on a closed Done channel.
+			ctx = gcontext.WithoutCancel(ctx)
 		}
-		return ctx.Err()
-	case err := <-done:
-		return err
 	}
 }
 

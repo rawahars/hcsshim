@@ -61,12 +61,12 @@ func (s *notificationState) signalExit(raw json.RawMessage) {
 }
 
 // signalAbort delivers an abnormal-termination error. First signal wins.
-//func (s *notificationState) signalAbort(err error) {
-//	s.signalOnce.Do(func() {
-//		s.abort <- err
-//		close(s.abort)
-//	})
-//}
+func (s *notificationState) signalAbort(err error) {
+	s.signalOnce.Do(func() {
+		s.abort <- err
+		close(s.abort)
+	})
+}
 
 // notificationContext is the per-handle data resolved from the callback's
 // opaque ctx. processID == 0 means the callback belongs to a system handle.
@@ -137,19 +137,8 @@ func notificationHandler(eventPtr uintptr, ctx uintptr) uintptr {
 				nc.state.signalExit(json.RawMessage(eventData))
 			}
 		case computecore.HcsEventTypeServiceDisconnect:
-			// DEBUG: TestContainerEvents in containerd CRI integration is
-			// flaking with container exit code 255 right after start, plus a
-			// spurious sandbox CONTAINER_STOPPED_EVENT. The signature matches
-			// hcsExec.waitForContainerExit killing the running process after
-			// System.WaitChannel is closed prematurely. To confirm/disprove
-			// that ServiceDisconnect on a healthy system is the trigger, log
-			// every disconnect prominently and skip signalAbort. If the test
-			// passes with this change, the fix is to ignore ServiceDisconnect
-			// for systems/processes that have not been Close()d.
-			logrus.WithFields(fields).Warn("HCS ServiceDisconnect received (debug: NOT signaling abort)")
 			if nc.state != nil {
-				_ = ErrUnexpectedProcessAbort // keep import live for future re-enable
-				// nc.state.signalAbort(ErrUnexpectedProcessAbort)
+				nc.state.signalAbort(ErrUnexpectedProcessAbort)
 			}
 		case computecore.HcsEventTypeGroupLiveMigration:
 			// Forward to the system's migration channel, if one was
