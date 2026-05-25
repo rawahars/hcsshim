@@ -243,8 +243,10 @@ func (process *Process) waitBackground() {
 		log.G(ctx).Debug("process waitBackground returning without exit notification (handle closed)")
 		return
 	case raw = <-process.notify.exit:
+		log.G(ctx).WithField("payload-len", len(raw)).Info("process waitBackground: exit notification received (debug)")
 	case abortErr := <-process.notify.abort:
 		err = makeProcessError(process, operation, abortErr)
+		log.G(ctx).WithError(err).Warn("process waitBackground: abort notification received (debug)")
 	}
 
 	if err == nil && len(raw) > 0 {

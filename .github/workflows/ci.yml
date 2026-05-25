@@ -593,6 +593,65 @@ jobs:
           # also need to be updated and the special case for windows, removed.
           FOCUS="[^TestContainerdRestart$]" make cri-integration
 
+      # DEBUG: capture containerd.log (which includes containerd-shim-runhcs-v1
+      # logs forwarded over the log pipe) so we can diagnose CRI integration
+      # failures. The containerd.log file is held open by the containerd-test
+      # service while the job runs, so the cri-integration.sh `mv` step fails
+      # with "Device or resource busy" and the log is never surfaced. Stop the
+      # service first, then copy the log + any HCS shim state directories.
+      - name: Collect containerd and shim logs on failure
+        if: ${{ failure() }}
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          $reportDir = "${{ github.workspace }}/cri-integration-report"
+          New-Item -ItemType Directory -Force -Path $reportDir | Out-Null
+
+          Write-Output "::group::Stop containerd-test service"
+          try { sc.exe stop containerd-test 2>&1 } catch { Write-Output $_ }
+          # Give containerd a few seconds to release the log file handle.
+          Start-Sleep -Seconds 5
+          Write-Output "::endgroup::"
+
+          $srcLog = "C:/Windows/Temp/test-integration/containerd.log"
+          if (Test-Path $srcLog) {
+            Copy-Item -Path $srcLog -Destination "$reportDir/containerd.log" -Force -ErrorAction Continue
+            Write-Output "::group::Tail of containerd.log"
+            Get-Content "$reportDir/containerd.log" -Tail 500
+            Write-Output "::endgroup::"
+          } else {
+            Write-Output "::warning::containerd.log not found at $srcLog"
+          }
+
+          # ProgramData/containerd/{root,state} may contain shim panic.log files.
+          foreach ($p in @("C:/ProgramData/containerd", "C:/ProgramData/containerd-test", "C:/Windows/Temp/test-integration")) {
+            if (Test-Path $p) {
+              Get-ChildItem -Path $p -Recurse -Filter "panic.log" -ErrorAction SilentlyContinue |
+                ForEach-Object {
+                  $dest = Join-Path $reportDir ($_.FullName -replace '[\\/:]', '_')
+                  Copy-Item -Path $_.FullName -Destination $dest -Force -ErrorAction Continue
+                }
+            }
+          }
+
+          # Dump recent Windows Application + System event log entries -- HCS
+          # errors land in the Application log.
+          try {
+            Get-WinEvent -LogName Application -MaxEvents 200 -ErrorAction SilentlyContinue |
+              Where-Object { $_.ProviderName -match 'Hyper-V|HCS|Containerd' -or $_.LevelDisplayName -in @('Error','Warning') } |
+              Format-List TimeCreated, ProviderName, LevelDisplayName, Id, Message |
+              Out-File -FilePath "$reportDir/eventlog-application.txt" -Encoding utf8
+          } catch { Write-Output $_ }
+
+      - name: Upload containerd/shim debug logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v7
+        with:
+          name: cri-integration-logs-${{ matrix.os }}
+          path: ${{ github.workspace }}/cri-integration-report
+          if-no-files-found: warn
+          retention-days: 7
+
   #      Enable these tests once the required JobContainer images are updated.
   #
   #      - name: Install containerd service

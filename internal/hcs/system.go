@@ -324,8 +324,10 @@ func (computeSystem *System) waitBackground() {
 		log.G(ctx).Debug("system waitBackground returning without exit notification (handle closed)")
 		return
 	case raw = <-computeSystem.notify.exit:
+		log.G(ctx).WithField("payload-len", len(raw)).Info("system waitBackground: exit notification received (debug)")
 	case abortErr := <-computeSystem.notify.abort:
 		err = makeSystemError(computeSystem, operation, abortErr)
+		log.G(ctx).WithError(err).Warn("system waitBackground: abort notification received -- WaitChannel will close (debug)")
 	}
 
 	if err == nil && len(raw) > 0 {
