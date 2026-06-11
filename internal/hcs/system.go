@@ -987,7 +987,11 @@ func (computeSystem *System) HcsInitializeLiveMigrationOnSource(ctx context.Cont
 		}
 		options.CancelIfBlackoutThresholdExceeds = opt.CancelIfBlackoutThresholdExceeds
 		options.PerfTracingEnabled = opt.PerfTracingEnabled
-		options.ChecksumVerification = opt.ChecksumVerification
+		// Checksum verification is intentionally never propagated to HCS: we do not
+		// want any instance of memory-page checksum validation active during live
+		// migration. Leaving options.ChecksumVerification at its zero value combined
+		// with the omitempty JSON tag omits it from the HCS payload entirely.
+		// options.ChecksumVerification = opt.ChecksumVerification
 		options.PrepareMemoryTransferMode = opt.PrepareMemoryTransferMode
 	}
 
