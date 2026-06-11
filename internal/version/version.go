@@ -2,6 +2,7 @@ package version
 
 import (
 	"embed"
+	"runtime/debug"
 	"strings"
 )
 
@@ -39,3 +40,36 @@ func readDataFile(f string) string {
 	b, _ := data.ReadFile("data/" + f)
 	return strings.TrimSpace(string(b))
 }
+
+// When the build did not populate the embedded data files (e.g. a plain
+// `go build` that did not run scripts/Set-VersionInfo.ps1 and passed no
+// `-ldflags -X` overrides), fall back to the VCS revision that the Go
+// toolchain embeds automatically (`go build -buildvcs`, default since Go 1.18).
+// This ensures binaries report the git commit they were built from.
+func init() {
+	if Commit != "" {
+		return
+	}
+	bi, ok := debug.ReadBuildInfo()
+	if !ok {
+		return
+	}
+	var revision string
+	var modified bool
+	for _, s := range bi.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			revision = s.Value
+		case "vcs.modified":
+			modified = s.Value == "true"
+		}
+	}
+	if revision == "" {
+		return
+	}
+	if modified {
+		revision += "-dirty"
+	}
+	Commit = revision
+}
+
