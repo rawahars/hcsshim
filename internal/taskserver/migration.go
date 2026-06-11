@@ -14,8 +14,6 @@ import (
 	"time"
 	"unsafe"
 
-	"golang.org/x/sys/windows/registry"
-
 	runhcsopts "github.com/Microsoft/hcsshim/cmd/containerd-shim-runhcs-v1/options"
 	"github.com/Microsoft/hcsshim/internal/cmd"
 	"github.com/Microsoft/hcsshim/internal/core"
@@ -59,9 +57,6 @@ type migrationState struct {
 var _ lmproto.MigrationService = (*service)(nil)
 
 func (s *service) PrepareSandbox(ctx context.Context, req *lmproto.PrepareSandboxRequest) (*lmproto.PrepareSandboxResponse, error) {
-	if err := enableChecksumValidationRegKeys(); err != nil {
-        logrus.WithError(err).Warn("failed to set checksum validation registry keys")
-    }
 	sandboxState, resources, err := s.sandbox.Sandbox.(core.Migratable).LMPrepare(ctx, req.InitializeOptions)
 	if err != nil {
 		return nil, fmt.Errorf("prepare sandbox for migration: %w", err)
@@ -546,24 +541,4 @@ func (s *service) CreateDuplicateSocket(ctx context.Context, req *lmproto.Create
 	return &lmproto.CreateDuplicateSocketResponse{
 		SessionId: req.SessionId,
 	}, nil
-}
-
-func enableChecksumValidationRegKeys() error {
-    k, _, err := registry.CreateKey(
-        registry.LOCAL_MACHINE,
-        `SOFTWARE\Microsoft\Windows NT\CurrentVersion\Virtualization\Migration`,
-        registry.SET_VALUE,
-    )
-    if err != nil {
-        return fmt.Errorf("open migration registry key: %w", err)
-    }
-    defer k.Close()
-
-    if err := k.SetDWordValue("Test_UseSkippedForProtectionBitmapsInCrcCheck", 0); err != nil {
-        return fmt.Errorf("set Test_UseSkippedForProtectionBitmapsInCrcCheck: %w", err)
-    }
-    if err := k.SetDWordValue("Test_TransferMemoryAfterVdevPowerOff", 1); err != nil {
-        return fmt.Errorf("set Test_TransferMemoryAfterVdevPowerOff: %w", err)
-    }
-    return nil
 }
