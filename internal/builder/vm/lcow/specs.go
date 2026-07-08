@@ -274,7 +274,7 @@ func BuildSandboxConfig(
 					HvSocketConfig: hvSocketConfig,
 				},
 				ComPorts: comPorts,
-				Plan9:    &hcsschema.Plan9{},
+				//Plan9:    &hcsschema.Plan9{},
 			},
 			GuestState:       guestState,
 			SecuritySettings: securitySettings,
