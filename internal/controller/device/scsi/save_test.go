@@ -112,6 +112,35 @@ func TestSave_EmptyRoundTrip(t *testing.T) {
 	}
 }
 
+// TestSave_RootfsRoundTrip locks down that a rootfs reserved via ReserveForRootfs
+// is visible to Disks() on both the source and an imported destination.
+func TestSave_RootfsRoundTrip(t *testing.T) {
+	src := New(1, &mockVMOps{}, newMockGuestOps())
+	cfg := disk.Config{HostPath: `C:\rootfs.vhdx`, ReadOnly: true, Type: disk.TypeVirtualDisk}
+	if err := src.ReserveForRootfs(t.Context(), 0, 0, cfg); err != nil {
+		t.Fatalf("ReserveForRootfs: %v", err)
+	}
+
+	// The rootfs is visible to Disks() on the source, keyed by host path.
+	if disks := src.Disks(); len(disks) != 1 || disks[0].HostPath != cfg.HostPath {
+		t.Fatalf("expected rootfs %q in source disks, got %+v", cfg.HostPath, disks)
+	}
+
+	env, err := src.Save(t.Context())
+	if err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	dst, err := Import(t.Context(), env)
+	if err != nil {
+		t.Fatalf("Import: %v", err)
+	}
+
+	// And it remains visible after Save/Import, so migration can grant it access.
+	if disks := dst.Disks(); len(disks) != 1 || disks[0].HostPath != cfg.HostPath {
+		t.Fatalf("expected rootfs %q in disks after import, got %+v", cfg.HostPath, disks)
+	}
+}
+
 // --- Tests: Import errors ---
 
 func TestImport_Errors(t *testing.T) {
@@ -206,7 +235,9 @@ func TestUpdateDiskHostPath(t *testing.T) {
 	})
 	t.Run("rejected after resume", func(t *testing.T) {
 		c, id := importedReserved(t)
-		c.Resume(t.Context(), &mockVMOps{}, newMockGuestOps())
+		if err := c.Resume(t.Context(), &mockVMOps{}, newMockGuestOps()); err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
 		if err := c.UpdateDiskHostPath(t.Context(), id, `C:\x.vhdx`); err == nil ||
 			!strings.Contains(err.Error(), "migrating") {
 			t.Fatalf("expected migrating error, got %v", err)

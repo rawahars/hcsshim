@@ -4,6 +4,7 @@ package vm
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"sync"
@@ -130,13 +131,13 @@ func (c *Controller) CreateVM(ctx context.Context, opts *CreateOptions) error {
 	// Pick the HCS document we hand to vmmanager based on the controller's
 	// current state:
 	//   - StateNotCreated: cold-boot path; build a fresh document.
-	//   - StateMigratingImported: destination side of a live migration; reuse
-	//     the document rehydrated by Import and stamp opts.MigrationOptions
+	//   - StateDestinationMigrationImported: destination side of a live migration;
+	//     reuse the document rehydrated by Import and stamp opts.MigrationOptions
 	//     onto it.
 	// Any other state is invalid for CreateVM.
 	var hcsDocument *hcsschema.ComputeSystem
 	// Cold boot lands in StateCreated; the destination migration path lands in
-	// StateMigratingCreated.
+	// StateDestinationMigrationCreated.
 	nextState := StateCreated
 	switch c.vmState {
 	case StateNotCreated:
@@ -145,15 +146,30 @@ func (c *Controller) CreateVM(ctx context.Context, opts *CreateOptions) error {
 			return fmt.Errorf("failed to build VM config: %w", err)
 		}
 		hcsDocument = doc
-	case StateMigratingImported:
-		nextState = StateMigratingCreated
+	case StateDestinationMigrationImported:
+		nextState = StateDestinationMigrationCreated
+		if opts.MigrationOptions == nil {
+			return fmt.Errorf("cannot create VM in state %s: migration options are required", c.vmState)
+		}
 		if c.hcsDocument == nil {
 			return fmt.Errorf("cannot create VM in state %s: no imported HCS document available", c.vmState)
 		}
 		if c.hcsDocument.VirtualMachine == nil {
 			return fmt.Errorf("cannot create VM in state %s: imported HCS document has no VirtualMachine", c.vmState)
 		}
-		hcsDocument = c.hcsDocument
+
+		// Deep-copy the imported document via JSON round-trip so migration
+		// stamping targets a private copy, leaving the retained source-of-truth
+		// pristine if this call fails and is retried.
+		raw, err := json.Marshal(c.hcsDocument)
+		if err != nil {
+			return fmt.Errorf("marshal imported HCS document: %w", err)
+		}
+		hcsDocument = &hcsschema.ComputeSystem{}
+		if err := json.Unmarshal(raw, hcsDocument); err != nil {
+			return fmt.Errorf("unmarshal imported HCS document: %w", err)
+		}
+
 		hcsDocument.VirtualMachine.MigrationOptions = opts.MigrationOptions
 		if c.compatInfo != nil {
 			hcsDocument.VirtualMachine.MigrationOptions.CompatibilityData = &hcsschema.CompatibilityInfo{
@@ -186,7 +202,7 @@ func (c *Controller) CreateVM(ctx context.Context, opts *CreateOptions) error {
 	c.guest = guestmanager.New(ctx, uvm)
 
 	// Cold-boot lands in StateCreated; the destination-side migration path
-	// lands in StateMigratingCreated, from which Patch and
+	// lands in StateDestinationMigrationCreated, from which Patch and
 	// StartWithMigrationOptions drive the controller forward.
 	c.vmState = nextState
 	return nil
@@ -591,10 +607,11 @@ func (c *Controller) TerminateVM(ctx context.Context) (err error) {
 	// Best effort attempt to clean up the open vmmem handle.
 	_ = windows.Close(c.vmmemProcess)
 
-	// Skip HCS Terminate for a never-started VM (cold-created or destination
-	// migration-created). The HCS document sets
+	// Skip HCS Terminate for a never-started VM (cold-created, or a destination
+	// migration VM created/patched but not yet started). The HCS document sets
 	// ShouldTerminateOnLastHandleClosed, so uvm.Close below is sufficient.
-	if c.vmState != StateCreated && c.vmState != StateMigratingCreated {
+	if c.vmState != StateCreated &&
+		c.vmState != StateDestinationMigrationCreated && c.vmState != StateDestinationMigrationPatched {
 		// Terminate the utility VM. This will also cause the Wait() call in the background goroutine to unblock.
 		_ = c.uvm.Terminate(ctx)
 	}
