@@ -27,9 +27,9 @@ func astValueToJSONSchemaLoader(value ast.Value) (gojsonschema.JSONLoader, error
 			return nil, errors.New("invalid JSON string")
 		}
 		loader = gojsonschema.NewStringLoader(string(x))
-	case ast.Object:
+	case ast.Object, *ast.Array:
 		// In case of object serialize it to JSON representation.
-		var data interface{}
+		var data any
 		data, err = ast.JSON(value)
 		if err != nil {
 			return nil, err
@@ -44,7 +44,20 @@ func astValueToJSONSchemaLoader(value ast.Value) (gojsonschema.JSONLoader, error
 }
 
 func newResultTerm(valid bool, data *ast.Term) *ast.Term {
-	return ast.ArrayTerm(ast.InternedBooleanTerm(valid), data)
+	return ast.ArrayTerm(ast.InternedTerm(valid), data)
+}
+
+// newPatternValidatingSchemaLoader returns a SchemaLoader configured to
+// compile and enforce the "pattern" keyword. This is the variant used by the
+// json.verify_schema and json.match_schema built-ins, where runtime pattern
+// validation is expected. It is intentionally not shared with the compile-time
+// type-checking path, where pattern validation is disabled to tolerate
+// schemas containing ECMA-262 regex features that Go's RE2 dialect can't
+// compile.
+func newPatternValidatingSchemaLoader() *gojsonschema.SchemaLoader {
+	sl := gojsonschema.NewSchemaLoader()
+	sl.ValidatePatterns = true
+	return sl
 }
 
 // builtinJSONSchemaVerify accepts 1 argument which can be string or object and checks if it is valid JSON schema.
@@ -57,7 +70,7 @@ func builtinJSONSchemaVerify(_ BuiltinContext, operands []*ast.Term, iter func(*
 	}
 
 	// Check that schema is correct and parses without errors.
-	if _, err = gojsonschema.NewSchema(loader); err != nil {
+	if _, err = newPatternValidatingSchemaLoader().Compile(loader); err != nil {
 		return iter(newResultTerm(false, ast.StringTerm("jsonschema: "+err.Error())))
 	}
 
@@ -93,7 +106,7 @@ func builtinJSONMatchSchema(bctx BuiltinContext, operands []*ast.Term, iter func
 			return err
 		}
 
-		schema, err = gojsonschema.NewSchema(schemaLoader)
+		schema, err = newPatternValidatingSchemaLoader().Compile(schemaLoader)
 		if err != nil {
 			return err
 		}
@@ -110,7 +123,7 @@ func builtinJSONMatchSchema(bctx BuiltinContext, operands []*ast.Term, iter func
 	}
 
 	// In case of validation errors produce Rego array of objects to describe the errors.
-	arr := ast.NewArray()
+	arr := ast.NewArrayWithCapacity(len(result.Errors()))
 	for _, re := range result.Errors() {
 		o := ast.NewObject(
 			[...]*ast.Term{ast.StringTerm("error"), ast.StringTerm(re.String())},

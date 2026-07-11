@@ -17,6 +17,22 @@ import (
 	"github.com/open-policy-agent/opa/v1/util"
 )
 
+var (
+	// Nl represents an instance of the null type.
+	Nl Type = NewNull()
+	// B represents an instance of the boolean type.
+	B Type = NewBoolean()
+	// S represents an instance of the string type.
+	S Type = NewString()
+	// N represents an instance of the number type.
+	N Type = NewNumber()
+	// A represents the superset of all types.
+	A Type = NewAny()
+
+	// Boxed set types.
+	SetOfAny, SetOfStr, SetOfNum Type = NewSet(A), NewSet(S), NewSet(N)
+)
+
 // Sprint returns the string representation of the type.
 func Sprint(x Type) string {
 	if x == nil {
@@ -32,15 +48,16 @@ type Type interface {
 	json.Marshaler
 }
 
-func (Null) typeMarker() string     { return typeNull }
-func (Boolean) typeMarker() string  { return typeBoolean }
-func (Number) typeMarker() string   { return typeNumber }
-func (String) typeMarker() string   { return typeString }
-func (*Array) typeMarker() string   { return typeArray }
-func (*Object) typeMarker() string  { return typeObject }
-func (*Set) typeMarker() string     { return typeSet }
-func (Any) typeMarker() string      { return typeAny }
-func (Function) typeMarker() string { return typeFunction }
+func (Null) typeMarker() string       { return typeNull }
+func (Boolean) typeMarker() string    { return typeBoolean }
+func (Number) typeMarker() string     { return typeNumber }
+func (String) typeMarker() string     { return typeString }
+func (*Array) typeMarker() string     { return typeArray }
+func (*Object) typeMarker() string    { return typeObject }
+func (*Set) typeMarker() string       { return typeSet }
+func (Any) typeMarker() string        { return typeAny }
+func (Function) typeMarker() string   { return typeFunction }
+func (*Recursive) typeMarker() string { return typeRecursive }
 
 // Null represents the null type.
 type Null struct{}
@@ -49,8 +66,6 @@ type Null struct{}
 func NewNull() Null {
 	return Null{}
 }
-
-var Nl Type = NewNull()
 
 // NamedType represents a type alias with an arbitrary name and description.
 // This is useful for generating documentation for built-in functions.
@@ -62,12 +77,12 @@ type NamedType struct {
 func (n *NamedType) typeMarker() string { return n.Type.typeMarker() }
 func (n *NamedType) String() string     { return n.Name + ": " + n.Type.String() }
 func (n *NamedType) MarshalJSON() ([]byte, error) {
-	var obj map[string]interface{}
+	var obj map[string]any
 	switch x := n.Type.(type) {
-	case interface{ toMap() map[string]interface{} }:
+	case interface{ toMap() map[string]any }:
 		obj = x.toMap()
 	default:
-		obj = map[string]interface{}{
+		obj = map[string]any{
 			"type": n.Type.typeMarker(),
 		}
 	}
@@ -95,7 +110,7 @@ func Named(name string, t Type) *NamedType {
 
 // MarshalJSON returns the JSON encoding of t.
 func (t Null) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return json.Marshal(map[string]any{
 		"type": t.typeMarker(),
 	})
 }
@@ -109,15 +124,19 @@ func unwrap(t Type) Type {
 	}
 }
 
+func unwrapRecursive(t Type) Type {
+	if r, ok := t.(*Recursive); ok {
+		return r.typ
+	}
+	return t
+}
+
 func (Null) String() string {
 	return typeNull
 }
 
 // Boolean represents the boolean type.
 type Boolean struct{}
-
-// B represents an instance of the boolean type.
-var B Type = NewBoolean()
 
 // NewBoolean returns a new Boolean type.
 func NewBoolean() Boolean {
@@ -126,7 +145,7 @@ func NewBoolean() Boolean {
 
 // MarshalJSON returns the JSON encoding of t.
 func (t Boolean) MarshalJSON() ([]byte, error) {
-	repr := map[string]interface{}{
+	repr := map[string]any{
 		"type": t.typeMarker(),
 	}
 	return json.Marshal(repr)
@@ -139,9 +158,6 @@ func (t Boolean) String() string {
 // String represents the string type.
 type String struct{}
 
-// S represents an instance of the string type.
-var S Type = NewString()
-
 // NewString returns a new String type.
 func NewString() String {
 	return String{}
@@ -149,7 +165,7 @@ func NewString() String {
 
 // MarshalJSON returns the JSON encoding of t.
 func (t String) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return json.Marshal(map[string]any{
 		"type": t.typeMarker(),
 	})
 }
@@ -161,9 +177,6 @@ func (String) String() string {
 // Number represents the number type.
 type Number struct{}
 
-// N represents an instance of the number type.
-var N Type = NewNumber()
-
 // NewNumber returns a new Number type.
 func NewNumber() Number {
 	return Number{}
@@ -171,7 +184,7 @@ func NewNumber() Number {
 
 // MarshalJSON returns the JSON encoding of t.
 func (t Number) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return json.Marshal(map[string]any{
 		"type": t.typeMarker(),
 	})
 }
@@ -199,8 +212,8 @@ func (t *Array) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.toMap())
 }
 
-func (t *Array) toMap() map[string]interface{} {
-	repr := map[string]interface{}{
+func (t *Array) toMap() map[string]any {
+	repr := map[string]any{
 		"type": t.typeMarker(),
 	}
 	if len(t.static) != 0 {
@@ -214,7 +227,7 @@ func (t *Array) toMap() map[string]interface{} {
 
 func (t *Array) String() string {
 	prefix := "array"
-	buf := []string{}
+	buf := make([]string, 0, len(t.static))
 	for _, tpe := range t.static {
 		buf = append(buf, Sprint(tpe))
 	}
@@ -256,13 +269,6 @@ type Set struct {
 	of Type
 }
 
-// Boxed set types.
-var (
-	SetOfAny Type = NewSet(A)
-	SetOfStr Type = NewSet(S)
-	SetOfNum Type = NewSet(N)
-)
-
 // NewSet returns a new Set type.
 func NewSet(of Type) *Set {
 	return &Set{
@@ -279,8 +285,8 @@ func (t *Set) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.toMap())
 }
 
-func (t *Set) toMap() map[string]interface{} {
-	repr := map[string]interface{}{
+func (t *Set) toMap() map[string]any {
+	repr := map[string]any{
 		"type": t.typeMarker(),
 	}
 	if t.of != nil {
@@ -296,12 +302,12 @@ func (t *Set) String() string {
 
 // StaticProperty represents a static object property.
 type StaticProperty struct {
-	Key   interface{}
+	Key   any
 	Value Type
 }
 
 // NewStaticProperty returns a new StaticProperty object.
-func NewStaticProperty(key interface{}, value Type) *StaticProperty {
+func NewStaticProperty(key any, value Type) *StaticProperty {
 	return &StaticProperty{
 		Key:   key,
 		Value: value,
@@ -310,7 +316,7 @@ func NewStaticProperty(key interface{}, value Type) *StaticProperty {
 
 // MarshalJSON returns the JSON encoding of p.
 func (p *StaticProperty) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return json.Marshal(map[string]any{
 		"key":   p.Key,
 		"value": p.Value,
 	})
@@ -332,7 +338,7 @@ func NewDynamicProperty(key, value Type) *DynamicProperty {
 
 // MarshalJSON returns the JSON encoding of p.
 func (p *DynamicProperty) MarshalJSON() ([]byte, error) {
-	return json.Marshal(map[string]interface{}{
+	return json.Marshal(map[string]any{
 		"key":   p.Key,
 		"value": p.Value,
 	})
@@ -394,8 +400,8 @@ func (t *Object) StaticProperties() []*StaticProperty {
 }
 
 // Keys returns the keys of the object's static elements.
-func (t *Object) Keys() []interface{} {
-	sl := make([]interface{}, 0, len(t.static))
+func (t *Object) Keys() []any {
+	sl := make([]any, 0, len(t.static))
 	for _, p := range t.static {
 		sl = append(sl, p.Key)
 	}
@@ -407,8 +413,8 @@ func (t *Object) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.toMap())
 }
 
-func (t *Object) toMap() map[string]interface{} {
-	repr := map[string]interface{}{
+func (t *Object) toMap() map[string]any {
+	repr := map[string]any{
 		"type": t.typeMarker(),
 	}
 	if len(t.static) != 0 {
@@ -421,7 +427,7 @@ func (t *Object) toMap() map[string]interface{} {
 }
 
 // Select returns the type of the named property.
-func (t *Object) Select(name interface{}) Type {
+func (t *Object) Select(name any) Type {
 	pos := sort.Search(len(t.static), func(x int) bool {
 		return util.Compare(t.static[x].Key, name) >= 0
 	})
@@ -481,7 +487,7 @@ func mergeObjects(a, b *Object) *Object {
 		dynamicProps = b.dynamic
 	}
 
-	staticPropsMap := make(map[interface{}]Type)
+	staticPropsMap := make(map[any]Type)
 
 	for _, sp := range a.static {
 		staticPropsMap[sp.Key] = sp.Value
@@ -510,11 +516,38 @@ func mergeObjects(a, b *Object) *Object {
 	return NewObject(staticProps, dynamicProps)
 }
 
+// Recursive is a Type that contains a pointer back to itself.
+// This is for representing recursive JSON Schema definitions.
+type Recursive struct {
+	name string // the $ref key (e.g. "#/$defs/foo")
+	typ  Type   // the referenced type (can be *Object, *Array, or Any)
+}
+
+// NewRecursive returns a new Recursive type that wraps typ under the given name.
+func NewRecursive(name string, typ Type) *Recursive {
+	return &Recursive{name: name, typ: typ}
+}
+
+func (t *Recursive) String() string {
+	return "recursive(" + t.name + ")"
+}
+
+func (t *Recursive) Unwrap() Type {
+	return t.typ
+}
+
+func (t *Recursive) SetType(typ Type) {
+	t.typ = typ
+}
+
+func (t *Recursive) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]any{
+		"name": t.name,
+	})
+}
+
 // Any represents a dynamic type.
 type Any []Type
-
-// A represents the superset of all types.
-var A Type = NewAny()
 
 // NewAny returns a new Any type.
 func NewAny(of ...Type) Any {
@@ -546,8 +579,8 @@ func (t Any) MarshalJSON() ([]byte, error) {
 	return json.Marshal(t.toMap())
 }
 
-func (t Any) toMap() map[string]interface{} {
-	repr := map[string]interface{}{
+func (t Any) toMap() map[string]any {
+	repr := map[string]any{
 		"type": t.typeMarker(),
 	}
 	if len(t) != 0 {
@@ -588,10 +621,7 @@ func (t Any) Union(other Any) Any {
 		return other
 	}
 	// Prealloc the output list.
-	maxLen := lenT
-	if lenT < lenOther {
-		maxLen = lenOther
-	}
+	maxLen := max(lenT, lenOther)
 	merged := make(Any, 0, maxLen)
 	// Note(philipc): Create a merged slice, doing the minimum number of
 	// comparisons along the way. We treat this as a problem of merging two
@@ -724,6 +754,7 @@ func (t *Function) NamedFuncArgs() FuncArgs {
 }
 
 // Args returns the function's arguments as a slice, ignoring variadic arguments.
+//
 // Deprecated: Use FuncArgs instead.
 func (t *Function) Args() []Type {
 	cpy := make([]Type, len(t.args))
@@ -754,7 +785,7 @@ func (t *Function) String() string {
 
 // MarshalJSON returns the JSON encoding of t.
 func (t *Function) MarshalJSON() ([]byte, error) {
-	repr := map[string]interface{}{
+	repr := map[string]any{
 		"type": t.typeMarker(),
 	}
 	if len(t.args) > 0 {
@@ -852,7 +883,7 @@ func (a FuncArgs) Arg(x int) Type {
 
 // Compare returns -1, 0, 1 based on comparison between a and b.
 func Compare(a, b Type) int {
-	a, b = unwrap(a), unwrap(b)
+	a, b = unwrapRecursive(unwrap(a)), unwrapRecursive(unwrap(b))
 	x := typeOrder(a)
 	y := typeOrder(b)
 	if x > y {
@@ -866,6 +897,9 @@ func Compare(a, b Type) int {
 	case *Array:
 		arrA := a.(*Array)
 		arrB := b.(*Array)
+		if arrA == arrB {
+			return 0
+		}
 		if arrA.dynamic != nil && arrB.dynamic == nil {
 			return 1
 		} else if arrB.dynamic != nil && arrA.dynamic == nil {
@@ -880,6 +914,9 @@ func Compare(a, b Type) int {
 	case *Object:
 		objA := a.(*Object)
 		objB := b.(*Object)
+		if objA == objB {
+			return 0
+		}
 		if objA.dynamic != nil && objB.dynamic == nil {
 			return 1
 		} else if objB.dynamic != nil && objA.dynamic == nil {
@@ -897,10 +934,7 @@ func Compare(a, b Type) int {
 		lenStaticA := len(objA.static)
 		lenStaticB := len(objB.static)
 
-		minLen := lenStaticA
-		if lenStaticB < minLen {
-			minLen = lenStaticB
-		}
+		minLen := min(lenStaticB, lenStaticA)
 
 		for i := range minLen {
 			if cmp := util.Compare(objA.static[i].Key, objB.static[i].Key); cmp != 0 {
@@ -994,8 +1028,8 @@ func Or(a, b Type) Type {
 }
 
 // Select returns a property or item of a.
-func Select(a Type, x interface{}) Type {
-	switch a := unwrap(a).(type) {
+func Select(a Type, x any) Type {
+	switch a := unwrapRecursive(unwrap(a)).(type) {
 	case *Array:
 		n, ok := x.(json.Number)
 		if !ok {
@@ -1038,7 +1072,7 @@ func Select(a Type, x interface{}) Type {
 // keys are always number types, for objects the keys are always string types,
 // and for sets the keys are always the type of the set element.
 func Keys(a Type) Type {
-	switch a := unwrap(a).(type) {
+	switch a := unwrapRecursive(unwrap(a)).(type) {
 	case *Array:
 		return N
 	case *Object:
@@ -1068,7 +1102,7 @@ func Keys(a Type) Type {
 
 // Values returns the type of values that can be enumerated for a.
 func Values(a Type) Type {
-	switch a := unwrap(a).(type) {
+	switch a := unwrapRecursive(unwrap(a)).(type) {
 	case *Array:
 		var tpe Type
 		for i := range a.static {
@@ -1101,42 +1135,58 @@ func Values(a Type) Type {
 
 // Nil returns true if a's type is unknown.
 func Nil(a Type) bool {
-	switch a := unwrap(a).(type) {
-	case nil:
+	return nilRec(a, nil)
+}
+
+func nilRec(a Type, seen map[Type]struct{}) bool {
+	a = unwrapRecursive(unwrap(a))
+	if a == nil {
 		return true
+	}
+	switch a := a.(type) {
 	case *Function:
-		for i := range a.args {
-			if Nil(a.args[i]) {
-				return true
-			}
+		if slices.ContainsFunc(a.args, func(t Type) bool { return nilRec(t, seen) }) {
+			return true
 		}
-		return Nil(a.result)
+		return nilRec(a.result, seen)
 	case *Array:
-		for i := range a.static {
-			if Nil(a.static[i]) {
-				return true
-			}
+		if _, ok := seen[a]; ok {
+			return false
+		}
+		if seen == nil {
+			seen = make(map[Type]struct{})
+		}
+		seen[a] = struct{}{}
+		if slices.ContainsFunc(a.static, func(t Type) bool { return nilRec(t, seen) }) {
+			return true
 		}
 		if a.dynamic != nil {
-			return Nil(a.dynamic)
+			return nilRec(a.dynamic, seen)
 		}
 	case *Object:
+		if _, ok := seen[a]; ok {
+			return false
+		}
+		if seen == nil {
+			seen = make(map[Type]struct{})
+		}
+		seen[a] = struct{}{}
 		for i := range a.static {
-			if Nil(a.static[i].Value) {
+			if nilRec(a.static[i].Value, seen) {
 				return true
 			}
 		}
 		if a.dynamic != nil {
-			return Nil(a.dynamic.Key) || Nil(a.dynamic.Value)
+			return nilRec(a.dynamic.Key, seen) || nilRec(a.dynamic.Value, seen)
 		}
 	case *Set:
-		return Nil(a.of)
+		return nilRec(a.of, seen)
 	}
 	return false
 }
 
 // TypeOf returns the type of the Golang native value.
-func TypeOf(x interface{}) Type {
+func TypeOf(x any) Type {
 	switch x := x.(type) {
 	case nil:
 		return Nl
@@ -1146,22 +1196,22 @@ func TypeOf(x interface{}) Type {
 		return S
 	case json.Number:
 		return N
-	case map[string]interface{}:
-		// The ast.ValueToInterface() function returns ast.Object values as map[string]interface{}
-		// so map[string]interface{} must be handled here because the type checker uses the value
+	case map[string]any:
+		// The ast.ValueToInterface() function returns ast.Object values as map[string]any
+		// so map[string]any must be handled here because the type checker uses the value
 		// to interface conversion when inferring object types.
 		static := make([]*StaticProperty, 0, len(x))
 		for k, v := range x {
 			static = append(static, NewStaticProperty(k, TypeOf(v)))
 		}
 		return NewObject(static, nil)
-	case map[interface{}]interface{}:
+	case map[any]any:
 		static := make([]*StaticProperty, 0, len(x))
 		for k, v := range x {
 			static = append(static, NewStaticProperty(k, TypeOf(v)))
 		}
 		return NewObject(static, nil)
-	case []interface{}:
+	case []any:
 		static := make([]Type, len(x))
 		for i := range x {
 			static[i] = TypeOf(x[i])
@@ -1178,10 +1228,7 @@ func (s typeSlice) Swap(i, j int)      { s[i], s[j] = s[j], s[i] }
 func (s typeSlice) Len() int           { return len(s) }
 
 func typeSliceCompare(a, b []Type) int {
-	minLen := len(a)
-	if len(b) < minLen {
-		minLen = len(b)
-	}
+	minLen := min(len(b), len(a))
 	for i := range minLen {
 		if cmp := Compare(a[i], b[i]); cmp != 0 {
 			return cmp
@@ -1196,7 +1243,7 @@ func typeSliceCompare(a, b []Type) int {
 }
 
 func typeOrder(x Type) int {
-	switch unwrap(x).(type) {
+	switch unwrapRecursive(unwrap(x)).(type) {
 	case Null:
 		return 0
 	case Boolean:

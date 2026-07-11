@@ -18,15 +18,15 @@ import (
 
 // Cache defines the built-in cache used by the top-down evaluation. The keys
 // must be comparable and should not be of type string.
-type Cache map[interface{}]interface{}
+type Cache map[any]any
 
 // Put updates the cache for the named built-in.
-func (c Cache) Put(k, v interface{}) {
+func (c Cache) Put(k, v any) {
 	c[k] = v
 }
 
 // Get returns the cached value for k.
-func (c Cache) Get(k interface{}) (interface{}, bool) {
+func (c Cache) Get(k any) (any, bool) {
 	v, ok := c[k]
 	return v, ok
 }
@@ -39,7 +39,7 @@ type NDBCache map[string]ast.Object
 func (c NDBCache) AsValue() ast.Value {
 	out := ast.NewObject()
 	for bname, obj := range c {
-		out.Insert(ast.StringTerm(bname), ast.NewTerm(obj))
+		out.Insert(ast.InternedTerm(bname), ast.NewTerm(obj))
 	}
 	return out
 }
@@ -76,7 +76,7 @@ func (c NDBCache) MarshalJSON() ([]byte, error) {
 
 func (c *NDBCache) UnmarshalJSON(data []byte) error {
 	out := map[string]ast.Object{}
-	var incoming interface{}
+	var incoming any
 
 	// Note: We use util.Unmarshal instead of json.Unmarshal to get
 	// correct deserialization of number types.
@@ -120,14 +120,13 @@ func (err ErrOperand) Error() string {
 }
 
 // NewOperandErr returns a generic operand error.
-func NewOperandErr(pos int, f string, a ...interface{}) error {
+func NewOperandErr(pos int, f string, a ...any) error {
 	f = fmt.Sprintf("operand %v ", pos) + f
 	return ErrOperand(fmt.Sprintf(f, a...))
 }
 
 // NewOperandTypeErr returns an operand error indicating the operand's type was wrong.
 func NewOperandTypeErr(pos int, got ast.Value, expected ...string) error {
-
 	if len(expected) == 1 {
 		return NewOperandErr(pos, "must be %v but got %v", expected[0], ast.ValueName(got))
 	}
@@ -138,7 +137,6 @@ func NewOperandTypeErr(pos int, got ast.Value, expected ...string) error {
 // NewOperandElementErr returns an operand error indicating an element in the
 // composite operand was wrong.
 func NewOperandElementErr(pos int, composite ast.Value, got ast.Value, expected ...string) error {
-
 	tpe := ast.ValueName(composite)
 
 	if len(expected) == 1 {
@@ -150,7 +148,6 @@ func NewOperandElementErr(pos int, composite ast.Value, got ast.Value, expected 
 
 // NewOperandEnumErr returns an operand error indicating a value was wrong.
 func NewOperandEnumErr(pos int, expected ...string) error {
-
 	if len(expected) == 1 {
 		return NewOperandErr(pos, "must be %v", expected[0])
 	}
@@ -192,60 +189,72 @@ func BigIntOperand(x ast.Value, pos int) (*big.Int, error) {
 // NumberOperand converts x to a number. If the cast fails, a descriptive error is
 // returned.
 func NumberOperand(x ast.Value, pos int) (ast.Number, error) {
-	n, ok := x.(ast.Number)
-	if !ok {
-		return ast.Number(""), NewOperandTypeErr(pos, x, "number")
+	if n, ok := x.(ast.Number); ok {
+		return n, nil
 	}
-	return n, nil
+	return ast.Number(""), NewOperandTypeErr(pos, x, "number")
 }
 
 // SetOperand converts x to a set. If the cast fails, a descriptive error is
 // returned.
 func SetOperand(x ast.Value, pos int) (ast.Set, error) {
-	s, ok := x.(ast.Set)
-	if !ok {
-		return nil, NewOperandTypeErr(pos, x, "set")
+	if s, ok := x.(ast.Set); ok {
+		return s, nil
 	}
-	return s, nil
+	return nil, NewOperandTypeErr(pos, x, "set")
 }
 
-// StringOperand converts x to a string. If the cast fails, a descriptive error is
-// returned.
+// StringOperand returns x as [ast.String], or a descriptive error if the conversion fails.
 func StringOperand(x ast.Value, pos int) (ast.String, error) {
-	s, ok := x.(ast.String)
-	if !ok {
-		return ast.String(""), NewOperandTypeErr(pos, x, "string")
+	if s, ok := x.(ast.String); ok {
+		return s, nil
 	}
-	return s, nil
+	return ast.String(""), NewOperandTypeErr(pos, x, "string")
 }
 
-// ObjectOperand converts x to an object. If the cast fails, a descriptive
+// StringOperandByteSlice returns x a []byte, assuming x is [ast.String], or a descriptive error
+// if that is not the case. The returned byte slice points directly at the underlying array backing
+// the string, and should not be modified.
+func StringOperandByteSlice(x ast.Value, pos int) ([]byte, error) {
+	s, err := StringOperand(x, pos)
+	if err != nil {
+		return nil, err
+	}
+	return util.StringToByteSlice(string(s)), nil
+}
+
+// ObjectOperand converts x to an object. If the conversion fails, a descriptive
 // error is returned.
-func ObjectOperand(x ast.Value, pos int) (ast.Object, error) {
-	o, ok := x.(ast.Object)
-	if !ok {
-		return nil, NewOperandTypeErr(pos, x, "object")
+func ObjectOperand(x ast.Value, pos int) (o ast.Object, err error) {
+	if o, ok := x.(ast.Object); ok {
+		return o, nil
 	}
-	return o, nil
+	return nil, NewOperandTypeErr(pos, x, "object")
 }
 
-// ArrayOperand converts x to an array. If the cast fails, a descriptive
+// ArrayOperand converts x to an array. If the conversion fails, a descriptive
 // error is returned.
 func ArrayOperand(x ast.Value, pos int) (*ast.Array, error) {
-	a, ok := x.(*ast.Array)
-	if !ok {
-		return nil, NewOperandTypeErr(pos, x, "array")
+	if a, ok := x.(*ast.Array); ok {
+		return a, nil
 	}
-	return a, nil
+	return nil, NewOperandTypeErr(pos, x, "array")
 }
 
 // NumberToFloat converts n to a big float.
 func NumberToFloat(n ast.Number) *big.Float {
-	r, ok := new(big.Float).SetString(string(n))
-	if !ok {
+	return NumberToFloatInto(nil, n)
+}
+
+// NumberToFloatInto converts n to a big float, storing it in dst when provided.
+func NumberToFloatInto(dst *big.Float, n ast.Number) *big.Float {
+	if dst == nil {
+		dst = new(big.Float)
+	}
+	if _, ok := dst.SetString(string(n)); !ok {
 		panic("illegal value")
 	}
-	return r
+	return dst
 }
 
 // FloatToNumber converts f to a number.

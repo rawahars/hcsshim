@@ -7,6 +7,7 @@ package ast
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/url"
 	"slices"
 	"strings"
@@ -23,27 +24,6 @@ const (
 	annotationScopeSubpackages = "subpackages"
 )
 
-var (
-	scopeTerm            = StringTerm("scope")
-	titleTerm            = StringTerm("title")
-	entrypointTerm       = StringTerm("entrypoint")
-	descriptionTerm      = StringTerm("description")
-	organizationsTerm    = StringTerm("organizations")
-	authorsTerm          = StringTerm("authors")
-	relatedResourcesTerm = StringTerm("related_resources")
-	schemasTerm          = StringTerm("schemas")
-	customTerm           = StringTerm("custom")
-	refTerm              = StringTerm("ref")
-	nameTerm             = StringTerm("name")
-	emailTerm            = StringTerm("email")
-	schemaTerm           = StringTerm("schema")
-	definitionTerm       = StringTerm("definition")
-	documentTerm         = StringTerm(annotationScopeDocument)
-	packageTerm          = StringTerm(annotationScopePackage)
-	ruleTerm             = StringTerm(annotationScopeRule)
-	subpackagesTerm      = StringTerm(annotationScopeSubpackages)
-)
-
 type (
 	// Annotations represents metadata attached to other AST nodes such as rules.
 	Annotations struct {
@@ -55,7 +35,9 @@ type (
 		RelatedResources []*RelatedResourceAnnotation `json:"related_resources,omitempty"`
 		Authors          []*AuthorAnnotation          `json:"authors,omitempty"`
 		Schemas          []*SchemaAnnotation          `json:"schemas,omitempty"`
-		Custom           map[string]interface{}       `json:"custom,omitempty"`
+		Compile          *CompileAnnotation           `json:"compile,omitempty"`
+		Custom           map[string]any               `json:"custom,omitempty"`
+		Labels           map[string]any               `json:"labels,omitempty"`
 		Location         *Location                    `json:"location,omitempty"`
 
 		comments []*Comment
@@ -64,9 +46,14 @@ type (
 
 	// SchemaAnnotation contains a schema declaration for the document identified by the path.
 	SchemaAnnotation struct {
-		Path       Ref          `json:"path"`
-		Schema     Ref          `json:"schema,omitempty"`
-		Definition *interface{} `json:"definition,omitempty"`
+		Path       Ref  `json:"path"`
+		Schema     Ref  `json:"schema,omitempty"`
+		Definition *any `json:"definition,omitempty"`
+	}
+
+	CompileAnnotation struct {
+		Unknowns []Ref `json:"unknowns,omitempty"`
+		MaskRule Ref   `json:"mask_rule,omitempty"` // NOTE: This doesn't need to start with "data.package", it can be relative
 	}
 
 	AuthorAnnotation struct {
@@ -172,6 +159,10 @@ func (a *Annotations) Compare(other *Annotations) int {
 		return cmp
 	}
 
+	if cmp := a.Compile.Compare(other.Compile); cmp != 0 {
+		return cmp
+	}
+
 	if a.Entrypoint != other.Entrypoint {
 		if a.Entrypoint {
 			return 1
@@ -180,6 +171,10 @@ func (a *Annotations) Compare(other *Annotations) int {
 	}
 
 	if cmp := util.Compare(a.Custom, other.Custom); cmp != 0 {
+		return cmp
+	}
+
+	if cmp := util.Compare(a.Labels, other.Labels); cmp != 0 {
 		return cmp
 	}
 
@@ -203,7 +198,7 @@ func (a *Annotations) MarshalJSON() ([]byte, error) {
 		return []byte(`{"scope":""}`), nil
 	}
 
-	data := map[string]interface{}{
+	data := map[string]any{
 		"scope": a.Scope,
 	}
 
@@ -235,8 +230,16 @@ func (a *Annotations) MarshalJSON() ([]byte, error) {
 		data["schemas"] = a.Schemas
 	}
 
+	if a.Compile != nil {
+		data["compile"] = a.Compile
+	}
+
 	if len(a.Custom) > 0 {
 		data["custom"] = a.Custom
+	}
+
+	if len(a.Labels) > 0 {
+		data["labels"] = a.Labels
 	}
 
 	if astJSON.GetOptions().MarshalOptions.IncludeLocation.Annotations {
@@ -283,7 +286,7 @@ func (ar *AnnotationsRef) GetRule() *Rule {
 }
 
 func (ar *AnnotationsRef) MarshalJSON() ([]byte, error) {
-	data := map[string]interface{}{
+	data := map[string]any{
 		"path": ar.Path,
 	}
 
@@ -369,10 +372,7 @@ func compareRelatedResources(a, b []*RelatedResourceAnnotation) int {
 }
 
 func compareSchemas(a, b []*SchemaAnnotation) int {
-	maxLen := len(a)
-	if len(b) < maxLen {
-		maxLen = len(b)
-	}
+	maxLen := min(len(b), len(a))
 
 	for i := range maxLen {
 		if cmp := a[i].Compare(b[i]); cmp != 0 {
@@ -427,8 +427,14 @@ func (a *Annotations) Copy(node Node) *Annotations {
 		cpy.Schemas[i] = a.Schemas[i].Copy()
 	}
 
+	cpy.Compile = a.Compile.Copy()
+
 	if a.Custom != nil {
 		cpy.Custom = deepcopy.Map(a.Custom)
+	}
+
+	if a.Labels != nil {
+		cpy.Labels = deepcopy.Map(a.Labels)
 	}
 
 	cpy.node = node
@@ -445,30 +451,19 @@ func (a *Annotations) toObject() (*Object, *Error) {
 	}
 
 	if len(a.Scope) > 0 {
-		switch a.Scope {
-		case annotationScopeDocument:
-			obj.Insert(scopeTerm, documentTerm)
-		case annotationScopePackage:
-			obj.Insert(scopeTerm, packageTerm)
-		case annotationScopeRule:
-			obj.Insert(scopeTerm, ruleTerm)
-		case annotationScopeSubpackages:
-			obj.Insert(scopeTerm, subpackagesTerm)
-		default:
-			obj.Insert(scopeTerm, StringTerm(a.Scope))
-		}
+		obj.Insert(InternedTerm("scope"), InternedTerm(a.Scope))
 	}
 
 	if len(a.Title) > 0 {
-		obj.Insert(titleTerm, StringTerm(a.Title))
+		obj.Insert(InternedTerm("title"), StringTerm(a.Title))
 	}
 
 	if a.Entrypoint {
-		obj.Insert(entrypointTerm, InternedBooleanTerm(true))
+		obj.Insert(InternedTerm("entrypoint"), InternedTerm(true))
 	}
 
 	if len(a.Description) > 0 {
-		obj.Insert(descriptionTerm, StringTerm(a.Description))
+		obj.Insert(InternedTerm("description"), StringTerm(a.Description))
 	}
 
 	if len(a.Organizations) > 0 {
@@ -476,19 +471,19 @@ func (a *Annotations) toObject() (*Object, *Error) {
 		for _, org := range a.Organizations {
 			orgs = append(orgs, StringTerm(org))
 		}
-		obj.Insert(organizationsTerm, ArrayTerm(orgs...))
+		obj.Insert(InternedTerm("organizations"), ArrayTerm(orgs...))
 	}
 
 	if len(a.RelatedResources) > 0 {
 		rrs := make([]*Term, 0, len(a.RelatedResources))
 		for _, rr := range a.RelatedResources {
-			rrObj := NewObject(Item(refTerm, StringTerm(rr.Ref.String())))
+			rrObj := NewObject(Item(InternedTerm("ref"), StringTerm(rr.Ref.String())))
 			if len(rr.Description) > 0 {
-				rrObj.Insert(descriptionTerm, StringTerm(rr.Description))
+				rrObj.Insert(InternedTerm("description"), StringTerm(rr.Description))
 			}
 			rrs = append(rrs, NewTerm(rrObj))
 		}
-		obj.Insert(relatedResourcesTerm, ArrayTerm(rrs...))
+		obj.Insert(InternedTerm("related_resources"), ArrayTerm(rrs...))
 	}
 
 	if len(a.Authors) > 0 {
@@ -496,14 +491,14 @@ func (a *Annotations) toObject() (*Object, *Error) {
 		for _, author := range a.Authors {
 			aObj := NewObject()
 			if len(author.Name) > 0 {
-				aObj.Insert(nameTerm, StringTerm(author.Name))
+				aObj.Insert(InternedTerm("name"), StringTerm(author.Name))
 			}
 			if len(author.Email) > 0 {
-				aObj.Insert(emailTerm, StringTerm(author.Email))
+				aObj.Insert(InternedTerm("email"), StringTerm(author.Email))
 			}
 			as = append(as, NewTerm(aObj))
 		}
-		obj.Insert(authorsTerm, ArrayTerm(as...))
+		obj.Insert(InternedTerm("authors"), ArrayTerm(as...))
 	}
 
 	if len(a.Schemas) > 0 {
@@ -511,21 +506,21 @@ func (a *Annotations) toObject() (*Object, *Error) {
 		for _, s := range a.Schemas {
 			sObj := NewObject()
 			if len(s.Path) > 0 {
-				sObj.Insert(pathTerm, NewTerm(s.Path.toArray()))
+				sObj.Insert(InternedTerm("path"), NewTerm(s.Path.toArray()))
 			}
 			if len(s.Schema) > 0 {
-				sObj.Insert(schemaTerm, NewTerm(s.Schema.toArray()))
+				sObj.Insert(InternedTerm("schema"), NewTerm(s.Schema.toArray()))
 			}
 			if s.Definition != nil {
 				def, err := InterfaceToValue(s.Definition)
 				if err != nil {
 					return nil, NewError(CompileErr, a.Location, "invalid definition in schema annotation: %s", err.Error())
 				}
-				sObj.Insert(definitionTerm, NewTerm(def))
+				sObj.Insert(InternedTerm("definition"), NewTerm(def))
 			}
 			ss = append(ss, NewTerm(sObj))
 		}
-		obj.Insert(schemasTerm, ArrayTerm(ss...))
+		obj.Insert(InternedTerm("schemas"), ArrayTerm(ss...))
 	}
 
 	if len(a.Custom) > 0 {
@@ -533,7 +528,15 @@ func (a *Annotations) toObject() (*Object, *Error) {
 		if err != nil {
 			return nil, NewError(CompileErr, a.Location, "invalid custom annotation %s", err.Error())
 		}
-		obj.Insert(customTerm, NewTerm(c))
+		obj.Insert(InternedTerm("custom"), NewTerm(c))
+	}
+
+	if len(a.Labels) > 0 {
+		l, err := InterfaceToValue(a.Labels)
+		if err != nil {
+			return nil, NewError(CompileErr, a.Location, "invalid labels annotation %s", err.Error())
+		}
+		obj.Insert(InternedTerm("labels"), NewTerm(l))
 	}
 
 	return &obj, nil
@@ -562,7 +565,7 @@ func attachRuleAnnotations(mod *Module) {
 		}
 
 		if found && j < len(cpy) {
-			cpy = append(cpy[:j], cpy[j+1:]...)
+			cpy = slices.Delete(cpy, j, j+1)
 		}
 	}
 }
@@ -696,7 +699,7 @@ func (rr *RelatedResourceAnnotation) String() string {
 }
 
 func (rr *RelatedResourceAnnotation) MarshalJSON() ([]byte, error) {
-	d := map[string]interface{}{
+	d := map[string]any{
 		"ref": rr.Ref.String(),
 	}
 
@@ -737,6 +740,41 @@ func (s *SchemaAnnotation) Compare(other *SchemaAnnotation) int {
 
 func (s *SchemaAnnotation) String() string {
 	bs, _ := json.Marshal(s)
+	return string(bs)
+}
+
+// Copy returns a deep copy of s.
+func (c *CompileAnnotation) Copy() *CompileAnnotation {
+	if c == nil {
+		return nil
+	}
+	cpy := *c
+	for i := range c.Unknowns {
+		cpy.Unknowns[i] = c.Unknowns[i].Copy()
+	}
+	return &cpy
+}
+
+// Compare returns an integer indicating if s is less than, equal to, or greater
+// than other.
+func (c *CompileAnnotation) Compare(other *CompileAnnotation) int {
+	switch {
+	case c == nil && other == nil:
+		return 0
+	case c != nil && other == nil:
+		return 1
+	case c == nil && other != nil:
+		return -1
+	}
+
+	if cmp := slices.CompareFunc(c.Unknowns, other.Unknowns, RefCompare); cmp != 0 {
+		return cmp
+	}
+	return c.MaskRule.Compare(other.MaskRule)
+}
+
+func (c *CompileAnnotation) String() string {
+	bs, _ := json.Marshal(c)
 	return string(bs)
 }
 
@@ -870,6 +908,17 @@ func (as *AnnotationSet) Chain(rule *Rule) AnnotationsRefSet {
 
 	ruleAnnots := as.GetRuleScope(rule)
 
+	// Fall back to the rule's own attached annotations when the rule's source
+	// module isn't tracked by this AnnotationSet. This happens for rules
+	// supplied by an ExternalRuleSource that returns []*Rule directly: their
+	// source module is never compiled by the outer Compiler, so the set has no
+	// entries for them at any scope. attachRuleAnnotations (run at parse time)
+	// populates rule.Annotations with rule-scope and document-scope entries,
+	// which is the upper bound of what's reachable for such rules anyway.
+	if len(ruleAnnots) == 0 && len(rule.Annotations) > 0 && !slices.Contains(as.modules, rule.Module) {
+		ruleAnnots = rule.Annotations
+	}
+
 	if len(ruleAnnots) >= 1 {
 		for _, a := range ruleAnnots {
 			refs = append(refs, NewAnnotationsRef(a))
@@ -909,6 +958,39 @@ func (as *AnnotationSet) Chain(rule *Rule) AnnotationsRefSet {
 	}
 
 	return refs
+}
+
+// MergedLabels returns the inner-scope-wins merged labels for the given rule
+// along with a stable JSON string suitable for content-based deduplication.
+// labels is nil when the rule has no labels anywhere in its annotation chain.
+func (as *AnnotationSet) MergedLabels(rule *Rule) (labels map[string]any, key string) {
+	if as == nil {
+		return nil, ""
+	}
+	labels = mergeChainLabels(as.Chain(rule))
+	if len(labels) > 0 {
+		b, _ := json.Marshal(labels)
+		key = string(b)
+	}
+	return labels, key
+}
+
+// mergeChainLabels folds labels from a rule's annotation chain with inner-wins
+// precedence. AnnotationSet.Chain returns entries in inner-to-outer order, so
+// we iterate in reverse to fold outer-to-inner.
+func mergeChainLabels(chain AnnotationsRefSet) map[string]any {
+	var merged map[string]any
+	for i := len(chain) - 1; i >= 0; i-- {
+		a := chain[i].Annotations
+		if a == nil || len(a.Labels) == 0 {
+			continue
+		}
+		if merged == nil {
+			merged = make(map[string]any, len(a.Labels))
+		}
+		maps.Copy(merged, a.Labels)
+	}
+	return merged
 }
 
 func (ars FlatAnnotationsRefSet) Insert(ar *AnnotationsRef) FlatAnnotationsRefSet {

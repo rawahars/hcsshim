@@ -11,9 +11,9 @@
 package ast
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"unicode"
 
@@ -40,6 +40,16 @@ func MustParseBodyWithOpts(input string, opts ParserOptions) Body {
 // If an error occurs during parsing, panic.
 func MustParseExpr(input string) *Expr {
 	parsed, err := ParseExpr(input)
+	if err != nil {
+		panic(err)
+	}
+	return parsed
+}
+
+// MustParseExprWithOpts returns a parsed expression.
+// If an error occurs during parsing, panic.
+func MustParseExprWithOpts(input string, opts ParserOptions) *Expr {
+	parsed, err := ParseExprWithOpts(input, opts)
 	if err != nil {
 		panic(err)
 	}
@@ -523,6 +533,20 @@ func ParseExpr(input string) (*Expr, error) {
 	return body[0], nil
 }
 
+// ParseExprWithOpts returns exactly one expression.
+// If multiple expressions are parsed, an error is returned.
+// It does _not_ set SkipRules: true on its own, but respects whatever ParserOptions it's been given.
+func ParseExprWithOpts(input string, popts ParserOptions) (*Expr, error) {
+	body, err := ParseBodyWithOpts(input, popts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse expression: %w", err)
+	}
+	if len(body) != 1 {
+		return nil, fmt.Errorf("expected exactly one expression but got: %v", body)
+	}
+	return body[0], nil
+}
+
 // ParsePackage returns exactly one Package.
 // If multiple statements are parsed, an error is returned.
 func ParsePackage(input string) (*Package, error) {
@@ -624,20 +648,17 @@ func ParseStatements(filename, input string) ([]Statement, []*Comment, error) {
 // ParseStatementsWithOpts returns a slice of parsed statements. This is the
 // default return value from the parser.
 func ParseStatementsWithOpts(filename, input string, popts ParserOptions) ([]Statement, []*Comment, error) {
-
 	parser := NewParser().
 		WithFilename(filename).
-		WithReader(bytes.NewBufferString(input)).
+		WithReader(strings.NewReader(input)).
 		WithProcessAnnotation(popts.ProcessAnnotation).
 		WithFutureKeywords(popts.FutureKeywords...).
 		WithAllFutureKeywords(popts.AllFutureKeywords).
 		WithCapabilities(popts.Capabilities).
 		WithSkipRules(popts.SkipRules).
-		WithRegoVersion(popts.RegoVersion).
-		withUnreleasedKeywords(popts.unreleasedKeywords)
+		WithRegoVersion(popts.RegoVersion)
 
 	stmts, comments, errs := parser.Parse()
-
 	if len(errs) > 0 {
 		return nil, nil, errs
 	}
@@ -646,7 +667,6 @@ func ParseStatementsWithOpts(filename, input string, popts ParserOptions) ([]Sta
 }
 
 func parseModule(filename string, stmts []Statement, comments []*Comment, regoCompatibilityMode RegoVersion) (*Module, error) {
-
 	if len(stmts) == 0 {
 		return nil, NewError(ParseErr, &Location{File: filename}, "empty module")
 	}
@@ -661,23 +681,21 @@ func parseModule(filename string, stmts []Statement, comments []*Comment, regoCo
 
 	mod := &Module{
 		Package: pkg,
-		stmts:   stmts,
+		// The comments slice only holds comments that were not their own statements.
+		Comments: comments,
+		stmts:    stmts,
 	}
 
-	// The comments slice only holds comments that were not their own statements.
-	mod.Comments = append(mod.Comments, comments...)
-
+	mod.regoVersion = regoCompatibilityMode
 	if regoCompatibilityMode == RegoUndefined {
 		mod.regoVersion = DefaultRegoVersion
-	} else {
-		mod.regoVersion = regoCompatibilityMode
 	}
 
 	for i, stmt := range stmts[1:] {
 		switch stmt := stmt.(type) {
 		case *Import:
 			mod.Imports = append(mod.Imports, stmt)
-			if mod.regoVersion == RegoV0 && Compare(stmt.Path.Value, RegoV1CompatibleRef) == 0 {
+			if mod.regoVersion == RegoV0 && RegoV1CompatibleRef.Equal(stmt.Path.Value) {
 				mod.regoVersion = RegoV0CompatV1
 			}
 		case *Rule:
@@ -686,7 +704,7 @@ func parseModule(filename string, stmts []Statement, comments []*Comment, regoCo
 		case Body:
 			rule, err := ParseRuleFromBody(mod, stmt)
 			if err != nil {
-				errs = append(errs, NewError(ParseErr, stmt[0].Location, err.Error())) //nolint:govet
+				errs = append(errs, NewError(ParseErr, stmt[0].Location, "%s", err.Error()))
 				continue
 			}
 			rule.generatedBody = true
@@ -731,12 +749,7 @@ func parseModule(filename string, stmts []Statement, comments []*Comment, regoCo
 }
 
 func ruleDeclarationHasKeyword(rule *Rule, keyword tokens.Token) bool {
-	for _, kw := range rule.Head.keywords {
-		if kw == keyword {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(rule.Head.keywords, keyword)
 }
 
 func newScopeAttachmentErr(a *Annotations, want string) *Error {
@@ -809,10 +822,7 @@ func newParserErrorDetail(bs []byte, offset int) *ParserErrorDetail {
 func (d ParserErrorDetail) Lines() []string {
 	line := strings.TrimLeft(d.Line, "\t") // remove leading tabs
 	tabCount := len(d.Line) - len(line)
-	indent := d.Idx - tabCount
-	if indent < 0 {
-		indent = 0
-	}
+	indent := max(d.Idx-tabCount, 0)
 	return []string{line, strings.Repeat(" ", indent) + "^"}
 }
 

@@ -10,13 +10,35 @@ import (
 	"math/big"
 )
 
+const (
+	nilSort = iota
+	boolSort
+	numberSort
+	stringSort
+	arraySort
+	objectSort
+)
+
+// SliceLenCompare is a convenience function for comparing / sorting
+// slices by their length using the various slices.SortX functions.
+func SliceLenCompare[T any, S ~[]T](a, b S) int {
+	aLen, bLen := len(a), len(b)
+	if aLen == bLen {
+		return 0
+	} else if aLen < bLen {
+		return -1
+	}
+
+	return 1
+}
+
 // Compare returns 0 if a equals b, -1 if a is less than b, and 1 if b is than a.
 //
 // For comparison between values of different types, the following ordering is used:
-// nil < bool < int, float64 < string < []interface{} < map[string]interface{}. Slices and maps
+// nil < bool < int, float64 < string < []any < map[string]any. Slices and maps
 // are compared recursively. If one slice or map is a subset of the other slice or map
 // it is considered "less than". Nil is always equal to nil.
-func Compare(a, b interface{}) int {
+func Compare(a, b any) int {
 	aSortOrder := sortOrder(a)
 	bSortOrder := sortOrder(b)
 	if aSortOrder < bSortOrder {
@@ -73,15 +95,12 @@ func Compare(a, b interface{}) int {
 			}
 			return 1
 		}
-	case []interface{}:
+	case []any:
 		switch b := b.(type) {
-		case []interface{}:
+		case []any:
 			bLen := len(b)
 			aLen := len(a)
-			minLen := aLen
-			if bLen < minLen {
-				minLen = bLen
-			}
+			minLen := min(bLen, aLen)
 			for i := range minLen {
 				cmp := Compare(a[i], b[i])
 				if cmp != 0 {
@@ -95,17 +114,14 @@ func Compare(a, b interface{}) int {
 			}
 			return 1
 		}
-	case map[string]interface{}:
+	case map[string]any:
 		switch b := b.(type) {
-		case map[string]interface{}:
+		case map[string]any:
 			aKeys := KeysSorted(a)
 			bKeys := KeysSorted(b)
 			aLen := len(aKeys)
 			bLen := len(bKeys)
-			minLen := aLen
-			if bLen < minLen {
-				minLen = bLen
-			}
+			minLen := min(bLen, aLen)
 			for i := range minLen {
 				if aKeys[i] < bKeys[i] {
 					return -1
@@ -131,15 +147,6 @@ func Compare(a, b interface{}) int {
 	panic(fmt.Sprintf("illegal arguments of type %T and type %T", a, b))
 }
 
-const (
-	nilSort    = iota
-	boolSort   = iota
-	numberSort = iota
-	stringSort = iota
-	arraySort  = iota
-	objectSort = iota
-)
-
 func compareJSONNumber(a, b json.Number) int {
 	bigA, ok := new(big.Float).SetString(string(a))
 	if !ok {
@@ -152,7 +159,7 @@ func compareJSONNumber(a, b json.Number) int {
 	return bigA.Cmp(bigB)
 }
 
-func sortOrder(v interface{}) int {
+func sortOrder(v any) int {
 	switch v.(type) {
 	case nil:
 		return nilSort
@@ -166,9 +173,9 @@ func sortOrder(v interface{}) int {
 		return numberSort
 	case string:
 		return stringSort
-	case []interface{}:
+	case []any:
 		return arraySort
-	case map[string]interface{}:
+	case map[string]any:
 		return objectSort
 	}
 	panic(fmt.Sprintf("illegal argument of type %T", v))
