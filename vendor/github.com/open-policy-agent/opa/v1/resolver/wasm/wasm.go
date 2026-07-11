@@ -16,8 +16,16 @@ import (
 )
 
 // New creates a new Resolver instance which is using the Wasm module
-// policy for the given entrypoint ref.
-func New(entrypoints []ast.Ref, policy []byte, data interface{}) (*Resolver, error) {
+// policy for the given entrypoint ref. This method creates a new
+// background context. If you need to pass an existing context use
+// NewWithContext instead.
+func New(entrypoints []ast.Ref, policy []byte, data any) (*Resolver, error) {
+	return NewWithContext(context.Background(), entrypoints, policy, data)
+}
+
+// NewWithContext creates a new Resolver instance which is using the Wasm module
+// policy for the given entrypoint ref. This method accepts a context.
+func NewWithContext(ctx context.Context, entrypoints []ast.Ref, policy []byte, data any) (*Resolver, error) {
 	e, err := opa.LookupEngine("wasm")
 	if err != nil {
 		return nil, err
@@ -37,7 +45,7 @@ func New(entrypoints []ast.Ref, policy []byte, data interface{}) (*Resolver, err
 	// only the configured ones will be used when Eval() is
 	// called.
 	entrypointRefToID := ast.NewValueMap()
-	epIDs, err := o.Entrypoints(context.Background())
+	epIDs, err := o.Entrypoints(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -97,9 +105,9 @@ func (r *Resolver) Eval(ctx context.Context, input resolver.Input) (resolver.Res
 		return resolver.Result{}, fmt.Errorf("internal error: invalid entrypoint id %s", numValue)
 	}
 
-	var in *interface{}
+	var in *any
 	if input.Input != nil {
-		var str interface{} = []byte(input.Input.String())
+		var str any = []byte(input.Input.String())
 		in = &str
 	}
 
@@ -122,12 +130,12 @@ func (r *Resolver) Eval(ctx context.Context, input resolver.Input) (resolver.Res
 }
 
 // SetData will update the external data for the Wasm instance.
-func (r *Resolver) SetData(ctx context.Context, data interface{}) error {
+func (r *Resolver) SetData(ctx context.Context, data any) error {
 	return r.o.SetData(ctx, data)
 }
 
 // SetDataPath will set the provided data on the wasm instance at the specified path.
-func (r *Resolver) SetDataPath(ctx context.Context, path []string, data interface{}) error {
+func (r *Resolver) SetDataPath(ctx context.Context, path []string, data any) error {
 	return r.o.SetDataPath(ctx, path, data)
 }
 
@@ -137,7 +145,6 @@ func (r *Resolver) RemoveDataPath(ctx context.Context, path []string) error {
 }
 
 func getResult(evalResult *opa.Result) (ast.Value, error) {
-
 	parsed, err := ast.ParseTerm(string(evalResult.Result))
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse wasm result: %s", err)
@@ -168,7 +175,7 @@ func getResult(evalResult *opa.Result) (ast.Value, error) {
 		return nil, err
 	}
 
-	result := obj.Get(ast.StringTerm("result"))
+	result := obj.Get(ast.InternedTerm("result"))
 
 	return result.Value, nil
 }

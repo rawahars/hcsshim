@@ -12,15 +12,16 @@ import (
 )
 
 const (
-	typeNull     = "null"
-	typeBoolean  = "boolean"
-	typeNumber   = "number"
-	typeString   = "string"
-	typeArray    = "array"
-	typeSet      = "set"
-	typeObject   = "object"
-	typeAny      = "any"
-	typeFunction = "function"
+	typeNull      = "null"
+	typeBoolean   = "boolean"
+	typeNumber    = "number"
+	typeString    = "string"
+	typeArray     = "array"
+	typeSet       = "set"
+	typeObject    = "object"
+	typeAny       = "any"
+	typeFunction  = "function"
+	typeRecursive = "recursive"
 )
 
 // Unmarshal deserializes bs and returns the resulting type.
@@ -131,7 +132,7 @@ type rawobject struct {
 }
 
 type rawstaticproperty struct {
-	Key   interface{}     `json:"key"`
+	Key   any             `json:"key"`
 	Value json.RawMessage `json:"value"`
 }
 

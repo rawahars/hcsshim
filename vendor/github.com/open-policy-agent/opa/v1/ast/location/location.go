@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"unicode/utf8"
 
 	astJSON "github.com/open-policy-agent/opa/v1/ast/json"
+	"github.com/open-policy-agent/opa/v1/util"
 )
 
 // Location records a position in source code
@@ -28,26 +30,29 @@ func NewLocation(text []byte, file string, row int, col int) *Location {
 
 // Equal checks if two locations are equal to each other.
 func (loc *Location) Equal(other *Location) bool {
-	return bytes.Equal(loc.Text, other.Text) &&
-		loc.File == other.File &&
+	if loc == nil || other == nil {
+		return loc == other
+	}
+	return loc.File == other.File &&
 		loc.Row == other.Row &&
-		loc.Col == other.Col
+		loc.Col == other.Col &&
+		bytes.Equal(loc.Text, other.Text)
 }
 
 // Errorf returns a new error value with a message formatted to include the location
 // info (e.g., line, column, filename, etc.)
-func (loc *Location) Errorf(f string, a ...interface{}) error {
+func (loc *Location) Errorf(f string, a ...any) error {
 	return errors.New(loc.Format(f, a...))
 }
 
 // Wrapf returns a new error value that wraps an existing error with a message formatted
 // to include the location info (e.g., line, column, filename, etc.)
-func (loc *Location) Wrapf(err error, f string, a ...interface{}) error {
+func (loc *Location) Wrapf(err error, f string, a ...any) error {
 	return fmt.Errorf(loc.Format(f, a...)+": %w", err)
 }
 
 // Format returns a formatted string prefixed with the location information.
-func (loc *Location) Format(f string, a ...interface{}) string {
+func (loc *Location) Format(f string, a ...any) string {
 	if len(loc.File) > 0 {
 		f = fmt.Sprintf("%v:%v: %v", loc.File, loc.Row, f)
 	} else {
@@ -57,13 +62,66 @@ func (loc *Location) Format(f string, a ...interface{}) string {
 }
 
 func (loc *Location) String() string {
-	if len(loc.File) > 0 {
-		return fmt.Sprintf("%v:%v", loc.File, loc.Row)
+	buf, _ := loc.AppendText(make([]byte, 0, loc.StringLength()))
+	return util.ByteSliceToString(buf)
+}
+
+func (loc *Location) AppendText(buf []byte) ([]byte, error) {
+	if loc != nil {
+		switch {
+		case len(loc.File) > 0:
+			buf = util.AppendInt(append(append(buf, loc.File...), ':'), loc.Row)
+		case len(loc.Text) > 0:
+			buf = append(buf, loc.Text...)
+		default:
+			buf = util.AppendInt(append(util.AppendInt(buf, loc.Row), ':'), loc.Col)
+		}
 	}
-	if len(loc.Text) > 0 {
-		return string(loc.Text)
+	return buf, nil
+}
+
+func (loc *Location) StringLength() (n int) {
+	if loc != nil {
+		if l := len(loc.File); l > 0 {
+			n = l + 1 + util.NumDigitsInt(loc.Row)
+		} else if l := len(loc.Text); l > 0 {
+			n = l
+		} else {
+			n = util.NumDigitsInt(loc.Row) + 1 + util.NumDigitsInt(loc.Col)
+		}
 	}
-	return fmt.Sprintf("%v:%v", loc.Row, loc.Col)
+	return n
+}
+
+// HasFile reports whether loc carries a non-empty File. Safe to call on a
+// nil receiver.
+func (loc *Location) HasFile() bool {
+	return loc != nil && loc.File != ""
+}
+
+// End returns the (row, col) one past the last rune of loc.Text — an
+// exclusive end matching the scanner's offset calculation, so [Start, End)
+// covers the text. Columns are counted per rune. Returns (Row, Col) for
+// empty text and (0, 0) for a nil receiver.
+func (loc *Location) End() (row, col int) {
+	if loc == nil {
+		return 0, 0
+	}
+
+	if len(loc.Text) == 0 {
+		return loc.Row, loc.Col
+	}
+
+	row = loc.Row + bytes.Count(loc.Text, []byte{'\n'})
+	col = loc.Col
+
+	lastLine := loc.Text
+	if row != loc.Row {
+		col = 1
+		lastLine = loc.Text[bytes.LastIndex(loc.Text, []byte{'\n'})+1:]
+	}
+
+	return row, col + utf8.RuneCount(lastLine)
 }
 
 // Compare returns -1, 0, or 1 to indicate if this loc is less than, equal to,
@@ -71,7 +129,7 @@ func (loc *Location) String() string {
 // column of the Location (but not on the text.) Nil locations are greater than
 // non-nil locations.
 func (loc *Location) Compare(other *Location) int {
-	if loc == nil && other == nil {
+	if loc == other {
 		return 0
 	} else if loc == nil {
 		return 1
