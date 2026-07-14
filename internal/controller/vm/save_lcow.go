@@ -18,6 +18,7 @@ import (
 	"github.com/Microsoft/hcsshim/internal/wclayer"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sync/errgroup"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/anypb"
 )
@@ -222,6 +223,27 @@ func (c *Controller) Resume(ctx context.Context, rebuildBridge bool) error {
 		if err := c.guest.ResumeConnection(ctx); err != nil {
 			return fmt.Errorf("resume guest connection: %w", err)
 		}
+
+		// The blackout also dropped the source's GCS log connection, which tore
+		// down its listener and closed logOutputDone. Install a fresh signal and
+		// re-arm the listener so the resumed guest's reconnect-mode vsockexec can
+		// reconnect and host-side logs resume. The accept runs in the background
+		// (WithoutCancel so it outlives this call; AcceptConnection still returns
+		// on VM exit) so a slow guest re-dial cannot stall resume.
+		c.logOutputDone = make(chan struct{})
+		g, gctx := errgroup.WithContext(ctx)
+		defer func() {
+			_ = g.Wait()
+		}()
+
+		if err := c.setupLoggingListener(gctx, g); err != nil {
+			return fmt.Errorf("re-arm logging listener on resume: %w", err)
+		}
+
+		// Collect any errors from establishing the log connection.
+		if err := g.Wait(); err != nil {
+			return err
+		}
 	default:
 		// Destination: reuse the connection already armed at start.
 		if err := c.guest.CreateConnection(ctx, false); err != nil {
@@ -251,18 +273,6 @@ func (c *Controller) Resume(ctx context.Context, rebuildBridge bool) error {
 	}
 
 	c.vmState = StateRunning
-
-	if c.sandboxOptions != nil {
-		c.sandboxOptions.LiveMigrationSupportEnabled = true
-	}
-
-	// Destination never ran setupLoggingListener; close so [Controller.Wait]
-	// does not block. Already closed on source — receive falls through.
-	select {
-	case <-c.logOutputDone:
-	default:
-		close(c.logOutputDone)
-	}
 
 	log.G(ctx).WithField(logfields.UVMID, c.vmID).Debug("resumed VM from migration")
 	return nil
