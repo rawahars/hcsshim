@@ -6,14 +6,17 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strings"
 
 	"github.com/Microsoft/go-winio"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/Microsoft/hcsshim/internal/gcs/prot"
 	hcsschema "github.com/Microsoft/hcsshim/internal/hcs/schema2"
 	hcs "github.com/Microsoft/hcsshim/internal/hcs/v2"
 	"github.com/Microsoft/hcsshim/internal/log"
 	"github.com/Microsoft/hcsshim/internal/logfields"
+	"github.com/Microsoft/hcsshim/internal/vm/vmutils"
 )
 
 // compatibilityInfoProperty is the HCS property name used to retrieve the
@@ -30,6 +33,20 @@ func (c *Controller) InitializeLiveMigrationOnSource(ctx context.Context, option
 	// Only a running VM can begin a migration.
 	if c.vmState != StateRunning {
 		return fmt.Errorf("cannot initialize live migration on source: VM is in state %s", c.vmState)
+	}
+
+	// Live migration requires the guest log relay to run in reconnect mode so it can
+	// re-dial the destination host's log listener after the move.
+	var kernelCmdLine string
+	if chipset := c.hcsDocument.VirtualMachine.Chipset; chipset != nil {
+		if chipset.LinuxKernelDirect != nil {
+			kernelCmdLine = chipset.LinuxKernelDirect.KernelCmdLine
+		} else if chipset.Uefi != nil && chipset.Uefi.BootThis != nil {
+			kernelCmdLine = chipset.Uefi.BootThis.OptionalData
+		}
+	}
+	if !strings.Contains(kernelCmdLine, fmt.Sprintf("/bin/vsockexec -r -e %d", vmutils.LinuxLogVsockPort)) {
+		return fmt.Errorf("cannot initialize live migration on source: VM was not created with live-migration support enabled")
 	}
 
 	// Hand the initialize request to the HCS for the UVM.
@@ -115,6 +132,19 @@ func (c *Controller) StartWithMigrationOptions(ctx context.Context, config *hcs.
 		return fmt.Errorf("cannot start with migration options: VM is in state %s", c.vmState)
 	}
 
+	g, gctx := errgroup.WithContext(ctx)
+	defer func() {
+		_ = g.Wait()
+	}()
+
+	// The source's log listener is host-local and does not transfer with the
+	// migration. Arm a fresh listener on the destination before start so the
+	// resumed guest's vsockexec (reconnect mode) can re-dial LinuxLogVsockPort
+	// and resume streaming GCS logs without racing the guest's dial.
+	if err := c.setupLoggingListener(gctx, g); err != nil {
+		return fmt.Errorf("failed to set up logging listener: %w", err)
+	}
+
 	// Arm the host-side GCS listener before start so the guest's dial cannot race it.
 	if err := c.guest.PrepareConnection(winio.VsockServiceID(prot.LinuxGcsVsockPort)); err != nil {
 		return fmt.Errorf("prepare destination gcs connection: %w", err)
@@ -127,6 +157,12 @@ func (c *Controller) StartWithMigrationOptions(ctx context.Context, config *hcs.
 
 	// Watch for VM exit in the background.
 	go c.waitForVMExit(ctx)
+
+	// Collect any errors from establishing the log connection.
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
 	c.vmState = StateDestinationMigrationStarted
 
 	log.G(ctx).WithField(logfields.UVMID, c.vmID).Debug("started destination VM with migration options")
