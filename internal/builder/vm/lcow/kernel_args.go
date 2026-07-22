@@ -245,7 +245,5 @@ func buildGCSCommand(
 	}
 
 	// Combine vsockexec and GCS command
-	cmdParts = append(cmdParts, strings.Join(gcsParts, " "))
-
-	return strings.Join(cmdParts, " ")
+	return strings.Join(append(cmdParts, gcsParts...), " ")
 }
